@@ -285,3 +285,20 @@ Détails et compromis : `docs/transcription.md`.
 | Métriques brutes conservées, `suspicion_score` heuristique séparé                                                                   | Les sorties de Whisper ne sont pas des probabilités calibrées                                                        |
 | Transcriptions = données permanentes ; WAV d'entrée = cache                                                                         | Le nettoyage ne supprime jamais une transcription ; le WAV reste réutilisable                                        |
 | Tests : faux worker (même protocole) en CI Linux/Windows ; vrai modèle `tiny` sur CPU dans un job dédié                             | Couverture complète sans GPU ; le GPU se valide sur la machine du créateur (`doctor --gpu`)                          |
+
+## 9. Analyse éditoriale, étape 4a (préparation locale)
+
+Détails, utilisation et limites : `docs/analyse-editoriale.md`.
+
+| Décision                                                                                                    | Raison                                                                                                                       |
+| ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Étape 4 découpée en **4a (locale, sans appel)** puis **4b (Claude)**                                        | Le créateur valide le repérage et le contenu qui serait envoyé avant toute dépense et toute transmission                     |
+| Signaux **factuels** uniquement (`nature: 'mesure'`), interface `SignalProvider`                            | Claude ne reçoit pas le son ; un pic sonore n'est pas une émotion. Un analyseur audio local pourra s'ajouter sans réécriture |
+| Score local pondéré vers les **interactions** ; le volume seul ne crée jamais de fenêtre                    | La priorité éditoriale est l'humour et les échanges, pas les cris ni les éliminations                                        |
+| Texte Discord / piste « tout » **retenu par défaut**, accord par enregistrement avec note datée             | Voix d'autres personnes ; seuls les instants de parole sont indiqués sans accord                                             |
+| Pseudonymisation par liste locale (hors dépôt) + masquage e-mails, liens, numéros, mentions                 | Aucun nom réel transmis ni versionné ; limite assumée : un nom non listé n'est pas détecté                                   |
+| Images seulement avec un **profil de cadrage validé** (empreinte), zones et facecam en **aplat opaque**     | La facecam est souvent incrustée dans l'image de jeu ; un flou peut laisser lire un pseudo                                   |
+| Contenu préparé **écrit sur disque** (`storage/analysis/`), hors `processing/`                              | Consultable avant tout envoi ; jamais supprimé par le nettoyage du cache                                                     |
+| Transcriptions encadrées comme **données non fiables**, neutralisées ; pseudo-consignes marquées            | Une phrase prononcée en stream ne doit jamais devenir une instruction                                                        |
+| Tarifs versionnés ; modèle sans tarif = préparation bloquée ; pire cas = sortie maximale réflexion comprise | Le plafond (5 $) doit être garanti avant chaque appel (4b) ; la base refuse `dépensé + réservé > budget`                     |
+| Nouvelle file de traitements `analysis`                                                                     | L'analyse ne doit pas attendre la transcription GPU d'un autre enregistrement (et inversement)                               |
