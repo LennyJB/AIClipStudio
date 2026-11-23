@@ -9,7 +9,7 @@ export const ROOT_DIR = path.resolve(fileURLToPath(new URL('../../../', import.m
 
 const emptyToUndefined = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? undefined : v);
 
-const EnvSchema = z.object({
+export const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   ANTHROPIC_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   CLAUDE_MODEL: z.string().min(1).default('claude-opus-5-5'),

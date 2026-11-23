@@ -10,12 +10,24 @@ import path from 'node:path';
 export const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 export const FFPROBE = process.env.FFPROBE_PATH || 'ffprobe';
 
+/**
+ * Vrai si FFmpeg et ffprobe sont utilisables. En CI (REQUIRE_FFMPEG=1), leur absence
+ * est une ERREUR : les tests d'intégration ne doivent jamais être ignorés en silence.
+ */
 export function ffmpegAvailable(): boolean {
   try {
     execFileSync(FFMPEG, ['-version'], { stdio: 'ignore' });
     execFileSync(FFPROBE, ['-version'], { stdio: 'ignore' });
     return true;
-  } catch {
+  } catch (err) {
+    if (process.env.REQUIRE_FFMPEG === '1') {
+      throw new Error(
+        `REQUIRE_FFMPEG=1 mais FFmpeg/ffprobe est introuvable (${FFMPEG}, ${FFPROBE})`,
+        {
+          cause: err,
+        },
+      );
+    }
     return false;
   }
 }

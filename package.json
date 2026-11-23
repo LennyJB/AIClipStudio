@@ -22,13 +22,17 @@
     "import": "tsx scripts/import.ts",
     "storage": "tsx scripts/storage.ts",
     "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:migrations": "vitest run --project unit services/api/src/migration services/api/src/db.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+    "smoke": "tsx scripts/smoke-api.ts",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build:web && npm run smoke"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
