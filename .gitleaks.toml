@@ -1,0 +1,11 @@
+# Configuration gitleaks : règles par défaut + exceptions pour les valeurs FACTICES des tests.
+# N'ajouter ici que des valeurs dont on est certain qu'elles ne sont pas de vrais secrets.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Valeurs factices utilisées par les tests (jamais de vraies clés)"
+regexes = [
+  '''sk-ant-test-secret''',
+  '''sk-secret''',
+]
