@@ -17,6 +17,7 @@ import {
 } from '@acs/transcription';
 import type { AppContext } from '../context';
 import { canonicalJson, sha256 } from '../derivatives/cache-key';
+import { devicesComparable } from './comparison';
 import type { DerivativeService } from '../derivatives/service';
 import type { JobHandler, JobHandlerContext, JobRunner } from '../jobs/runner';
 import { JobRepository, RecordingRepository, type JobDto } from '../recordings/repository';
@@ -234,17 +235,17 @@ export class TranscriptionService {
         role: rec?.audioTracks.find((a) => a.audioIndex === t.audioIndex)?.role ?? null,
         comparisonKey: t.comparisonKey,
         transcriptions: [],
-        sameDevices: true,
+        sameDevices: true, // provisoire : recalculé ci-dessous, groupe complet
       };
       g.transcriptions.push(t);
       groups.set(t.comparisonKey, g);
     }
-    return {
-      transcriptions: all,
-      comparisons: [...groups.values()].filter(
-        (g) => new Set(g.transcriptions.map((t) => t.model)).size > 1,
-      ),
-    };
+    const comparisons = [...groups.values()].filter(
+      (g) => new Set(g.transcriptions.map((t) => t.model)).size > 1,
+    );
+    // Calculé une fois le groupe complet : tous les modèles du groupe sont pris en compte.
+    for (const g of comparisons) g.sameDevices = devicesComparable(g.transcriptions);
+    return { transcriptions: all, comparisons };
   }
 
   /**

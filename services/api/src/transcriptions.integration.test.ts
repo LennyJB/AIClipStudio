@@ -528,6 +528,25 @@ describe.skipIf(!enabled)('Transcription (worker simulé)', () => {
     });
   });
 
+  it('comparaison : un modèle sur GPU, l’autre sur CPU → signalé comme non comparable', async () => {
+    scenario({ cuda: true, tracks: { '1': [{ startMs: 500, endMs: 1_000, text: 'gpu' }] } });
+    await setup();
+    const rec = await importFile(fx.obsMkv);
+    await transcribe(rec.id, { model: 'large-v3-turbo' }); // GPU disponible : CUDA
+    await services.runner.idle();
+    scenario({ cuda: false, tracks: { '1': [{ startMs: 500, endMs: 1_000, text: 'cpu' }] } });
+    await transcribe(rec.id, { model: 'large-v3' }); // plus de GPU : CPU
+    await services.runner.idle();
+
+    const { comparisons } = await list(rec.id);
+    expect(comparisons).toHaveLength(2);
+    for (const g of comparisons) {
+      const devices = Object.fromEntries(g.transcriptions.map((t) => [t.model, t.devicesUsed]));
+      expect(devices).toEqual({ 'large-v3-turbo': ['cuda'], 'large-v3': ['cpu'] });
+      expect(g.sameDevices).toBe(false);
+    }
+  });
+
   it('réutilise le WAV dérivé existant et ne le supprime pas après transcription', async () => {
     scenario({ tracks: {} });
     await setup();
