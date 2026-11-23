@@ -1,3 +1,4 @@
+import { pino } from 'pino';
 import type { FastifyServerOptions } from 'fastify';
 import type { AppConfig } from './config';
 
@@ -23,4 +24,10 @@ export function loggerOptions(config: AppConfig): NonNullable<FastifyServerOptio
     };
   }
   return base;
+}
+
+/** Logger autonome pour les scripts CLI (même format que l'API). */
+export function createLogger(config: AppConfig) {
+  const opts = loggerOptions(config);
+  return pino(typeof opts === 'object' ? opts : { level: config.logLevel });
 }

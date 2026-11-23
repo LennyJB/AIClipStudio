@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { AppError } from '@acs/shared';
+import { AppError, TrackRoleSchema, type TrackRole } from '@acs/shared';
 
 /** Racine du dépôt (services/api/src → ../../..). */
 export const ROOT_DIR = path.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
@@ -28,6 +28,17 @@ const EnvSchema = z.object({
     .string()
     .regex(/^[a-z]{2}$/)
     .default('fr'),
+  /** Rôle des pistes audio OBS dans l'ordre du fichier (utilisé si les pistes ne sont pas nommées). */
+  AUDIO_TRACK_ROLES: z
+    .string()
+    .default('mix,mic,discord')
+    .transform((v) =>
+      v
+        .split(',')
+        .map((r) => r.trim().toLowerCase())
+        .filter(Boolean),
+    )
+    .pipe(z.array(TrackRoleSchema).min(1)),
 });
 
 export interface AppConfig {
@@ -47,6 +58,7 @@ export interface AppConfig {
   };
   tools: { ffmpeg: string; ffprobe: string; python: string };
   whisper: { model: string; device: 'cuda' | 'cpu'; computeType: string; language: string };
+  audioTrackRoles: TrackRole[];
 }
 
 export function defaultPythonPath(rootDir: string, platform: NodeJS.Platform = process.platform) {
@@ -93,6 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
       computeType: e.WHISPER_COMPUTE_TYPE,
       language: e.WHISPER_LANGUAGE,
     },
+    audioTrackRoles: e.AUDIO_TRACK_ROLES,
   };
 }
 
