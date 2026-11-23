@@ -14,12 +14,11 @@ import { TrackRoleSchema } from '@acs/shared';
 import { selectTranscriptionTracks } from '@acs/media';
 import { loadConfig, loadEnvFile } from '../services/api/src/config';
 import { openDatabase } from '../services/api/src/db';
-import { createExtractAudioHandler } from '../services/api/src/jobs/extract-audio';
-import { JobRunner } from '../services/api/src/jobs/runner';
 import { createLogger } from '../services/api/src/logger';
 import { importRecording } from '../services/api/src/recordings/import';
 import { JobRepository, RecordingRepository } from '../services/api/src/recordings/repository';
-import { ensureStorageLayout } from '../services/api/src/storage';
+import { createServices } from '../services/api/src/services';
+import { ensureStorageLayout } from '../services/api/src/storage/layout';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -50,7 +49,7 @@ async function main() {
   loadEnvFile();
   const config = loadConfig(process.env);
   await ensureStorageLayout(config.paths);
-  const db = openDatabase(config.paths.database);
+  const db = openDatabase(config.paths.database, undefined, { storageDir: config.paths.storage });
   // En CLI, seuls les avertissements s'affichent (sauf LOG_LEVEL explicite) pour garder la progression lisible.
   const log = createLogger(process.env.LOG_LEVEL ? config : { ...config, logLevel: 'warn' });
   const ctx = { config, db, log };
@@ -93,38 +92,49 @@ async function main() {
 
     if (values['no-extract']) return 0;
 
-    const runner = new JobRunner(ctx, { extract_audio: createExtractAudioHandler(ctx) });
+    const { runner, derivatives, storage } = createServices(ctx);
     runner.recover();
+    await storage.removeStaleTempFiles();
     process.once('SIGINT', () => {
       console.log('\nInterruption demandée…');
       void runner.stop();
     });
 
-    const { job } = runner.enqueue(recording.id, 'extract_audio');
+    const request = derivatives.requestTranscriptionAudio(recording.id);
     const jobs = new JobRepository(db);
     const started = Date.now();
+    if (request.status === 'ready')
+      console.log('\nAudio de transcription déjà disponible (cache).');
     const timer = setInterval(() => {
-      const j = jobs.get(job.id);
-      if (j?.status === 'running') {
+      const running = request.jobs.map((j) => jobs.get(j.id)).find((j) => j?.status === 'running');
+      if (running) {
         process.stdout.write(
-          `\r  extraction… ${(j.progress * 100).toFixed(1)} %  (${Math.round((Date.now() - started) / 1000)} s)`,
+          `\r  extraction… ${(running.progress * 100).toFixed(1)} %  (${Math.round((Date.now() - started) / 1000)} s)`,
         );
       }
     }, 500);
     await runner.idle();
     clearInterval(timer);
 
-    const final = jobs.get(job.id)!;
-    console.log(
-      `\n\nExtraction : ${final.status}${final.error ? ` — ${final.error.code} : ${final.error.message}` : ''}`,
-    );
-    const after = new RecordingRepository(db).get(recording.id)!;
-    for (const t of after.audioTracks.filter((x) => x.extracted)) {
+    const finals = request.jobs.map((j) => jobs.get(j.id)!);
+    for (const f of finals) {
       console.log(
-        `  piste ${t.audioIndex + 1} (${t.role}) → ${t.extracted!.path} [${fmtDuration(t.extracted!.durationSec)}]`,
+        `\n\nTraitement ${f.type} : ${f.status}${f.error ? ` — ${f.error.code} : ${f.error.message}` : ''}`,
+      );
+    }
+    console.log('\nFichiers dérivés :');
+    const after = new RecordingRepository(db).get(recording.id)!;
+    for (const d of derivatives.repo.listForRecording(recording.id)) {
+      const track = after.audioTracks.find((t) => t.audioIndex === d.audioIndex);
+      console.log(
+        `  ${d.kind.padEnd(20)} piste ${(d.audioIndex ?? 0) + 1} (${track?.role ?? '?'})  ` +
+          `${(d.sizeBytes / 1e6).toFixed(1)} Mo  ${d.durationMs === null ? '' : fmtDuration(d.durationMs / 1000)}  → ${derivatives.abs(d.relPath)}`,
       );
     }
     console.log(`  durée totale : ${Math.round((Date.now() - started) / 1000)} s`);
+    const final = {
+      status: finals.every((f) => f.status === 'succeeded') ? 'succeeded' : 'failed',
+    };
     return final.status === 'succeeded' ? 0 : 1;
   } finally {
     db.close();

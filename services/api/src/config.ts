@@ -39,6 +39,9 @@ const EnvSchema = z.object({
         .filter(Boolean),
     )
     .pipe(z.array(TrackRoleSchema).min(1)),
+  CACHE_MAX_GB: z.coerce.number().positive().max(10_000).default(30),
+  CLIP_WINDOW_MARGIN_SEC: z.coerce.number().int().min(0).max(600).default(30),
+  CLIP_WINDOW_GRID_SEC: z.coerce.number().int().min(1).max(600).default(30),
 });
 
 export interface AppConfig {
@@ -59,6 +62,8 @@ export interface AppConfig {
   tools: { ffmpeg: string; ffprobe: string; python: string };
   whisper: { model: string; device: 'cuda' | 'cpu'; computeType: string; language: string };
   audioTrackRoles: TrackRole[];
+  cache: { maxBytes: number };
+  clipWindow: { marginMs: number; gridMs: number };
 }
 
 export function defaultPythonPath(rootDir: string, platform: NodeJS.Platform = process.platform) {
@@ -106,6 +111,11 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
       language: e.WHISPER_LANGUAGE,
     },
     audioTrackRoles: e.AUDIO_TRACK_ROLES,
+    cache: { maxBytes: Math.round(e.CACHE_MAX_GB * 1024 ** 3) },
+    clipWindow: {
+      marginMs: e.CLIP_WINDOW_MARGIN_SEC * 1000,
+      gridMs: e.CLIP_WINDOW_GRID_SEC * 1000,
+    },
   };
 }
 

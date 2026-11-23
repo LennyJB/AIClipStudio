@@ -1,4 +1,4 @@
-import type { JobStatus, JobType, TrackRole, TrackRoleSource } from '@acs/shared';
+import type { JobLane, JobStatus, JobType, TrackRole, TrackRoleSource } from '@acs/shared';
 import type { MediaInfo, MediaWarning } from '@acs/media';
 import type { Db } from '../db';
 
@@ -14,7 +14,6 @@ export interface AudioTrackDto {
   channels: number | null;
   sampleRate: number | null;
   startOffsetSec: number;
-  extracted: { path: string; durationSec: number; at: string } | null;
 }
 
 export interface RecordingDto {
@@ -32,12 +31,21 @@ export interface RecordingDto {
   audioTracks: AudioTrackDto[];
 }
 
+export interface JobFile {
+  relPath: string;
+  usage: 'input' | 'output';
+}
+
 export interface JobDto {
   id: string;
-  recordingId: string;
   type: JobType;
+  lane: JobLane;
+  targetKey: string;
+  recordingId: string | null;
+  params: Record<string, unknown>;
   status: JobStatus;
   progress: number;
+  result: unknown;
   error: { code: string; message: string } | null;
   createdAt: string;
   startedAt: string | null;
@@ -51,7 +59,6 @@ interface RecordingRow {
   source_path: string;
   file_name: string;
   size_bytes: number;
-  mtime_ms: number;
   fingerprint: string;
   container: string;
   duration_sec: number | null;
@@ -72,17 +79,18 @@ interface TrackRow {
   channels: number | null;
   sample_rate: number | null;
   start_offset_sec: number;
-  extracted_path: string | null;
-  extracted_duration_sec: number | null;
-  extracted_at: string | null;
 }
 
 interface JobRow {
   id: string;
-  recording_id: string;
   type: string;
+  lane: string;
+  target_key: string;
+  recording_id: string | null;
+  params_json: string;
   status: string;
   progress: number;
+  result_json: string | null;
   error_code: string | null;
   error_message: string | null;
   created_at: string;
@@ -90,7 +98,7 @@ interface JobRow {
   finished_at: string | null;
 }
 
-const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+export const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
 
 function toTrack(r: TrackRow): AudioTrackDto {
   return {
@@ -103,20 +111,20 @@ function toTrack(r: TrackRow): AudioTrackDto {
     channels: r.channels,
     sampleRate: r.sample_rate,
     startOffsetSec: r.start_offset_sec,
-    extracted:
-      r.extracted_path && r.extracted_duration_sec !== null && r.extracted_at
-        ? { path: r.extracted_path, durationSec: r.extracted_duration_sec, at: r.extracted_at }
-        : null,
   };
 }
 
 function toJob(r: JobRow): JobDto {
   return {
     id: r.id,
-    recordingId: r.recording_id,
     type: r.type as JobType,
+    lane: r.lane as JobLane,
+    targetKey: r.target_key,
+    recordingId: r.recording_id,
+    params: JSON.parse(r.params_json) as Record<string, unknown>,
     status: r.status as JobStatus,
     progress: r.progress,
+    result: r.result_json ? (JSON.parse(r.result_json) as unknown) : null,
     error: r.error_code ? { code: r.error_code, message: r.error_message ?? '' } : null,
     createdAt: r.created_at,
     startedAt: r.started_at,
@@ -136,7 +144,7 @@ export interface NewRecording {
   tracks: { audioIndex: number; role: TrackRole; roleSource: TrackRoleSource }[];
 }
 
-/* ------------------------------ Repository ----------------------------- */
+/* ------------------------------ Enregistrements ------------------------ */
 
 export class RecordingRepository {
   constructor(private readonly db: Db) {}
@@ -231,27 +239,18 @@ export class RecordingRepository {
     return ids.map((r) => this.get(r.id)).filter((r): r is RecordingDto => r !== null);
   }
 
-  /** Change les rôles ; l'extraction d'une piste dont le rôle change est invalidée. */
+  /**
+   * Change les rôles des pistes. Les fichiers dérivés sont identifiés par l'index
+   * de piste (pas par le rôle) : ils restent valides.
+   */
   updateRoles(id: string, roles: readonly TrackRole[]): void {
-    const stmt = this.db.prepare(`
-      UPDATE audio_tracks SET role = ?, role_source = 'override',
-        extracted_path = CASE WHEN role = ? THEN extracted_path ELSE NULL END,
-        extracted_duration_sec = CASE WHEN role = ? THEN extracted_duration_sec ELSE NULL END,
-        extracted_at = CASE WHEN role = ? THEN extracted_at ELSE NULL END
-      WHERE recording_id = ? AND audio_index = ?`);
+    const stmt = this.db.prepare(
+      `UPDATE audio_tracks SET role = ?, role_source = 'override' WHERE recording_id = ? AND audio_index = ?`,
+    );
     this.db.transaction(() => {
-      roles.forEach((role, i) => stmt.run(role, role, role, role, id, i));
+      roles.forEach((role, i) => stmt.run(role, id, i));
       this.db.prepare(`UPDATE recordings SET updated_at = ${NOW} WHERE id = ?`).run(id);
     })();
-  }
-
-  setTrackExtracted(id: string, audioIndex: number, filePath: string, durationSec: number): void {
-    this.db
-      .prepare(
-        `UPDATE audio_tracks SET extracted_path = ?, extracted_duration_sec = ?, extracted_at = ${NOW}
-         WHERE recording_id = ? AND audio_index = ?`,
-      )
-      .run(filePath, durationSec, id, audioIndex);
   }
 
   /** Renseigne la durée déduite de l'audio quand le conteneur ne la fournit pas. */
@@ -265,14 +264,48 @@ export class RecordingRepository {
   }
 }
 
+/* ------------------------------ Traitements ---------------------------- */
+
+export interface NewJob {
+  id: string;
+  type: JobType;
+  lane: JobLane;
+  targetKey: string;
+  recordingId: string | null;
+  params: Record<string, unknown>;
+  files: readonly JobFile[];
+}
+
 export class JobRepository {
   constructor(private readonly db: Db) {}
 
-  create(id: string, recordingId: string, type: JobType): JobDto {
-    this.db
-      .prepare(`INSERT INTO jobs (id, recording_id, type, status) VALUES (?, ?, ?, 'queued')`)
-      .run(id, recordingId, type);
-    return this.get(id)!;
+  /**
+   * Crée un traitement, sauf si un traitement actif a déjà la même clé de cible :
+   * il est alors renvoyé (déduplication). Atomique.
+   */
+  createOrGetActive(job: NewJob): { job: JobDto; created: boolean } {
+    return this.db.transaction(() => {
+      const active = this.findActiveByTarget(job.targetKey);
+      if (active) return { job: active, created: false };
+      this.db
+        .prepare(
+          `INSERT INTO jobs (id, type, lane, target_key, recording_id, params_json, status)
+           VALUES (?, ?, ?, ?, ?, ?, 'queued')`,
+        )
+        .run(
+          job.id,
+          job.type,
+          job.lane,
+          job.targetKey,
+          job.recordingId,
+          JSON.stringify(job.params),
+        );
+      const insertFile = this.db.prepare(
+        'INSERT OR IGNORE INTO job_files (job_id, rel_path, usage) VALUES (?, ?, ?)',
+      );
+      for (const f of job.files) insertFile.run(job.id, f.relPath, f.usage);
+      return { job: this.get(job.id)!, created: true };
+    })();
   }
 
   get(id: string): JobDto | null {
@@ -283,25 +316,24 @@ export class JobRepository {
   listForRecording(recordingId: string): JobDto[] {
     return (
       this.db
-        .prepare('SELECT * FROM jobs WHERE recording_id = ? ORDER BY created_at DESC')
+        .prepare('SELECT * FROM jobs WHERE recording_id = ? ORDER BY created_at DESC, rowid DESC')
         .all(recordingId) as JobRow[]
     ).map(toJob);
   }
 
-  findActive(recordingId: string, type: JobType): JobDto | null {
+  findActiveByTarget(targetKey: string): JobDto | null {
     const row = this.db
-      .prepare(
-        `SELECT * FROM jobs WHERE recording_id = ? AND type = ? AND status IN ('queued','running')
-         ORDER BY created_at LIMIT 1`,
-      )
-      .get(recordingId, type) as JobRow | undefined;
+      .prepare(`SELECT * FROM jobs WHERE target_key = ? AND status IN ('queued','running')`)
+      .get(targetKey) as JobRow | undefined;
     return row ? toJob(row) : null;
   }
 
-  nextQueued(): JobDto | null {
+  nextQueued(lane: JobLane): JobDto | null {
     const row = this.db
-      .prepare(`SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at, rowid LIMIT 1`)
-      .get() as JobRow | undefined;
+      .prepare(
+        `SELECT * FROM jobs WHERE lane = ? AND status = 'queued' ORDER BY created_at, rowid LIMIT 1`,
+      )
+      .get(lane) as JobRow | undefined;
     return row ? toJob(row) : null;
   }
 
@@ -320,18 +352,25 @@ export class JobRepository {
   finish(
     id: string,
     status: Exclude<JobStatus, 'queued' | 'running'>,
-    error?: { code: string; message: string },
+    opts: { error?: { code: string; message: string }; result?: unknown } = {},
   ) {
     this.db
       .prepare(
-        `UPDATE jobs SET status = ?, finished_at = ${NOW}, error_code = ?, error_message = ?,
+        `UPDATE jobs SET status = ?, finished_at = ${NOW}, error_code = ?, error_message = ?, result_json = ?,
            progress = CASE WHEN ? = 'succeeded' THEN 1 ELSE progress END
          WHERE id = ?`,
       )
-      .run(status, error?.code ?? null, error?.message ?? null, status, id);
+      .run(
+        status,
+        opts.error?.code ?? null,
+        opts.error?.message ?? null,
+        opts.result === undefined ? null : JSON.stringify(opts.result),
+        status,
+        id,
+      );
   }
 
-  /** Au démarrage : tout travail « en cours » a été interrompu (crash, arrêt). */
+  /** Au démarrage : tout travail « en cours » ou « en attente » a été interrompu. */
   markStaleAsInterrupted(): number {
     return this.db
       .prepare(
@@ -340,5 +379,16 @@ export class JobRepository {
          WHERE status IN ('queued','running')`,
       )
       .run().changes;
+  }
+
+  /** Fichiers déclarés par les traitements actifs : le nettoyage ne doit pas y toucher. */
+  activeFilePaths(): Set<string> {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT f.rel_path FROM job_files f JOIN jobs j ON j.id = f.job_id
+         WHERE j.status IN ('queued','running')`,
+      )
+      .all() as { rel_path: string }[];
+    return new Set(rows.map((r) => r.rel_path));
   }
 }

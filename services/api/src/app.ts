@@ -2,17 +2,17 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { isAppError, type AppErrorCode } from '@acs/shared';
 import type { AppConfig } from './config';
 import type { Db } from './db';
-import { createExtractAudioHandler } from './jobs/extract-audio';
-import { JobRunner } from './jobs/runner';
 import { loggerOptions } from './logger';
 import { registerRecordingRoutes } from './routes/recordings';
+import { registerStorageRoutes } from './routes/storage';
+import { createServices, type Services } from './services';
 
 export interface AppDeps {
   config: AppConfig;
   db: Db;
 }
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 
 const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   NOT_FOUND: 404,
@@ -23,11 +23,11 @@ const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   INTERNAL: 500,
 };
 
-export function buildApp({ config, db }: AppDeps): { app: FastifyInstance; runner: JobRunner } {
+export function buildApp({ config, db }: AppDeps): { app: FastifyInstance; services: Services } {
   const app = Fastify({ logger: loggerOptions(config), bodyLimit: 64 * 1024 });
   const ctx = { config, db, log: app.log };
-  const runner = new JobRunner(ctx, { extract_audio: createExtractAudioHandler(ctx) });
-  runner.recover();
+  const services = createServices(ctx);
+  services.runner.recover();
 
   app.setErrorHandler((error, request, reply) => {
     if (isAppError(error)) {
@@ -65,10 +65,11 @@ export function buildApp({ config, db }: AppDeps): { app: FastifyInstance; runne
     };
   });
 
-  registerRecordingRoutes(app, ctx, runner);
+  registerRecordingRoutes(app, ctx, services);
+  registerStorageRoutes(app, services);
   app.addHook('onClose', async () => {
-    await runner.stop();
+    await services.runner.stop();
   });
 
-  return { app, runner };
+  return { app, services };
 }

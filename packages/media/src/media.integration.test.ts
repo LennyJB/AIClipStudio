@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  bestLagMs,
   createFixtures,
   FFMPEG,
   FFPROBE,
@@ -13,6 +14,7 @@ import {
 } from '../../../tests/helpers/media-fixtures';
 import { extractAudioTrack, extractAudioTracks } from './extract';
 import { fingerprintFile } from './fingerprint';
+import { computeWaveform, readWaveform } from './waveform';
 import { probeMedia } from './probe';
 
 const enabled = ffmpegAvailable();
@@ -178,6 +180,123 @@ describe.skipIf(!enabled)('FFmpeg réel', () => {
           inputPath: fx.obsMkv,
           audioIndex: 0,
           outputPath: path.join(fx.dir, 'evil.wav'),
+          allowedDir: out,
+        }),
+      ).rejects.toMatchObject({ code: 'UNSAFE_OUTPUT_PATH' });
+    });
+  });
+
+  describe('profils et plages source', () => {
+    it('extrait une fenêtre en 48 kHz stéréo (profil éditeur)', async () => {
+      const [res] = await extractAudioTracks({
+        ffmpegPath: FFMPEG,
+        inputPath: fx.obsMkv,
+        targets: [{ audioIndex: 2, outputPath: path.join(out, 'win', 'discord.wav') }],
+        allowedDir: out,
+        profile: 'editor',
+        range: { startMs: 1_000, endMs: 4_000 },
+      });
+      expect(res).toMatchObject({ sampleRate: 48000, channels: 2, bitsPerSample: 16 });
+      expect(res!.durationSec).toBeCloseTo(3, 1);
+    });
+
+    it('une fenêtre reste alignée sur le temps source (piste démarrant à 2 s)', async () => {
+      const [res] = await extractAudioTracks({
+        ffmpegPath: FFMPEG,
+        inputPath: fx.delayedMkv,
+        targets: [{ audioIndex: 0, outputPath: path.join(out, 'win', 'delayed.wav') }],
+        allowedDir: out,
+        range: { startMs: 1_500, endMs: 3_500 },
+      });
+      expect(res!.durationSec).toBeCloseTo(2, 1);
+      // [1,5 s ; 2 s[ source = silence ; à partir de 2 s source = son.
+      expect(wavRms(res!.outputPath, 0, 0.45)).toBeLessThan(0.001);
+      expect(wavRms(res!.outputPath, 0.6, 1.9)).toBeGreaterThan(0.05);
+    });
+
+    it('les échantillons d’une fenêtre correspondent à ceux de l’extraction complète', async () => {
+      const full = path.join(out, 'align', 'full.wav');
+      const win = path.join(out, 'align', 'win.wav');
+      await extractAudioTrack({
+        ffmpegPath: FFMPEG,
+        inputPath: fx.pulseMkv,
+        audioIndex: 0,
+        outputPath: full,
+        allowedDir: out,
+      });
+      await extractAudioTracks({
+        ffmpegPath: FFMPEG,
+        inputPath: fx.pulseMkv,
+        targets: [{ audioIndex: 0, outputPath: win }],
+        allowedDir: out,
+        range: { startMs: 3_250, endMs: 5_250 },
+      });
+      // Décalage mesuré par corrélation : doit rester sous 10 ms (< 1 image à 60 i/s).
+      expect(Math.abs(bestLagMs(full, win, 3_250))).toBeLessThanOrEqual(10);
+    });
+
+    it('refuse une plage invalide', async () => {
+      await expect(
+        extractAudioTracks({
+          ffmpegPath: FFMPEG,
+          inputPath: fx.obsMkv,
+          targets: [{ audioIndex: 0, outputPath: path.join(out, 'bad.wav') }],
+          allowedDir: out,
+          range: { startMs: 3_000, endMs: 3_000 },
+        }),
+      ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    });
+  });
+
+  describe('formes d’onde', () => {
+    it('calcule 100 points/s ; silence = 0, son = amplitude élevée', async () => {
+      const wav = path.join(out, 'wf', 'delayed.wav');
+      await extractAudioTrack({
+        ffmpegPath: FFMPEG,
+        inputPath: fx.delayedMkv,
+        audioIndex: 0,
+        outputPath: wav,
+        allowedDir: out,
+      });
+      const res = await computeWaveform({
+        wavPath: wav,
+        outputPath: path.join(out, 'wf', 'delayed.dat'),
+        allowedDir: out,
+      });
+      expect(res).toMatchObject({ sampleRate: 16000, samplesPerPoint: 160, pointsPerSecond: 100 });
+      expect(res.length).toBeGreaterThanOrEqual(599);
+      expect(res.length).toBeLessThanOrEqual(602);
+
+      const wf = await readWaveform(res.outputPath);
+      expect(wf.length).toBe(res.length);
+      const peak = (i: number) =>
+        Math.max(Math.abs(wf.data[i * 2]!), Math.abs(wf.data[i * 2 + 1]!));
+      expect(peak(50)).toBe(0); // 0,5 s : silence
+      expect(peak(300)).toBeGreaterThan(10); // 3 s : sinus lavfi (amplitude 1/8 ≈ 16 sur 127)
+      expect(existsSync(`${res.outputPath}.part`)).toBe(false);
+    });
+
+    it('fonctionne sur un WAV stéréo 48 kHz', async () => {
+      const [stem] = await extractAudioTracks({
+        ffmpegPath: FFMPEG,
+        inputPath: fx.obsMkv,
+        targets: [{ audioIndex: 1, outputPath: path.join(out, 'wf', 'stem.wav') }],
+        allowedDir: out,
+        profile: 'editor',
+      });
+      const res = await computeWaveform({
+        wavPath: stem!.outputPath,
+        outputPath: path.join(out, 'wf', 'stem.dat'),
+        allowedDir: out,
+      });
+      expect(res).toMatchObject({ sampleRate: 48000, samplesPerPoint: 480 });
+    });
+
+    it('n’écrit pas hors du dossier autorisé', async () => {
+      await expect(
+        computeWaveform({
+          wavPath: path.join(out, 'wf', 'stem.wav'),
+          outputPath: path.join(fx.dir, 'x.dat'),
           allowedDir: out,
         }),
       ).rejects.toMatchObject({ code: 'UNSAFE_OUTPUT_PATH' });

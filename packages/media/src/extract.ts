@@ -5,8 +5,30 @@ import { isSpawnNotFound, runProcess } from './process';
 import { assertSafeOutputPath } from './safe-path';
 import { readWavInfo, type WavInfo } from './wav';
 
-/** Format attendu par Faster-Whisper : mono, 16 kHz, PCM 16 bits. */
-export const TRANSCRIPTION_SAMPLE_RATE = 16_000;
+/** Profils de sortie audio. Ajouter un profil ne demande aucune autre modification. */
+export const AUDIO_PROFILES = {
+  /** Format attendu par Faster-Whisper : mono, 16 kHz, PCM 16 bits. */
+  transcription: { sampleRate: 16_000, channels: 1, codec: 'pcm_s16le' },
+  /** Pistes de montage pleine qualité (fenêtre de clip). */
+  editor: { sampleRate: 48_000, channels: 2, codec: 'pcm_s16le' },
+} as const;
+export type AudioProfileId = keyof typeof AUDIO_PROFILES;
+export type AudioProfile = (typeof AUDIO_PROFILES)[AudioProfileId];
+
+/** @deprecated utiliser AUDIO_PROFILES.transcription.sampleRate */
+export const TRANSCRIPTION_SAMPLE_RATE = AUDIO_PROFILES.transcription.sampleRate;
+
+/** Plage source [startMs, endMs[ en millisecondes (temps de l'original). */
+export interface SourceRange {
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * Version du générateur : à incrémenter dès que la commande de production change
+ * (filtres, format…). Elle entre dans la clé de cache : l'ancien cache est invalidé.
+ */
+export const AUDIO_GENERATOR_VERSION = 1;
 
 export interface ExtractTarget {
   /** Index de la piste parmi les pistes audio (0-based). */
@@ -19,6 +41,10 @@ export interface ExtractAudioOptions {
   inputPath: string;
   /** Pistes à extraire : toutes en UN SEUL passage (le fichier source n'est lu qu'une fois). */
   targets: readonly ExtractTarget[];
+  /** Profil de sortie (transcription par défaut). */
+  profile?: AudioProfileId;
+  /** Portion de l'original à extraire ; absent = tout l'enregistrement. */
+  range?: SourceRange | null;
   /** Dossier dans lequel l'écriture est autorisée (storage/processing). */
   allowedDir: string;
   /** Durée attendue, pour calculer la progression (peut être inconnue). */
@@ -32,11 +58,19 @@ export interface ExtractAudioResult extends WavInfo {
   outputPath: string;
 }
 
-const partPath = (p: string) => `${p}.part`;
+export const partPath = (p: string) => `${p}.part`;
+
+const msToSeconds = (ms: number) => (ms / 1000).toFixed(3);
 
 /** Construit les arguments FFmpeg (tableau, aucun shell). Exporté pour les tests. */
-export function buildExtractArgs(inputPath: string, targets: readonly ExtractTarget[]) {
+export function buildExtractArgs(
+  inputPath: string,
+  targets: readonly ExtractTarget[],
+  profileId: AudioProfileId = 'transcription',
+  range: SourceRange | null = null,
+) {
   if (!targets.length) throw new AppError('VALIDATION_FAILED', 'Aucune piste à extraire');
+  const profile = AUDIO_PROFILES[profileId];
   const args = [
     '-nostdin',
     '-hide_banner',
@@ -45,9 +79,23 @@ export function buildExtractArgs(inputPath: string, targets: readonly ExtractTar
     '-progress',
     'pipe:1',
     '-nostats',
-    '-i',
-    inputPath,
   ];
+  if (range) {
+    if (
+      !Number.isInteger(range.startMs) ||
+      !Number.isInteger(range.endMs) ||
+      range.startMs < 0 ||
+      range.endMs <= range.startMs
+    ) {
+      throw new AppError(
+        'VALIDATION_FAILED',
+        `Plage source invalide : ${range.startMs}–${range.endMs} ms`,
+      );
+    }
+    // Options d'entrée : recherche rapide puis précise ; le temps de sortie 0 = range.startMs.
+    args.push('-ss', msToSeconds(range.startMs), '-t', msToSeconds(range.endMs - range.startMs));
+  }
+  args.push('-i', inputPath);
   for (const t of targets) {
     if (!Number.isInteger(t.audioIndex) || t.audioIndex < 0) {
       throw new AppError('VALIDATION_FAILED', `Index de piste invalide : ${t.audioIndex}`);
@@ -65,11 +113,11 @@ export function buildExtractArgs(inputPath: string, targets: readonly ExtractTar
       '-af',
       'aresample=async=1:first_pts=0',
       '-ac',
-      '1',
+      String(profile.channels),
       '-ar',
-      String(TRANSCRIPTION_SAMPLE_RATE),
+      String(profile.sampleRate),
       '-c:a',
-      'pcm_s16le',
+      profile.codec,
       '-f',
       'wav',
       '-y', // ne concerne que le fichier temporaire .part (vérifié en amont)
@@ -100,8 +148,12 @@ export async function extractAudioTracks(opts: ExtractAudioOptions): Promise<Ext
   }
   await cleanup(opts.targets);
 
-  const total =
-    opts.expectedDurationSec && opts.expectedDurationSec > 0 ? opts.expectedDurationSec : null;
+  const range = opts.range ?? null;
+  const total = range
+    ? (range.endMs - range.startMs) / 1000
+    : opts.expectedDurationSec && opts.expectedDurationSec > 0
+      ? opts.expectedDurationSec
+      : null;
   const onLine = (line: string) => {
     const m = /^out_time_us=(\d+)$/.exec(line);
     if (!m || !opts.onProgress) return;
@@ -111,11 +163,15 @@ export async function extractAudioTracks(opts: ExtractAudioOptions): Promise<Ext
 
   let result;
   try {
-    result = await runProcess(opts.ffmpegPath, buildExtractArgs(opts.inputPath, opts.targets), {
-      captureStdout: false,
-      onStdoutLine: onLine,
-      ...(opts.signal ? { signal: opts.signal } : {}),
-    });
+    result = await runProcess(
+      opts.ffmpegPath,
+      buildExtractArgs(opts.inputPath, opts.targets, opts.profile ?? 'transcription', range),
+      {
+        captureStdout: false,
+        onStdoutLine: onLine,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      },
+    );
   } catch (err) {
     await cleanup(opts.targets);
     if (isSpawnNotFound(err)) {

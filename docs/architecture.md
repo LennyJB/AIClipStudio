@@ -92,10 +92,22 @@ charges (v1.2) et le plan technique du MVP (v1.0).
 | File de traitements en mémoire, persistée dans SQLite, **un traitement à la fois**                      | Pas de Redis/BullMQ pour un usage local mono-utilisateur ; FFmpeg et Whisper ne doivent pas se concurrencer. Au redémarrage, les traitements « en cours » deviennent « interrompus » (relançables).                                                                                                                              |
 | Rôles des pistes : imposés > piste unique > nom OBS > `AUDIO_TRACK_ROLES`                               | L'ordre des pistes peut varier selon la configuration OBS ; les noms de pistes sont la source la plus fiable.                                                                                                                                                                                                                    |
 
-## 7. Fondations complémentaires de l'étape 2 (conception validée le 23/11/2026, implémentation en attente)
+## 7. Fondations complémentaires de l'étape 2 (implémentées le 23/11/2026)
 
-> Cette section décrit le **comportement cible**. Le code actuel correspond encore à la section 6.
-> Elle complète la proposition `docs/proposition-editeur-memoire.md` (§ 10).
+> Implémentation : `packages/timeline`, `packages/media` (profils, plages, formes d'onde),
+> `services/api/src/derivatives`, `jobs/runner.ts`, `storage/`. Migration : `docs/migration-2-fondations.md`.
+> La section 6 reste valable, sauf : « un traitement à la fois » devient « un traitement à la
+> fois **par file** » (§ 7.2), et le type `extract_audio` devient `extract_transcription_audio`.
+
+**Mesures (environnement de développement, CPU 4 cœurs, sans GPU)** :
+
+| Mesure                                                                                                   | Résultat                                                               |
+| -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Écart entre l'extraction d'une portion et celle de l'enregistrement complet (corrélation d'échantillons) | **3,6 ms** ; test automatique à ≤ 10 ms                                |
+| Forme d'onde, 1 h d'audio 16 kHz                                                                         | 0,5 s ; 0,72 Mo                                                        |
+| Pistes de montage d'une fenêtre de 2 min (fichier 720p de 10 min)                                        | 0,8 s                                                                  |
+| Migration d'une base v1 réelle                                                                           | WAV repris sans réextraction ; seules les formes d'onde sont calculées |
+| Tests de propriétés du modèle temporel                                                                   | 5 000 montages aléatoires par propriété, sans échec                    |
 
 ### 7.1 Fichiers dérivés et cache
 
