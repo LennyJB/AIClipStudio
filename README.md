@@ -58,8 +58,10 @@ winget install Python.Python.3.13
 ```
 
 Rouvrez le terminal après installation pour que `ffmpeg`, `node` et `py` soient dans le `PATH`.
-`better-sqlite3` fournit un binaire précompilé pour Windows x64 : **aucun outil de compilation
-C++ n'est requis**.
+`better-sqlite3` télécharge un binaire précompilé pour Windows x64 lors de `npm install` (accès
+Internet requis) : **aucun outil de compilation C++ n'est nécessaire**. Ce point est vérifié à
+chaque PR par le job Windows de la CI. La version 13 a été écartée : sous Windows, elle exige
+Visual Studio à l'installation, même si son binaire est fourni.
 
 ---
 
