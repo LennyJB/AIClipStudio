@@ -1,0 +1,2 @@
+# Worker de transcription locale (étape 3)
+faster-whisper==1.2.1

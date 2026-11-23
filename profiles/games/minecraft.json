@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "minecraft",
+  "displayName": "Minecraft",
+  "context": "Jeu bac à sable : construction, exploration, survie. Rythme lent, beaucoup de discussions et de projets communs.",
+  "vocabulary": [
+    "creeper",
+    "nether",
+    "end",
+    "redstone",
+    "spawn",
+    "base",
+    "diamants",
+    "enchantement",
+    "mob"
+  ],
+  "notableEvents": [
+    "explosion de creeper",
+    "mort avec perte d'inventaire",
+    "construction terminée",
+    "découverte de diamants"
+  ],
+  "analysisHints": [
+    "Les moments clés naissent souvent de projets qui tournent mal ou de désaccords sur une construction",
+    "Les longues discussions peuvent contenir une chute tardive : conserver la mise en place"
+  ]
+}
