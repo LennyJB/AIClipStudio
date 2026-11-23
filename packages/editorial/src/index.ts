@@ -4,3 +4,5 @@
  * candidates, prompts, appel Claude API, validation stricte des propositions.
  */
 export * from './profiles';
+export * from './analysis';
+export * from './hash';
