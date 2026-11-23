@@ -243,3 +243,23 @@ def test_boucle_principale_json_par_ligne(monkeypatch, tmp_path):
     assert w.main() == 0
     messages = [json.loads(l) for l in stdout.getvalue().splitlines()]
     assert [m["type"] for m in messages] == ["ready", "error", "progress", "segment", "block_done"]
+
+
+def test_dll_nvidia_declarees_uniquement_sous_windows(tmp_path, monkeypatch):
+    import os
+
+    for name in ("cublas", "cudnn", "sans_bin"):
+        (tmp_path / "nvidia" / name).mkdir(parents=True)
+    (tmp_path / "nvidia" / "cublas" / "bin").mkdir()
+    (tmp_path / "nvidia" / "cudnn" / "bin").mkdir()
+    declared = []
+    monkeypatch.setattr(os, "add_dll_directory", declared.append, raising=False)
+    monkeypatch.setenv("PATH", "base")
+
+    added = w.register_nvidia_dll_dirs([str(tmp_path)], platform="win32")
+
+    expected = [str(tmp_path / "nvidia" / "cublas" / "bin"), str(tmp_path / "nvidia" / "cudnn" / "bin")]
+    assert added == expected
+    assert declared == expected
+    assert os.environ["PATH"].endswith("base")
+    assert w.register_nvidia_dll_dirs([str(tmp_path)], platform="linux") == []

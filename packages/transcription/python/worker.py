@@ -45,6 +45,33 @@ def log(message: str) -> None:
     print(f"[worker] {message}", file=sys.stderr, flush=True)
 
 
+def register_nvidia_dll_dirs(site_dirs: Optional[list] = None, platform: Optional[str] = None) -> list:
+    """
+    Windows : les DLL CUDA installées par pip (nvidia-cublas-cu12, nvidia-cudnn-cu12, …)
+    sont dans site-packages/nvidia/*/bin, hors du PATH. On les déclare pour que
+    CTranslate2 les trouve. Sans effet sur les autres systèmes. Renvoie les dossiers ajoutés.
+    """
+    import os
+    import site
+
+    if (platform or sys.platform) != "win32":
+        return []
+    roots = site_dirs if site_dirs is not None else [*site.getsitepackages(), site.getusersitepackages()]
+    added = []
+    for root in roots:
+        nvidia = os.path.join(root, "nvidia")
+        if not os.path.isdir(nvidia):
+            continue
+        for name in sorted(os.listdir(nvidia)):
+            bin_dir = os.path.join(nvidia, name, "bin")
+            if os.path.isdir(bin_dir):
+                if hasattr(os, "add_dll_directory"):
+                    os.add_dll_directory(bin_dir)
+                os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+                added.append(bin_dir)
+    return added
+
+
 # --------------------------------------------------------------------------- #
 # Lecture d'une tranche de WAV                                                #
 # --------------------------------------------------------------------------- #
@@ -364,6 +391,8 @@ def stdout_emit(message: dict) -> None:
 
 
 def main() -> int:
+    for path in register_nvidia_dll_dirs():
+        log(f"DLL NVIDIA : {path}")
     worker = Worker(
         emit=stdout_emit,
         model_factory=default_model_factory,
