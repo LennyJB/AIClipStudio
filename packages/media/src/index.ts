@@ -10,3 +10,4 @@ export * from './process';
 export * from './safe-path';
 export * from './tracks';
 export * from './wav';
+export * from './waveform';

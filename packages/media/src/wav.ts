@@ -6,6 +6,8 @@ export interface WavInfo {
   channels: number;
   bitsPerSample: number;
   dataBytes: number;
+  /** Position du premier échantillon dans le fichier. */
+  dataOffset: number;
   durationSec: number;
 }
 
@@ -20,7 +22,7 @@ export async function readWavInfo(filePath: string): Promise<WavInfo> {
       throw new AppError('MEDIA_EXTRACT_FAILED', `Fichier WAV invalide : ${filePath}`);
     }
     let offset = 12;
-    let fmt: Omit<WavInfo, 'dataBytes' | 'durationSec'> | null = null;
+    let fmt: Omit<WavInfo, 'dataBytes' | 'dataOffset' | 'durationSec'> | null = null;
     while (offset + 8 <= buf.length) {
       const id = buf.toString('ascii', offset, offset + 4);
       const chunkSize = buf.readUInt32LE(offset + 4);
@@ -36,7 +38,7 @@ export async function readWavInfo(filePath: string): Promise<WavInfo> {
         // Taille réelle sur disque (fiable même si l'en-tête n'a pas été finalisé).
         const dataBytes = Math.min(chunkSize, size - body);
         const bytesPerSecond = fmt.sampleRate * fmt.channels * (fmt.bitsPerSample / 8);
-        return { ...fmt, dataBytes, durationSec: dataBytes / bytesPerSecond };
+        return { ...fmt, dataBytes, dataOffset: body, durationSec: dataBytes / bytesPerSecond };
       }
       offset = body + chunkSize + (chunkSize % 2);
     }

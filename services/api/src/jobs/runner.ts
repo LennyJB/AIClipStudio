@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { AppError, isAppError, type JobType } from '@acs/shared';
+import { AppError, isAppError, type JobLane, type JobType } from '@acs/shared';
 import type { AppContext } from '../context';
-import { JobRepository, type JobDto } from '../recordings/repository';
+import { JobRepository, type JobDto, type JobFile } from '../recordings/repository';
 
 export interface JobHandlerContext {
   signal: AbortSignal;
@@ -9,29 +9,55 @@ export interface JobHandlerContext {
   reportProgress: (ratio: number) => void;
 }
 
-export type JobHandler = (job: JobDto, ctx: JobHandlerContext) => Promise<void>;
+/** Un handler renvoie le résultat du traitement (enregistré en JSON). */
+export type JobHandler = (job: JobDto, ctx: JobHandlerContext) => Promise<unknown>;
+
+export interface EnqueueSpec {
+  type: JobType;
+  lane: JobLane;
+  /** Deux traitements actifs ne peuvent pas avoir la même clé : le second se rattache au premier. */
+  targetKey: string;
+  recordingId?: string | null;
+  params: Record<string, unknown>;
+  /** Fichiers lus et écrits (chemins relatifs au stockage) : protégés du nettoyage. */
+  files?: readonly JobFile[];
+}
+
+export interface RunnerHooks {
+  onSucceeded?: (job: JobDto) => void | Promise<void>;
+}
 
 const PROGRESS_MIN_INTERVAL_MS = 1000;
+const LANES: readonly JobLane[] = ['heavy', 'interactive'];
+
+interface LaneState {
+  current: { id: string; controller: AbortController } | null;
+  loop: Promise<void> | null;
+}
 
 /**
- * File de travaux en mémoire, persistée dans SQLite.
- * Un seul travail à la fois : les traitements lourds (FFmpeg, Whisper)
- * ne doivent pas se concurrencer sur la machine.
+ * File de traitements persistée dans SQLite, avec deux files d'exécution
+ * indépendantes (un traitement à la fois dans chacune) :
+ *  - heavy       : transcription, extraction complète, rendu ;
+ *  - interactive : préparation de clips (pistes de montage, formes d'onde).
  */
 export class JobRunner {
   private readonly jobs: JobRepository;
-  private current: { id: string; controller: AbortController } | null = null;
-  private loop: Promise<void> | null = null;
+  private readonly lanes: Record<JobLane, LaneState> = {
+    heavy: { current: null, loop: null },
+    interactive: { current: null, loop: null },
+  };
   private stopped = false;
 
   constructor(
     private readonly ctx: AppContext,
     private readonly handlers: Partial<Record<JobType, JobHandler>>,
+    private readonly hooks: RunnerHooks = {},
   ) {
     this.jobs = new JobRepository(ctx.db);
   }
 
-  /** À appeler au démarrage : les travaux restés « en cours » sont marqués interrompus. */
+  /** À appeler au démarrage : les travaux restés actifs sont marqués interrompus. */
   recover(): number {
     const n = this.jobs.markStaleAsInterrupted();
     if (n)
@@ -39,68 +65,92 @@ export class JobRunner {
     return n;
   }
 
-  /** Ajoute un travail ; si le même est déjà actif pour cet enregistrement, le renvoie. */
-  enqueue(recordingId: string, type: JobType): { job: JobDto; created: boolean } {
-    if (!this.handlers[type])
-      throw new AppError('VALIDATION_FAILED', `Type de travail inconnu : ${type}`);
-    const active = this.jobs.findActive(recordingId, type);
-    if (active) return { job: active, created: false };
-    const job = this.jobs.create(randomUUID(), recordingId, type);
-    this.ctx.log.info({ jobId: job.id, recordingId, type }, 'Travail ajouté à la file');
-    this.kick();
-    return { job, created: true };
+  /** Ajoute un traitement, ou renvoie le traitement actif identique (même clé de cible). */
+  enqueue(spec: EnqueueSpec): { job: JobDto; created: boolean } {
+    if (!this.handlers[spec.type]) {
+      throw new AppError('VALIDATION_FAILED', `Type de traitement inconnu : ${spec.type}`);
+    }
+    if (this.stopped) throw new AppError('CONFLICT', 'Arrêt en cours : traitement refusé');
+    const res = this.jobs.createOrGetActive({
+      id: randomUUID(),
+      type: spec.type,
+      lane: spec.lane,
+      targetKey: spec.targetKey,
+      recordingId: spec.recordingId ?? null,
+      params: spec.params,
+      files: spec.files ?? [],
+    });
+    if (res.created) {
+      this.ctx.log.info(
+        { jobId: res.job.id, type: spec.type, lane: spec.lane, recordingId: spec.recordingId },
+        'Traitement ajouté à la file',
+      );
+      this.kick(spec.lane);
+    }
+    return res;
   }
 
   cancel(jobId: string): JobDto {
     const job = this.jobs.get(jobId);
-    if (!job) throw new AppError('NOT_FOUND', 'Travail introuvable');
+    if (!job) throw new AppError('NOT_FOUND', 'Traitement introuvable');
+    const current = this.lanes[job.lane].current;
     if (job.status === 'queued') {
-      this.jobs.finish(jobId, 'cancelled');
-    } else if (job.status === 'running' && this.current?.id === jobId) {
-      this.current.controller.abort();
+      this.jobs.finish(jobId, 'cancelled', {
+        error: { code: 'CANCELLED', message: 'Annulé par l’utilisateur' },
+      });
+    } else if (job.status === 'running' && current?.id === jobId) {
+      current.controller.abort();
     } else {
-      throw new AppError('CONFLICT', `Travail déjà terminé (${job.status})`);
+      throw new AppError('CONFLICT', `Traitement déjà terminé (${job.status})`);
     }
     return this.jobs.get(jobId)!;
   }
 
-  /** Attend que la file soit vide (utile aux tests et au CLI). */
+  /** Attend que les deux files soient vides (tests, CLI). */
   async idle(): Promise<void> {
-    while (this.loop) await this.loop;
+    for (;;) {
+      const loops = LANES.map((l) => this.lanes[l].loop).filter(
+        (p): p is Promise<void> => p !== null,
+      );
+      if (!loops.length) return;
+      await Promise.all(loops);
+    }
   }
 
-  /** Arrêt propre : le travail en cours est interrompu et marqué comme tel. */
+  /** Arrêt propre : les traitements en cours sont interrompus et marqués comme tels. */
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.current) this.current.controller.abort('shutdown');
+    for (const l of LANES) this.lanes[l].current?.controller.abort('shutdown');
     await this.idle();
   }
 
-  private kick() {
-    if (this.loop || this.stopped) return;
-    this.loop = this.drain().finally(() => {
-      this.loop = null;
-      // Un travail a pu être ajouté entre la dernière lecture de la file et cette ligne.
-      if (!this.stopped && this.jobs.nextQueued()) this.kick();
+  private kick(lane: JobLane) {
+    const state = this.lanes[lane];
+    if (state.loop || this.stopped) return;
+    state.loop = this.drain(lane).finally(() => {
+      state.loop = null;
+      // Un traitement a pu être ajouté entre la dernière lecture de la file et cette ligne.
+      if (!this.stopped && this.jobs.nextQueued(lane)) this.kick(lane);
     });
   }
 
-  private async drain() {
+  private async drain(lane: JobLane) {
     for (;;) {
       if (this.stopped) return;
-      const job = this.jobs.nextQueued();
+      const job = this.jobs.nextQueued(lane);
       if (!job) return;
       await this.execute(job);
     }
   }
 
   private async execute(job: JobDto) {
-    const handler = this.handlers[job.type]!;
+    const handler = this.handlers[job.type];
+    const state = this.lanes[job.lane];
     const controller = new AbortController();
-    this.current = { id: job.id, controller };
+    state.current = { id: job.id, controller };
     this.jobs.markRunning(job.id);
-    const log = { jobId: job.id, recordingId: job.recordingId, type: job.type };
-    this.ctx.log.info(log, 'Travail démarré');
+    const log = { jobId: job.id, recordingId: job.recordingId, type: job.type, lane: job.lane };
+    this.ctx.log.info(log, 'Traitement démarré');
     const started = Date.now();
 
     let lastWrite = 0;
@@ -112,28 +162,36 @@ export class JobRunner {
     };
 
     try {
-      await handler(job, { signal: controller.signal, reportProgress });
-      this.jobs.finish(job.id, 'succeeded');
-      this.ctx.log.info({ ...log, elapsedMs: Date.now() - started }, 'Travail terminé');
+      if (!handler) throw new AppError('VALIDATION_FAILED', `Aucun handler pour ${job.type}`);
+      const result = await handler(job, { signal: controller.signal, reportProgress });
+      this.jobs.finish(job.id, 'succeeded', { result: result ?? null });
+      this.ctx.log.info({ ...log, elapsedMs: Date.now() - started }, 'Traitement terminé');
+      try {
+        await this.hooks.onSucceeded?.(this.jobs.get(job.id)!);
+      } catch (err) {
+        this.ctx.log.error({ ...log, err }, 'Erreur après traitement (ignorée)');
+      }
     } catch (err) {
       if (controller.signal.aborted) {
         const shutdown = controller.signal.reason === 'shutdown';
         this.jobs.finish(job.id, shutdown ? 'interrupted' : 'cancelled', {
-          code: shutdown ? 'INTERRUPTED' : 'CANCELLED',
-          message: shutdown ? 'Interrompu par l’arrêt du serveur' : 'Annulé par l’utilisateur',
+          error: {
+            code: shutdown ? 'INTERRUPTED' : 'CANCELLED',
+            message: shutdown ? 'Interrompu par l’arrêt du serveur' : 'Annulé par l’utilisateur',
+          },
         });
-        this.ctx.log.warn(log, shutdown ? 'Travail interrompu' : 'Travail annulé');
+        this.ctx.log.warn(log, shutdown ? 'Traitement interrompu' : 'Traitement annulé');
       } else {
         const code = isAppError(err) ? err.code : 'INTERNAL';
         const message = err instanceof Error ? err.message : String(err);
-        this.jobs.finish(job.id, 'failed', { code, message });
+        this.jobs.finish(job.id, 'failed', { error: { code, message } });
         this.ctx.log.error(
           { ...log, err, code, details: isAppError(err) ? err.details : undefined },
-          'Travail en échec',
+          'Traitement en échec',
         );
       }
     } finally {
-      this.current = null;
+      state.current = null;
     }
   }
 }

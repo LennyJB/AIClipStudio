@@ -105,6 +105,21 @@ async function main() {
     add('Dossier storage/', 'fail', `non accessible en écriture : ${config.paths.storage}`);
   }
 
+  // Espace disque libre (les WAV de transcription : ≈ 115 Mo / h / piste)
+  try {
+    const { statfs } = await import('node:fs/promises');
+    const st = await statfs(config.paths.storage);
+    const freeGb = (st.bavail * st.bsize) / 1024 ** 3;
+    add(
+      'Espace disque (storage/)',
+      freeGb < 10 ? 'warn' : 'ok',
+      `${freeGb.toFixed(1)} Go libres${freeGb < 10 ? ' — prévoir au moins 10 Go' : ''}`,
+      false,
+    );
+  } catch {
+    add('Espace disque (storage/)', 'warn', 'impossible à déterminer', false);
+  }
+
   // Python + Faster-Whisper (requis à l'étape 3)
   if (!existsSync(config.tools.python)) {
     add(

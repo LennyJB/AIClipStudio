@@ -60,3 +60,20 @@ export function selectTranscriptionTracks(tracks: readonly ResolvedTrack[]): Res
   if (mix.length) return mix.slice(0, 1);
   return tracks.filter((t) => t.role === 'unknown').slice(0, 1);
 }
+
+/**
+ * Pistes de MONTAGE : voix séparées + jeu si une piste « jeu sans voix » existe
+ * (volumes réglables indépendamment). Sinon, le mix seul : on ne superpose jamais
+ * le mix aux voix séparées (les voix seraient doublées).
+ */
+export function selectEditorTracks(tracks: readonly ResolvedTrack[]): ResolvedTrack[] {
+  const voicesAndGame = tracks.filter(
+    (t) => t.role === 'mic' || t.role === 'discord' || t.role === 'game',
+  );
+  if (tracks.some((t) => t.role === 'game')) return voicesAndGame;
+  const mix = tracks.filter((t) => t.role === 'mix');
+  if (mix.length) return mix.slice(0, 1);
+  const voices = tracks.filter((t) => t.role === 'mic' || t.role === 'discord');
+  if (voices.length) return voices;
+  return tracks.filter((t) => t.role === 'unknown').slice(0, 1);
+}

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { AudioTrackInfo } from './probe';
-import { resolveTrackRoles, roleFromTitle, selectTranscriptionTracks } from './tracks';
+import {
+  resolveTrackRoles,
+  roleFromTitle,
+  selectEditorTracks,
+  selectTranscriptionTracks,
+} from './tracks';
 
 const track = (audioIndex: number, title: string | null = null): AudioTrackInfo => ({
   audioIndex,
@@ -82,5 +87,26 @@ describe('selectTranscriptionTracks', () => {
   });
   it('ne transcrit jamais une piste de jeu seule', () => {
     expect(selectTranscriptionTracks(r(['game']))).toEqual([]);
+  });
+});
+
+describe('selectEditorTracks', () => {
+  const r = (roles: string[]) =>
+    roles.map(
+      (role, audioIndex) => ({ audioIndex, role, roleSource: 'config' }) as const,
+    ) as Parameters<typeof selectEditorTracks>[0];
+  const idx = (roles: string[]) => selectEditorTracks(r(roles)).map((t) => t.audioIndex);
+
+  it('avec une piste jeu : micro + Discord + jeu, jamais le mix', () => {
+    expect(idx(['mix', 'mic', 'discord', 'game'])).toEqual([1, 2, 3]);
+  });
+  it('sans piste jeu : le mix seul (pas de voix doublées)', () => {
+    expect(idx(['mix', 'mic', 'discord'])).toEqual([0]);
+  });
+  it('MP4 de secours : le mix', () => {
+    expect(idx(['mix'])).toEqual([0]);
+  });
+  it('voix seules sans mix ni jeu : les voix', () => {
+    expect(idx(['mic', 'discord'])).toEqual([0, 1]);
   });
 });

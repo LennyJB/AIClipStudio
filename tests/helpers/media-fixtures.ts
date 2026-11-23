@@ -45,8 +45,12 @@ export interface Fixtures {
   truncatedMkv: string;
   /** Fichier non média renommé en .mkv. */
   garbageMkv: string;
-  /** 20 min d'audio, pour tester l'annulation. */
+  /** 60 min d'audio, pour tester l'annulation et les traitements longs. */
   longMkv: string;
+  /** MKV OBS à 4 pistes nommées : Tout / Micro / Discord / Jeu. */
+  gameMkv: string;
+  /** Impulsions de 0,5 s chaque seconde : repères pour mesurer l'alignement. */
+  pulseMkv: string;
 }
 
 export function createFixtures(): Fixtures {
@@ -133,14 +137,54 @@ export function createFixtures(): Fixtures {
     '-f',
     'lavfi',
     '-i',
-    'sine=f=440:d=1200:sample_rate=8000',
+    'sine=f=440:d=3600:sample_rate=8000',
     '-c:a',
     'pcm_s16le',
     p('long.mkv'),
   ]);
 
+  ff([
+    '-f',
+    'lavfi',
+    '-i',
+    "sine=f=300:d=10,volume='if(lt(mod(t,1),0.5),1,0)':eval=frame",
+    '-c:a',
+    'aac',
+    p('pulse.mkv'),
+  ]);
+
+  ff([
+    ...VIDEO,
+    ...sine(220, 6),
+    ...sine(440, 6),
+    ...sine(880, 6),
+    ...sine(330, 6),
+    '-map',
+    '0:v',
+    '-map',
+    '1:a',
+    '-map',
+    '2:a',
+    '-map',
+    '3:a',
+    '-map',
+    '4:a',
+    ...enc,
+    '-metadata:s:a:0',
+    'title=Tout',
+    '-metadata:s:a:1',
+    'title=Micro',
+    '-metadata:s:a:2',
+    'title=Discord',
+    '-metadata:s:a:3',
+    'title=Jeu',
+    p('game.mkv'),
+  ]);
+
   return {
     dir,
+    gameMkv: p('game.mkv'),
+    pulseMkv: p('pulse.mkv'),
     obsMkv: p('obs.mkv'),
     untitledMkv: p('untitled.mkv'),
     singleMp4: p('single.mp4'),
@@ -171,4 +215,38 @@ export function wavRms(
     n++;
   }
   return n ? Math.sqrt(sum / n) : 0;
+}
+
+function wavSamples(filePath: string): Int16Array {
+  const buf = readFileSync(filePath);
+  const start = buf.indexOf('data') + 8;
+  const copy = Buffer.from(buf.subarray(start, start + Math.floor((buf.length - start) / 2) * 2));
+  return new Int16Array(copy.buffer, copy.byteOffset, copy.length / 2);
+}
+
+/**
+ * Décalage (ms) qui aligne au mieux `windowWav` sur `fullWav` à partir de `offsetMs`
+ * (WAV mono 16 kHz). 0 = alignement parfait.
+ */
+export function bestLagMs(
+  fullWav: string,
+  windowWav: string,
+  offsetMs: number,
+  sampleRate = 16000,
+): number {
+  const full = wavSamples(fullWav);
+  const win = wavSamples(windowWav);
+  const base = Math.round((offsetMs / 1000) * sampleRate);
+  let best = 0;
+  let bestErr = Infinity;
+  const n = Math.min(win.length, sampleRate);
+  for (let lag = -800; lag <= 800; lag++) {
+    let err = 0;
+    for (let i = 0; i < n; i += 7) err += Math.abs((full[base + lag + i] ?? 0) - win[i]!);
+    if (err < bestErr) {
+      bestErr = err;
+      best = lag;
+    }
+  }
+  return (best / sampleRate) * 1000;
 }

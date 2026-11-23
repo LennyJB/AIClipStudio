@@ -6,9 +6,11 @@ propose des clips verticaux pour TikTok, YouTube Shorts et Instagram Reels.
 
 > **Principe directeur :** AI Clip Studio est un assistant monteur. Le créateur garde le dernier mot.
 
-**État actuel : étape 2 terminée.** Import d'enregistrements OBS (par référence), lecture des
-métadonnées, identification et extraction des pistes audio. La transcription et l'analyse ne sont
-pas encore implémentées. Voir la [feuille de route](#feuille-de-route).
+**État actuel : étape 2 terminée, fondations comprises.** Import d'enregistrements OBS (par
+référence), lecture des métadonnées, extraction audio pour Whisper et pour le futur éditeur,
+formes d'onde, cache des fichiers dérivés, file de traitements à deux files d'exécution, gestion
+de l'espace disque, modèle temporel du montage (`SourceMs` / `EditMs`). La transcription et
+l'analyse ne sont pas encore implémentées. Voir la [feuille de route](#feuille-de-route).
 
 ---
 
@@ -125,22 +127,23 @@ npm run dev
 
 ## Commandes
 
-| Commande                | Rôle                                                         |
-| ----------------------- | ------------------------------------------------------------ |
-| `npm run dev`           | API (rechargement auto) + interface Vite en parallèle        |
-| `npm run dev:api`       | API seule                                                    |
-| `npm run dev:web`       | Interface seule                                              |
-| `npm run start:api`     | API sans rechargement                                        |
-| `npm run build:web`     | Build de production de l'interface                           |
-| `npm run doctor`        | Diagnostic de l'environnement                                |
-| `npm run import -- <f>` | Importe un enregistrement et extrait ses pistes audio        |
-| `npm test`              | Tous les tests (unitaires + intégration)                     |
-| `npm run test:watch`    | Tests en mode surveillance                                   |
-| `npm run test:coverage` | Tests avec couverture                                        |
-| `npm run typecheck`     | Vérification TypeScript de tous les workspaces               |
-| `npm run lint`          | ESLint                                                       |
-| `npm run format`        | Formatage Prettier                                           |
-| `npm run check`         | typecheck + lint + format + tests (à lancer avant un commit) |
+| Commande                | Rôle                                                          |
+| ----------------------- | ------------------------------------------------------------- |
+| `npm run dev`           | API (rechargement auto) + interface Vite en parallèle         |
+| `npm run dev:api`       | API seule                                                     |
+| `npm run dev:web`       | Interface seule                                               |
+| `npm run start:api`     | API sans rechargement                                         |
+| `npm run build:web`     | Build de production de l'interface                            |
+| `npm run doctor`        | Diagnostic de l'environnement                                 |
+| `npm run import -- <f>` | Importe un enregistrement et extrait ses pistes audio         |
+| `npm run storage`       | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes` |
+| `npm test`              | Tous les tests (unitaires + intégration)                      |
+| `npm run test:watch`    | Tests en mode surveillance                                    |
+| `npm run test:coverage` | Tests avec couverture                                         |
+| `npm run typecheck`     | Vérification TypeScript de tous les workspaces                |
+| `npm run lint`          | ESLint                                                        |
+| `npm run format`        | Formatage Prettier                                            |
+| `npm run check`         | typecheck + lint + format + tests (à lancer avant un commit)  |
 
 ---
 
@@ -150,23 +153,26 @@ Toutes les variables sont lues **uniquement par le serveur** et validées au dé
 Une valeur invalide arrête le serveur avec un message qui nomme la variable, sans afficher sa
 valeur.
 
-| Variable               | Défaut                               | Description                           |
-| ---------------------- | ------------------------------------ | ------------------------------------- |
-| `ANTHROPIC_API_KEY`    | _(vide)_                             | Clé Claude API (secrète)              |
-| `CLAUDE_MODEL`         | `claude-opus-5-5`                    | Modèle utilisé pour l'analyse         |
-| `API_HOST`             | `127.0.0.1`                          | Interface d'écoute (local uniquement) |
-| `API_PORT`             | `4000`                               | Port de l'API                         |
-| `LOG_LEVEL`            | `info`                               | Niveau de logs                        |
-| `STORAGE_DIR`          | `./storage`                          | Racine du stockage local              |
-| `DATABASE_PATH`        | `./storage/db/ai-clip-studio.sqlite` | Base SQLite                           |
-| `FFMPEG_PATH`          | `ffmpeg`                             | Binaire FFmpeg                        |
-| `FFPROBE_PATH`         | `ffprobe`                            | Binaire ffprobe                       |
-| `PYTHON_PATH`          | _(auto : `.venv`)_                   | Python du worker de transcription     |
-| `WHISPER_MODEL`        | `large-v3`                           | Modèle Faster-Whisper                 |
-| `WHISPER_DEVICE`       | `cuda`                               | `cuda` ou `cpu`                       |
-| `WHISPER_COMPUTE_TYPE` | `float16`                            | `float16`, `int8_float16`, `int8`     |
-| `WHISPER_LANGUAGE`     | `fr`                                 | Langue principale des sessions        |
-| `AUDIO_TRACK_ROLES`    | `mix,mic,discord`                    | Rôle des pistes OBS, dans l'ordre     |
+| Variable                 | Défaut                               | Description                           |
+| ------------------------ | ------------------------------------ | ------------------------------------- |
+| `ANTHROPIC_API_KEY`      | _(vide)_                             | Clé Claude API (secrète)              |
+| `CLAUDE_MODEL`           | `claude-opus-5-5`                    | Modèle utilisé pour l'analyse         |
+| `API_HOST`               | `127.0.0.1`                          | Interface d'écoute (local uniquement) |
+| `API_PORT`               | `4000`                               | Port de l'API                         |
+| `LOG_LEVEL`              | `info`                               | Niveau de logs                        |
+| `STORAGE_DIR`            | `./storage`                          | Racine du stockage local              |
+| `DATABASE_PATH`          | `./storage/db/ai-clip-studio.sqlite` | Base SQLite                           |
+| `FFMPEG_PATH`            | `ffmpeg`                             | Binaire FFmpeg                        |
+| `FFPROBE_PATH`           | `ffprobe`                            | Binaire ffprobe                       |
+| `PYTHON_PATH`            | _(auto : `.venv`)_                   | Python du worker de transcription     |
+| `WHISPER_MODEL`          | `large-v3`                           | Modèle Faster-Whisper                 |
+| `WHISPER_DEVICE`         | `cuda`                               | `cuda` ou `cpu`                       |
+| `WHISPER_COMPUTE_TYPE`   | `float16`                            | `float16`, `int8_float16`, `int8`     |
+| `WHISPER_LANGUAGE`       | `fr`                                 | Langue principale des sessions        |
+| `AUDIO_TRACK_ROLES`      | `mix,mic,discord`                    | Rôle des pistes OBS, dans l'ordre     |
+| `CACHE_MAX_GB`           | `30`                                 | Taille max du cache des dérivés       |
+| `CLIP_WINDOW_MARGIN_SEC` | `30`                                 | Marge autour d'un clip                |
+| `CLIP_WINDOW_GRID_SEC`   | `30`                                 | Alignement des fenêtres de clip       |
 
 ---
 
@@ -179,18 +185,27 @@ valeur.
   tout traitement, et réimporter le même fichier ne crée pas de doublon.
 - Formats acceptés : **MKV** (enregistrements OBS) et **MP4** (fichier de secours à piste
   unique, traité comme un mix).
-- Les pistes **micro** et **Discord** sont extraites séparément (WAV mono 16 kHz, format
-  attendu par Faster-Whisper) dans `storage/processing/<id>/audio/`. La transcription séparée
-  distingue naturellement le créateur de ses coéquipiers. La piste « tout » n'est utilisée qu'en
-  l'absence de pistes de voix séparées.
 - Le WAV est **aligné sur la timeline de la vidéo** : un décalage de départ ou un trou dans
   l'audio (images perdues par OBS) est comblé par du silence, pour que les timestamps de la
-  transcription correspondent exactement à la vidéo.
+  transcription correspondent exactement à la vidéo. Écart mesuré entre l'extraction d'une
+  portion et celle de l'enregistrement complet : **3,6 ms** (moins d'un quart d'image à 60 i/s).
 - Un MKV d'un OBS qui a planté n'a souvent pas de durée lisible : il est accepté, et la durée est
   déduite de l'audio extrait.
 
-Espace disque : environ **115 Mo par heure et par piste** extraite (≈ 1,8 Go pour un stream de
-8 h avec micro + Discord).
+### Fichiers dérivés (produits à la demande, mis en cache)
+
+| Usage                   | Format                                          | Portée                   | Pistes                                               | Taille                |
+| ----------------------- | ----------------------------------------------- | ------------------------ | ---------------------------------------------------- | --------------------- |
+| Transcription (Whisper) | WAV 16 kHz mono                                 | Tout l'enregistrement    | micro + Discord (sinon le mix)                       | ≈ 115 Mo / h / piste  |
+| Montage (futur éditeur) | WAV 48 kHz stéréo                               | Fenêtre autour d'un clip | micro + Discord + jeu si piste « Jeu », sinon le mix | ≈ 11 Mo / min / piste |
+| Forme d'onde            | `.dat` (audiowaveform v1, 8 bits, 100 points/s) | Comme l'audio d'origine  | —                                                    | ≈ 0,7 Mo / h / piste  |
+
+- Une demande déjà satisfaite (fichier identique, **ou fenêtre plus large déjà préparée**) est
+  servie depuis le cache, sans traitement.
+- Les fenêtres de clip sont élargies de `CLIP_WINDOW_MARGIN_SEC` puis alignées sur
+  `CLIP_WINDOW_GRID_SEC` : deux clips proches partagent la même extraction.
+- Chaque fichier est rattaché à l'empreinte de l'original : si l'original change, ses anciens
+  dérivés ne sont plus jamais servis.
 
 ### Rôle des pistes audio
 
@@ -217,19 +232,53 @@ reprend là où elle s'était arrêtée.
 
 ### API
 
-| Méthode | Route                               | Rôle                                         |
-| ------- | ----------------------------------- | -------------------------------------------- |
-| GET     | `/api/games`                        | Profils de jeu disponibles                   |
-| POST    | `/api/recordings`                   | Importer `{ path, gameId?, trackRoles? }`    |
-| GET     | `/api/recordings`                   | Liste des enregistrements                    |
-| GET     | `/api/recordings/:id`               | Détail, pistes et historique des traitements |
-| PATCH   | `/api/recordings/:id/tracks`        | Corriger les rôles `{ roles: [...] }`        |
-| POST    | `/api/recordings/:id/extract-audio` | Lancer l'extraction (asynchrone, 202)        |
-| GET     | `/api/jobs/:id`                     | État et progression d'un traitement          |
-| POST    | `/api/jobs/:id/cancel`              | Annuler un traitement                        |
+| Méthode | Route                                     | Rôle                                                        |
+| ------- | ----------------------------------------- | ----------------------------------------------------------- |
+| GET     | `/api/games`                              | Profils de jeu disponibles                                  |
+| POST    | `/api/recordings`                         | Importer `{ path, gameId?, trackRoles? }`                   |
+| GET     | `/api/recordings`                         | Liste des enregistrements                                   |
+| GET     | `/api/recordings/:id`                     | Détail, fichiers dérivés et historique des traitements      |
+| PATCH   | `/api/recordings/:id/tracks`              | Corriger les rôles `{ roles: [...] }`                       |
+| POST    | `/api/recordings/:id/transcription-audio` | Audio pour Whisper (200 si prêt, 202 si en préparation)     |
+| POST    | `/api/recordings/:id/audio-stems`         | Pistes de montage `{ srcStartMs, srcEndMs }` (200 / 202)    |
+| POST    | `/api/derivatives/:id/waveform`           | Forme d'onde d'un fichier audio dérivé (200 / 202)          |
+| GET     | `/api/jobs/:id`                           | État et progression d'un traitement                         |
+| POST    | `/api/jobs/:id/cancel`                    | Annuler un traitement                                       |
+| GET     | `/api/storage`                            | Espace occupé (par usage, par enregistrement, disque libre) |
+| POST    | `/api/storage/clean`                      | Nettoyage `{ dryRun = true, evictAllCache = false }`        |
 
-Les traitements s'exécutent un par un. À l'arrêt du serveur, un traitement en cours est marqué
-« interrompu » ; le relancer ne refait pas les pistes déjà extraites.
+Traitements :
+
+- **Deux files d'exécution**, une tâche à la fois dans chacune : `heavy` (transcription, plus
+  tard le rendu) et `interactive` (préparation de clips). La préparation d'un clip n'attend donc
+  pas une transcription d'une heure.
+- **Déduplication** : deux demandes identiques partagent le même traitement. Plusieurs clips d'un
+  même enregistrement sont préparés indépendamment.
+- **Reprise** : à l'arrêt du serveur, un traitement en cours est marqué « interrompu ». Le
+  redemander ne refait que ce qui manque.
+
+### Espace disque
+
+```bash
+npm run storage
+```
+
+```bash
+npm run storage -- --clean
+```
+
+```bash
+npm run storage -- --clean --yes
+```
+
+- La première commande affiche le rapport. `--clean` **simule** le nettoyage ; `--yes` l'exécute ;
+  `--all-cache` vide aussi tout le cache, qui est régénérable.
+- Peuvent être supprimés : fichiers temporaires `.part`, fichiers orphelins de plus d'une heure,
+  cache au-delà de `CACHE_MAX_GB`, du moins récemment utilisé au plus récent. L'éviction est aussi
+  automatique après chaque traitement.
+- Ne sont **jamais** supprimés : les enregistrements originaux, les projets et exports, la base de
+  données, les dérivés épinglés, ni un fichier utilisé par un traitement en cours.
+- Le nettoyage n'agit que dans `storage/processing/`.
 
 ### Fichiers sur Google Drive
 
@@ -244,7 +293,7 @@ cache Drive occupe de l'espace sur `C:`). Préférez rendre le dossier **disponi
 
 Voir [`docs/architecture.md`](docs/architecture.md) pour le détail des choix techniques, et
 [`docs/proposition-editeur-memoire.md`](docs/proposition-editeur-memoire.md) pour l’évolution
-prévue (éditeur vidéo, mémoire éditoriale) — en attente de validation.
+prévue (éditeur vidéo, mémoire éditoriale), validée.
 
 ```
 AIClipStudio/
@@ -252,7 +301,8 @@ AIClipStudio/
 ├── services/api/              Serveur Fastify : config, logs, SQLite, orchestration
 ├── packages/
 │   ├── shared/                Schémas Zod et types communs (contrats de données), erreurs
-│   ├── media/                 FFmpeg/ffprobe : métadonnées, pistes, extraction (étape 2)
+│   ├── media/                 FFmpeg/ffprobe : métadonnées, pistes, extraction, formes d'onde
+│   ├── timeline/              Modèle du montage : SourceMs / EditMs, segments, conversions
 │   ├── transcription/         Pont Node ↔ Faster-Whisper
 │   │   └── python/            Worker Python + requirements.txt (étape 3)
 │   └── editorial/             Profils, fenêtres candidates, prompts, Claude (étape 4)
@@ -261,10 +311,10 @@ AIClipStudio/
 │   └── games/                 valorant, fortnite, minecraft, generic
 ├── storage/                   Données locales (ignorées par Git)
 │   ├── originals/             Enregistrements importés — jamais modifiés
-│   ├── processing/            Fichiers de travail (audio extrait, images, JSON)
+│   ├── processing/            Fichiers dérivés en cache (régénérables)
 │   ├── exports/               Rapports et futurs clips
 │   └── db/                    Base SQLite
-├── scripts/doctor.ts          Diagnostic de l'environnement
+├── scripts/                   doctor (diagnostic), import, storage (espace disque)
 ├── tests/                     Tests d'intégration transverses
 ├── .env.example
 └── README.md
@@ -290,14 +340,14 @@ Pipeline du MVP : **Import → Préparation → Transcription → Pré-analyse �
 
 ## Feuille de route
 
-| Étape | Contenu                                                                | État        |
-| ----- | ---------------------------------------------------------------------- | ----------- |
-| 1     | Analyse, architecture, squelette, outillage, documentation             | ✅ Terminée |
-| 2     | Import OBS, ffprobe, inventaire et extraction des pistes audio         | ✅ Terminée |
-| 3     | Transcription Faster-Whisper horodatée                                 | À faire     |
-| 4     | Profils éditoriaux, prompts, appel Claude, validation JSON, clips      | À faire     |
-| 5     | Interface de validation (liste, timestamps, lecture, accepter/refuser) | À faire     |
-| 6     | Évaluation sur de vrais enregistrements, ajustement des prompts        | À faire     |
+| Étape | Contenu                                                                              | État        |
+| ----- | ------------------------------------------------------------------------------------ | ----------- |
+| 1     | Analyse, architecture, squelette, outillage, documentation                           | ✅ Terminée |
+| 2     | Import OBS, extraction audio, dérivés et cache, file, espace disque, modèle temporel | ✅ Terminée |
+| 3     | Transcription Faster-Whisper horodatée                                               | À faire     |
+| 4     | Profils éditoriaux, prompts, appel Claude, validation JSON, clips                    | À faire     |
+| 5     | Interface de validation (liste, timestamps, lecture, accepter/refuser)               | À faire     |
+| 6     | Évaluation sur de vrais enregistrements, ajustement des prompts                      | À faire     |
 
 Le moteur de montage (FFmpeg + Remotion, 9:16, sous-titres, effets) viendra après validation
 du MVP.

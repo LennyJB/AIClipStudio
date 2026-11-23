@@ -3,9 +3,10 @@ import { z } from 'zod';
 import { listGameProfileIds } from '@acs/editorial';
 import { AppError, TrackRoleSchema } from '@acs/shared';
 import type { AppContext } from '../context';
-import type { JobRunner } from '../jobs/runner';
 import { importRecording } from '../recordings/import';
 import { JobRepository, RecordingRepository } from '../recordings/repository';
+import type { Services } from '../services';
+import { parse } from './validation';
 
 const ImportBody = z
   .object({
@@ -19,27 +20,24 @@ const ImportBody = z
   .strict();
 
 const RolesBody = z.object({ roles: z.array(TrackRoleSchema).min(1).max(16) }).strict();
+const StemsBody = z
+  .object({ srcStartMs: z.number().int().nonnegative(), srcEndMs: z.number().int().positive() })
+  .strict()
+  .refine((b) => b.srcEndMs > b.srcStartMs, 'srcEndMs doit être supérieur à srcStartMs');
 const IdParams = z.object({ id: z.uuid() });
+const AnyIdParams = z.object({ id: z.string().min(1).max(64) });
 
-function parse<T extends z.ZodType>(schema: T, data: unknown): z.output<T> {
-  const r = schema.safeParse(data);
-  if (!r.success) {
-    throw new AppError('VALIDATION_FAILED', 'Requête invalide', {
-      details: r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-    });
-  }
-  return r.data;
-}
-
-export function registerRecordingRoutes(app: FastifyInstance, ctx: AppContext, runner: JobRunner) {
+export function registerRecordingRoutes(app: FastifyInstance, ctx: AppContext, services: Services) {
   const recordings = new RecordingRepository(ctx.db);
   const jobs = new JobRepository(ctx.db);
+  const { runner, derivatives } = services;
 
   const getOr404 = (id: string) => {
     const rec = recordings.get(id);
     if (!rec) throw new AppError('NOT_FOUND', 'Enregistrement introuvable');
     return rec;
   };
+  const statusCode = (status: 'ready' | 'pending') => (status === 'ready' ? 200 : 202);
 
   app.get('/api/games', async () => ({
     games: await listGameProfileIds(ctx.config.paths.profiles),
@@ -55,7 +53,11 @@ export function registerRecordingRoutes(app: FastifyInstance, ctx: AppContext, r
 
   app.get('/api/recordings/:id', async (req) => {
     const { id } = parse(IdParams, req.params);
-    return { recording: getOr404(id), jobs: jobs.listForRecording(id) };
+    return {
+      recording: getOr404(id),
+      derivatives: derivatives.repo.listForRecording(id),
+      jobs: jobs.listForRecording(id),
+    };
   });
 
   app.patch('/api/recordings/:id/tracks', async (req) => {
@@ -65,24 +67,35 @@ export function registerRecordingRoutes(app: FastifyInstance, ctx: AppContext, r
     if (roles.length !== rec.audioTracks.length) {
       throw new AppError('VALIDATION_FAILED', `${rec.audioTracks.length} rôle(s) attendu(s)`);
     }
-    if (jobs.findActive(id, 'extract_audio')) {
-      throw new AppError('CONFLICT', 'Extraction en cours : attendez la fin ou annulez-la');
-    }
     recordings.updateRoles(id, roles);
     return { recording: getOr404(id) };
   });
 
-  app.post('/api/recordings/:id/extract-audio', async (req, reply) => {
+  /** WAV 16 kHz mono pour Whisper (tout l'enregistrement). 200 si prêt, 202 si en préparation. */
+  app.post('/api/recordings/:id/transcription-audio', async (req, reply) => {
     const { id } = parse(IdParams, req.params);
-    getOr404(id);
-    const { job, created } = runner.enqueue(id, 'extract_audio');
-    return reply.status(created ? 202 : 200).send({ job });
+    const res = derivatives.requestTranscriptionAudio(id);
+    return reply.status(statusCode(res.status)).send(res);
+  });
+
+  /** Pistes de montage 48 kHz stéréo autour d'un clip (fenêtre élargie et alignée). */
+  app.post('/api/recordings/:id/audio-stems', async (req, reply) => {
+    const { id } = parse(IdParams, req.params);
+    const { srcStartMs, srcEndMs } = parse(StemsBody, req.body);
+    const res = derivatives.requestAudioStems(id, srcStartMs, srcEndMs);
+    return reply.status(statusCode(res.status)).send(res);
+  });
+
+  app.post('/api/derivatives/:id/waveform', async (req, reply) => {
+    const { id } = parse(AnyIdParams, req.params);
+    const res = derivatives.requestWaveform(id);
+    return reply.status(statusCode(res.status)).send(res);
   });
 
   app.get('/api/jobs/:id', async (req) => {
     const { id } = parse(IdParams, req.params);
     const job = jobs.get(id);
-    if (!job) throw new AppError('NOT_FOUND', 'Travail introuvable');
+    if (!job) throw new AppError('NOT_FOUND', 'Traitement introuvable');
     return { job };
   });
 

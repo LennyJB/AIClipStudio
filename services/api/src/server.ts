@@ -2,14 +2,16 @@ import { isAppError } from '@acs/shared';
 import { buildApp } from './app';
 import { loadConfig, loadEnvFile } from './config';
 import { openDatabase } from './db';
-import { ensureStorageLayout } from './storage';
+import { ensureStorageLayout } from './storage/layout';
 
 async function main() {
   loadEnvFile();
   const config = loadConfig(process.env);
   await ensureStorageLayout(config.paths);
-  const db = openDatabase(config.paths.database);
-  const { app } = buildApp({ config, db });
+  const db = openDatabase(config.paths.database, undefined, { storageDir: config.paths.storage });
+  const { app, services } = buildApp({ config, db });
+  // Après recover() (dans buildApp) : aucun traitement n'est actif, les .part sont obsolètes.
+  await services.storage.removeStaleTempFiles();
 
   let closing = false;
   const shutdown = async (signal: string) => {
