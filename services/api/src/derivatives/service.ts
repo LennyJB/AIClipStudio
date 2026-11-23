@@ -8,7 +8,10 @@ import {
   computeWaveform,
   DEFAULT_POINTS_PER_SECOND,
   extractAudioTracks,
+  extractFrame,
   fingerprintFile,
+  FRAME_GENERATOR_VERSION,
+  type NormalizedRect,
   selectEditorTracks,
   selectTranscriptionTracks,
   WAVEFORM_GENERATOR_VERSION,
@@ -33,7 +36,8 @@ type Range = { startMs: number; endMs: number } | null;
 interface Spec {
   key: string;
   kind: DerivativeKind;
-  audioIndex: number;
+  /** null : dérivé sans piste audio (image). */
+  audioIndex: number | null;
   range: Range;
   params: Record<string, unknown>;
   paramsJson: string;
@@ -56,6 +60,7 @@ const KIND_DIRS: Record<DerivativeKind, string> = {
   waveform: 'waveforms',
   video_proxy: 'proxies',
   thumbnail: 'thumbnails',
+  frame: 'frames',
 };
 
 const PROFILE_BY_KIND = { audio_transcription: 'transcription', audio_stem: 'editor' } as const;
@@ -338,9 +343,117 @@ export class DerivativeService {
     return { job };
   }
 
+  /* --------------------------------- Images --------------------------------- */
+
+  /**
+   * Images à des instants précis (SourceMs), recadrées et masquées, mises en cache comme
+   * dérivés « frame ». L'original est vérifié UNE fois (présence et empreinte).
+   */
+  async ensureFrames(
+    recordingId: string,
+    requests: readonly FrameRequest[],
+    opts: { signal: AbortSignal; onProgress?: (done: number) => void },
+  ): Promise<DerivativeDto[]> {
+    const { rec, fp, sourcePath } = this.loadRecording(recordingId);
+    const width = rec.video?.width ?? null;
+    const height = rec.video?.height ?? null;
+    if (!width || !height)
+      throw new AppError('MEDIA_UNSUPPORTED', 'Aucune piste vidéo exploitable');
+    const specs = requests.map((r) => this.frameSpec(fp, recordingId, r));
+    const out: DerivativeDto[] = [];
+    let sourceChecked = false;
+    for (const [i, spec] of specs.entries()) {
+      if (opts.signal.aborted) throw new AppError('CANCELLED', 'Préparation annulée');
+      const found = this.findUsable(recordingId, fp, spec);
+      if (found) {
+        out.push(found);
+        opts.onProgress?.(i + 1);
+        continue;
+      }
+      if (!sourceChecked) {
+        await this.assertSourceUnchanged(sourcePath, fp);
+        sourceChecked = true;
+      }
+      const r = requests[i]!;
+      const res = await extractFrame({
+        ffmpegPath: this.ctx.config.tools.ffmpeg,
+        inputPath: sourcePath,
+        outputPath: this.abs(spec.relPath),
+        allowedDir: this.ctx.config.paths.processing,
+        atMs: r.atMs,
+        videoWidth: width,
+        videoHeight: height,
+        crop: r.crop,
+        masks: r.masks,
+        maxWidth: r.maxWidth,
+        signal: opts.signal,
+      });
+      out.push(
+        this.repo.upsert({
+          id: randomUUID(),
+          cacheKey: spec.key,
+          recordingId,
+          sourceFingerprint: fp,
+          kind: 'frame',
+          audioIndex: null,
+          range: spec.range,
+          paramsJson: spec.paramsJson,
+          generatorVersion: spec.version,
+          inputDerivativeId: null,
+          relPath: spec.relPath,
+          sizeBytes: res.sizeBytes,
+          durationMs: null,
+        }),
+      );
+      opts.onProgress?.(i + 1);
+    }
+    return out;
+  }
+
+  private frameSpec(fp: string, recordingId: string, r: FrameRequest): Spec {
+    const params = { region: r.region, crop: r.crop, masks: r.masks, maxWidth: r.maxWidth };
+    const range = { startMs: r.atMs, endMs: r.atMs + 1 };
+    const key = derivativeCacheKey({
+      sourceFingerprint: fp,
+      kind: 'frame',
+      audioIndex: null,
+      range,
+      params,
+      generatorVersion: FRAME_GENERATOR_VERSION,
+    });
+    return {
+      key,
+      kind: 'frame',
+      audioIndex: null,
+      range,
+      params,
+      paramsJson: canonicalJson(params),
+      version: FRAME_GENERATOR_VERSION,
+      relPath: `processing/${recordingId}/${KIND_DIRS.frame}/${key.slice(0, 16)}.jpg`,
+    };
+  }
+
+  /** L'original a-t-il été déplacé ou modifié depuis l'import ? */
+  async assertSourceUnchanged(sourcePath: string, fp: string): Promise<void> {
+    if (!existsSync(sourcePath))
+      throw new AppError('MEDIA_NOT_FOUND', `Original introuvable : ${sourcePath}`);
+    if ((await fingerprintFile(sourcePath)).hash !== fp) {
+      throw new AppError(
+        'MEDIA_SOURCE_CHANGED',
+        'L’original a été modifié depuis l’import : ré-importez-le',
+      );
+    }
+  }
+
+  /** Chemin de l'original et dimensions vidéo (aperçu de cadrage). */
+  sourceInfo(recordingId: string) {
+    const { rec, fp, sourcePath } = this.loadRecording(recordingId);
+    return { fp, sourcePath, width: rec.video?.width ?? null, height: rec.video?.height ?? null };
+  }
+
   /* -------------------------------- Handlers -------------------------------- */
 
-  handlers(): Record<Exclude<JobType, 'transcribe_recording'>, JobHandler> {
+  handlers(): Record<Exclude<JobType, 'transcribe_recording' | 'prepare_analysis'>, JobHandler> {
     return {
       extract_transcription_audio: (job, hctx) =>
         this.runAudioJob(job, hctx, 'audio_transcription'),
@@ -409,7 +522,7 @@ export class DerivativeService {
       const results = await extractAudioTracks({
         ffmpegPath: this.ctx.config.tools.ffmpeg,
         inputPath: sourcePath,
-        targets: todo.map((s) => ({ audioIndex: s.audioIndex, outputPath: this.abs(s.relPath) })),
+        targets: todo.map((s) => ({ audioIndex: s.audioIndex!, outputPath: this.abs(s.relPath) })),
         allowedDir: this.ctx.config.paths.processing,
         profile: PROFILE_BY_KIND[kind],
         range: p.range,
@@ -504,6 +617,14 @@ export class DerivativeService {
       durationMs: Math.round((res.length / res.pointsPerSecond) * 1000),
     });
   }
+}
+
+export interface FrameRequest {
+  atMs: number;
+  region: 'gameplay' | 'facecam';
+  crop: NormalizedRect;
+  masks: readonly NormalizedRect[];
+  maxWidth: number;
 }
 
 /** Un fichier de sortie et son temporaire sont protégés pendant le traitement. */

@@ -30,7 +30,9 @@ async function main() {
 
   await app.listen({ host: config.server.host, port: config.server.port });
   if (!config.claude.apiKey) {
-    app.log.warn('ANTHROPIC_API_KEY absente : l’analyse éditoriale (étape 4) sera indisponible.');
+    app.log.warn(
+      'ANTHROPIC_API_KEY absente : la préparation locale fonctionne ; les appels à Claude (étape 4b) seront indisponibles.',
+    );
   }
 }
 
