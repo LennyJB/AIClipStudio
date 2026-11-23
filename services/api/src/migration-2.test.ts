@@ -38,7 +38,9 @@ describe('migration 2', () => {
       `INSERT INTO jobs (id, recording_id, type, status, progress) VALUES ('j1', 'rec1', 'extract_audio', 'succeeded', 1)`,
     ).run();
 
-    expect(migrate(db, MIGRATIONS, { storageDir: storage })).toEqual([2]);
+    expect(migrate(db, MIGRATIONS, { storageDir: storage })).toEqual(
+      MIGRATIONS.slice(1).map((m) => m.version),
+    );
 
     const ders = db.prepare('SELECT * FROM media_derivatives').all() as Record<string, unknown>[];
     expect(ders).toHaveLength(1); // seul le WAV présent et dans le stockage est repris

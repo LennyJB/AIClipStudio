@@ -10,6 +10,7 @@ import { MIGRATIONS } from './db';
 const LOCKED: Record<number, string> = {
   1: 'b55784f6613fc6e331c1953ac6d4f841d81614980bdb302cc7be1ea647758dbb',
   2: 'f4dfc7ac93af0dcef25832912037b9c489ccda20b47e4368ae03a536296ed88a',
+  3: '73e699892fa982c610fb6e3565eee1951f3f1984ef6b02b2d1c7b2f8ec6c1409',
 };
 
 const fingerprint = (m: (typeof MIGRATIONS)[number]) =>

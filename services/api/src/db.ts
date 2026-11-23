@@ -214,6 +214,84 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    name: 'transcriptions',
+    sql: `
+      -- Une transcription = une piste d'un enregistrement, avec un modèle et des paramètres donnés.
+      CREATE TABLE transcriptions (
+        id                      TEXT PRIMARY KEY,
+        recording_id            TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        audio_index             INTEGER NOT NULL,
+        cache_key               TEXT NOT NULL,   -- audio d'entrée + modèle + paramètres
+        comparison_key          TEXT NOT NULL,   -- idem SANS le modèle : transcriptions comparables
+        input_audio_key         TEXT NOT NULL,   -- clé du WAV dérivé (16 kHz mono) utilisé
+        source_fingerprint      TEXT NOT NULL,
+        engine                  TEXT NOT NULL DEFAULT 'faster-whisper',
+        engine_version          TEXT,
+        ctranslate2_version     TEXT,
+        model                   TEXT NOT NULL,
+        compute_type_requested  TEXT NOT NULL,
+        device_requested        TEXT NOT NULL CHECK (device_requested IN ('auto','cuda','cpu')),
+        params_json             TEXT NOT NULL,
+        status                  TEXT NOT NULL CHECK (status IN
+                                  ('pending','running','completed','failed','interrupted','cancelled')),
+        language                TEXT,
+        language_probability    REAL,            -- valeur BRUTE de Whisper (non calibrée)
+        language_source         TEXT CHECK (language_source IN ('detected','forced')),
+        audio_duration_ms       INTEGER,
+        checkpoint_ms           INTEGER NOT NULL DEFAULT 0 CHECK (checkpoint_ms >= 0),  -- SourceMs
+        segment_count           INTEGER NOT NULL DEFAULT 0,
+        processing_ms           INTEGER NOT NULL DEFAULT 0,  -- somme des blocs, hors chargement
+        model_load_ms           INTEGER,
+        error_code              TEXT,
+        error_message           TEXT,
+        created_at              TEXT NOT NULL DEFAULT (${NOW}),
+        started_at              TEXT,
+        completed_at            TEXT,
+        updated_at              TEXT NOT NULL DEFAULT (${NOW})
+      );
+      CREATE INDEX transcriptions_recording_idx ON transcriptions(recording_id, audio_index, created_at);
+      CREATE INDEX transcriptions_cache_idx ON transcriptions(cache_key, status);
+
+      -- Un bloc enregistré : zone centrale traitée et périphérique RÉELLEMENT utilisé.
+      CREATE TABLE transcription_blocks (
+        transcription_id       TEXT NOT NULL REFERENCES transcriptions(id) ON DELETE CASCADE,
+        core_start_ms          INTEGER NOT NULL,
+        core_end_ms            INTEGER NOT NULL,
+        device                 TEXT NOT NULL CHECK (device IN ('cuda','cpu')),
+        compute_type           TEXT NOT NULL,
+        fallback_error         TEXT,      -- erreur CUDA ayant provoqué un repli CPU, le cas échéant
+        elapsed_ms             INTEGER NOT NULL,
+        audio_ms               INTEGER NOT NULL,
+        segments_kept          INTEGER NOT NULL,
+        segments_deduplicated  INTEGER NOT NULL,
+        created_at             TEXT NOT NULL DEFAULT (${NOW}),
+        PRIMARY KEY (transcription_id, core_start_ms),
+        CHECK (core_start_ms >= 0 AND core_start_ms < core_end_ms)
+      );
+
+      CREATE TABLE transcript_segments (
+        id                      INTEGER PRIMARY KEY,
+        transcription_id        TEXT NOT NULL REFERENCES transcriptions(id) ON DELETE CASCADE,
+        recording_id            TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        audio_index             INTEGER NOT NULL,
+        src_start_ms            INTEGER NOT NULL,   -- SourceMs
+        src_end_ms              INTEGER NOT NULL,   -- SourceMs
+        text                    TEXT NOT NULL,
+        avg_logprob             REAL NOT NULL,      -- métriques BRUTES de Whisper
+        no_speech_prob          REAL NOT NULL,
+        compression_ratio       REAL NOT NULL,
+        suspicion_score         REAL NOT NULL,      -- heuristique, PAS une probabilité
+        suspicion_reasons_json  TEXT NOT NULL DEFAULT '[]',
+        words_json              TEXT NOT NULL DEFAULT '[]',  -- mots en SourceMs + probabilité brute
+        CHECK (src_start_ms >= 0 AND src_start_ms < src_end_ms),
+        UNIQUE (transcription_id, src_start_ms, src_end_ms)
+      );
+      CREATE INDEX transcript_segments_chrono ON transcript_segments(recording_id, src_start_ms);
+      CREATE INDEX transcript_segments_run ON transcript_segments(transcription_id, src_start_ms);
+    `,
+  },
 ];
 
 export function openDatabase(
