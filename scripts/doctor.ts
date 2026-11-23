@@ -88,8 +88,9 @@ async function main() {
 
   // SQLite natif
   try {
-    const { default: Database } = await import('better-sqlite3');
-    const db = new Database(':memory:');
+    // Via le module de l'API : même résolution de dépendance que le serveur.
+    const { openDatabase } = await import('../services/api/src/db');
+    const db = openDatabase(':memory:');
     const v = db.prepare('SELECT sqlite_version() AS v').get() as { v: string };
     db.close();
     add('SQLite (better-sqlite3)', 'ok', `SQLite ${v.v}`);
