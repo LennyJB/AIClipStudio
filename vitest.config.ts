@@ -20,6 +20,13 @@ export default defineConfig({
       },
       {
         test: {
+          name: 'web',
+          include: ['apps/web/src/**/*.test.{ts,tsx}'],
+          environment: 'jsdom',
+        },
+      },
+      {
+        test: {
           name: 'integration',
           include: [
             'packages/*/src/**/*.integration.test.ts',
