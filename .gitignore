@@ -1,0 +1,41 @@
+# Dépendances
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Builds / caches
+dist/
+coverage/
+*.tsbuildinfo
+.vite/
+
+# Secrets — ne JAMAIS versionner
+.env
+.env.*
+!.env.example
+
+# Données locales : enregistrements, fichiers de travail, exports, base
+storage/**
+!storage/*/
+!storage/*/.gitkeep
+
+# Médias (sécurité supplémentaire hors de storage/)
+*.mkv
+*.mp4
+*.wav
+*.flac
+*.sqlite
+*.sqlite-*
+*.db
+
+# Logs
+logs/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

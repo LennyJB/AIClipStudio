@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "fortnite",
+  "displayName": "Fortnite",
+  "context": "Battle royale avec construction, en solo ou en escouade. Phases calmes (loot, rotation) entrecoupées de combats.",
+  "vocabulary": [
+    "zone",
+    "storm",
+    "loot",
+    "build",
+    "edit",
+    "box",
+    "third party",
+    "reboot",
+    "drop",
+    "top 1"
+  ],
+  "notableEvents": [
+    "victoire royale",
+    "élimination de l'équipe",
+    "mort dans la tempête",
+    "reboot d'un coéquipier"
+  ],
+  "analysisHints": [
+    "Les phases calmes de loot et de rotation contiennent souvent les meilleures conversations",
+    "Une mort absurde ou un plan qui échoue vaut souvent plus qu'un combat gagné"
+  ]
+}

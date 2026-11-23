@@ -1,0 +1,160 @@
+# Intégration continue d'AI Clip Studio.
+# Toute vérification obligatoire qui échoue fait échouer la CI.
+# Aucun secret n'est nécessaire : la CI n'appelle jamais de service payant (Claude API).
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'fix/**'
+      - 'refactor/**'
+      - 'test/**'
+      - 'docs/**'
+      - 'ci/**'
+      - 'chore/**'
+  workflow_dispatch:
+
+# Moindre privilège : lecture seule du dépôt.
+permissions:
+  contents: read
+
+# Une nouvelle exécution annule la précédente sur la même branche / PR (sauf sur main).
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  FORCE_COLOR: '1'
+
+jobs:
+  quality:
+    name: Qualité (TypeScript, lint, format)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Vérification TypeScript
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Formatage
+        run: npm run format:check
+
+  unit:
+    name: Tests unitaires
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:unit
+
+  migrations:
+    name: Migrations de base de données
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Migrations (base neuve, reprise de données, verrouillage des migrations publiées)
+        run: npm run test:migrations
+
+  integration:
+    name: Tests d'intégration (FFmpeg)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Installer FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+      - run: npm ci
+      - name: Tests d'intégration (échec si FFmpeg absent)
+        run: npm run test:integration
+        env:
+          REQUIRE_FFMPEG: '1'
+
+  build:
+    name: Build et démarrage de l'API
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Build de l'interface
+        run: npm run build:web
+      - name: Démarrage réel de l'API (/api/health)
+        run: npm run smoke
+
+  windows:
+    name: Windows (tests et démarrage)
+    # Machine de production du créateur : Windows. Exécuté sur les PR et sur main.
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Installer FFmpeg
+        run: |
+          choco install ffmpeg -y --no-progress
+          ffmpeg -version | Select-Object -First 1
+      - run: npm ci
+      - name: Tests unitaires
+        run: npm run test:unit
+      - name: Tests d'intégration
+        run: npm run test:integration
+        env:
+          REQUIRE_FFMPEG: '1'
+      - name: Démarrage réel de l'API
+        run: npm run smoke
+
+  secrets:
+    name: Recherche de secrets (gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.21.2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Installer gitleaks (somme de contrôle vérifiée)
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          curl -sSfL -o gitleaks.tar.gz "${base}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          awk -v f="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" '$2 == f { print $1 "  gitleaks.tar.gz" }' checksums.txt | sha256sum --check --strict
+          tar -xzf gitleaks.tar.gz gitleaks
+      - name: Analyse de tout l'historique
+        run: ./gitleaks detect --source . --config .gitleaks.toml --redact --verbose --no-banner

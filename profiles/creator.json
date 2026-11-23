@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "displayName": "Créateur (brouillon à personnaliser)",
+  "language": "fr",
+  "editorialPriorities": [
+    "Conversations et interactions entre coéquipiers",
+    "Humour, second degré et ironie",
+    "Situations absurdes et moments inattendus",
+    "Malentendus et disputes amusantes",
+    "Réactions spontanées",
+    "Histoires courtes avec une mise en place et une chute claires"
+  ],
+  "avoid": [
+    "Sélectionner un passage uniquement parce qu'il contient une élimination ou de l'action",
+    "Couper le contexte nécessaire à la compréhension d'une blague",
+    "Passages sans intérêt hors du contexte du stream"
+  ],
+  "categoryWeights": {
+    "humour": 1,
+    "interaction": 0.9,
+    "absurde": 0.9,
+    "malentendu": 0.85,
+    "dispute_amusante": 0.85,
+    "reaction": 0.8,
+    "inattendu": 0.8,
+    "performance": 0.4,
+    "autre": 0.3
+  },
+  "clipDuration": {
+    "minSeconds": 15,
+    "maxSeconds": 90,
+    "preferredLeadInSeconds": 8
+  },
+  "editingStyle": {
+    "defaultMode": "fidele",
+    "fidele": [
+      "Facecam et gameplay",
+      "Sous-titres lisibles et dynamiques",
+      "Coupures propres",
+      "Conservation du contexte",
+      "Mise en valeur des réactions"
+    ],
+    "enrichi": [
+      "Zooms comiques",
+      "Arrêts sur image",
+      "Inserts humoristiques",
+      "Effets sonores",
+      "Transitions",
+      "Effets visuels contextuels"
+    ],
+    "rules": [
+      "Ne jamais inventer de dialogue ni déformer les propos",
+      "Aucun effet gratuit : un effet doit renforcer réellement la blague",
+      "Ne jamais couper le contexte nécessaire à la compréhension",
+      "Le créateur valide toujours la sélection finale"
+    ]
+  }
+}

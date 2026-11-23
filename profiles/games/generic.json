@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "generic",
+  "displayName": "Profil générique",
+  "context": "Jeu vidéo non spécifié. Le gameplay sert de contexte ; les échanges entre joueurs sont le sujet principal.",
+  "vocabulary": [],
+  "notableEvents": [],
+  "analysisHints": [
+    "S'appuyer principalement sur la conversation et les réactions",
+    "Ne pas supposer de mécanique de jeu précise"
+  ]
+}

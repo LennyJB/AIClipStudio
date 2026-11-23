@@ -1,0 +1,52 @@
+{
+  "name": "ai-clip-studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Assistant de montage IA : détection de moments intéressants dans des enregistrements OBS.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "npm run dev -w @acs/api",
+    "dev:web": "npm run dev -w @acs/web",
+    "build:web": "npm run build -w @acs/web",
+    "start:api": "npm run start -w @acs/api",
+    "doctor": "tsx scripts/doctor.ts",
+    "import": "tsx scripts/import.ts",
+    "storage": "tsx scripts/storage.ts",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:migrations": "vitest run --project unit services/api/src/migration services/api/src/db.test.ts",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "smoke": "tsx scripts/smoke-api.ts",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build:web && npm run smoke"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^5.1.1",
+    "concurrently": "^10.0.7",
+    "eslint": "^10.15.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "fast-check": "^4.11.0",
+    "globals": "^17.14.0",
+    "prettier": "^3.10.1",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.73.0",
+    "vitest": "^5.1.1"
+  }
+}

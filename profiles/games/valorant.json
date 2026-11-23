@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "valorant",
+  "displayName": "Valorant",
+  "context": "FPS tactique en équipe de 5, manches d'attaque et de défense, pose et désamorçage de spike. Beaucoup de communication vocale entre coéquipiers.",
+  "vocabulary": [
+    "spike",
+    "plant",
+    "defuse",
+    "clutch",
+    "ace",
+    "eco",
+    "force buy",
+    "rotate",
+    "lurk",
+    "ult",
+    "site A",
+    "site B",
+    "mid"
+  ],
+  "notableEvents": [
+    "clutch",
+    "ace",
+    "défaite de manche serrée",
+    "erreur d'achat",
+    "spike désamorcé au dernier moment"
+  ],
+  "analysisHints": [
+    "Les calls ratés, contradictoires ou mal compris sont souvent plus drôles que les kills",
+    "Le contexte d'une manche (achats, plan annoncé) est parfois nécessaire pour comprendre la chute"
+  ]
+}
