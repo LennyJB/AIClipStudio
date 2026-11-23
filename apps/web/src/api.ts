@@ -116,3 +116,137 @@ export const api = {
     ),
   job: (jobId: string) => getJson<{ job: Job }>(`/api/jobs/${jobId}`),
 };
+
+/* ------------------------------------------------------------------ */
+/* Analyse éditoriale — étape 4a : préparation locale, aucun appel API */
+/* ------------------------------------------------------------------ */
+
+export type FramingStatus = 'none' | 'not_validated' | 'changed' | 'missing' | 'validated';
+
+export interface AnalysisSettings {
+  discordTextAllowed: boolean;
+  discordConsentNote: string | null;
+  discordConsentAt: string | null;
+  facecamAllowed: boolean;
+  framingProfileId: string | null;
+  framingValidatedAt: string | null;
+  framingStatus: FramingStatus;
+}
+
+export interface FramingProfile {
+  id: string;
+  displayName: string;
+  description?: string;
+  facecam: unknown;
+  masks: { label: string }[];
+}
+
+export interface FramingPreview {
+  atMs: number;
+  files: {
+    kind: 'annotated' | 'gameplay' | 'facecam';
+    name: string;
+    url: string;
+    width: number;
+    height: number;
+  }[];
+}
+
+export interface AnalysisSignal {
+  kind: string;
+  source: string;
+  startMs: number;
+  endMs: number;
+  speaker?: string;
+  value: number;
+}
+
+export interface AnalysisWindow {
+  id: string;
+  rank: number;
+  coreStartMs: number;
+  coreEndMs: number;
+  startMs: number;
+  endMs: number;
+  localScore: number;
+  signals: AnalysisSignal[];
+  frames: { label: string; derivativeId: string; atMs: number; region: string }[];
+  estimate: {
+    textTokens: number;
+    imageTokens: number;
+    typicalUsd?: number;
+    maxUsd?: number;
+  } | null;
+}
+
+export interface AnalysisEstimate {
+  pricingVersion: string;
+  models: { triage: string; deep: string };
+  effort: string;
+  budgetUsd: number;
+  assumptions: string[];
+  triage: { typicalUsd: number; maxUsd: number; chunks: unknown[] };
+  totals: { typicalUsd: number; maxUsd: number };
+  fit: { windowCount: number; typicalWindows: number; worstCaseWindows: number };
+}
+
+export interface AnalysisRun {
+  id: string;
+  status: string;
+  mode: string;
+  windowCount: number;
+  budgetUsd: number;
+  spentUsd: number;
+  estimate: AnalysisEstimate | null;
+  error: { code: string; message: string } | null;
+  createdAt: string;
+}
+
+export interface AnalysisManifest {
+  nothingSent: boolean;
+  tracks: { audioIndex: number; role: string; textTransmitted: boolean; reason: string }[];
+  privacy: { imagesSent: boolean; noImagesReason: string | null; pseudonymLabelsUsed: string[] };
+  triage: { scope: string; chunks: { index: number; startMs: number; endMs: number }[] };
+}
+
+const send = (method: 'POST' | 'PUT', body: unknown): RequestInit => ({
+  method,
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+export const analysisApi = {
+  settings: (recordingId: string) =>
+    getJson<{ settings: AnalysisSettings }>(`/api/recordings/${recordingId}/analysis-settings`),
+  updateSettings: (recordingId: string, patch: Record<string, unknown>) =>
+    getJson<{ settings: AnalysisSettings }>(
+      `/api/recordings/${recordingId}/analysis-settings`,
+      send('PUT', patch),
+    ),
+  framingProfiles: () => getJson<{ profiles: FramingProfile[] }>('/api/framing-profiles'),
+  preview: (recordingId: string, profileId: string, atMs?: number) =>
+    getJson<FramingPreview>(
+      `/api/recordings/${recordingId}/framing-preview`,
+      send('POST', atMs === undefined ? { profileId } : { profileId, atMs }),
+    ),
+  validateFraming: (recordingId: string, profileId: string) =>
+    getJson<{ settings: AnalysisSettings }>(
+      `/api/recordings/${recordingId}/framing-validation`,
+      send('POST', { profileId }),
+    ),
+  prepare: (recordingId: string, force = false) =>
+    getJson<{ status: 'ready' | 'pending'; run: AnalysisRun; job: Job | null }>(
+      `/api/recordings/${recordingId}/analyses`,
+      send('POST', { dryRun: true, force }),
+    ),
+  runs: (recordingId: string) =>
+    getJson<{ runs: AnalysisRun[] }>(`/api/recordings/${recordingId}/analyses`),
+  run: (runId: string) =>
+    getJson<{ run: AnalysisRun; windows: AnalysisWindow[] }>(`/api/analyses/${runId}`),
+  manifest: (runId: string) =>
+    getJson<{ manifest: AnalysisManifest }>(`/api/analyses/${runId}/manifest`),
+  windowPayload: (runId: string, rank: number) =>
+    getJson<{ text: string }>(`/api/analyses/${runId}/windows/${rank}/payload`),
+  triageChunk: (runId: string, index: number) =>
+    getJson<{ text: string }>(`/api/analyses/${runId}/triage/${index}`),
+};

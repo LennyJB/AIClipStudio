@@ -22,7 +22,7 @@ export function App() {
   return (
     <main className="container">
       <h1>AI Clip Studio</h1>
-      <p className="subtitle">Import, audio et transcription</p>
+      <p className="subtitle">Import, transcription et préparation de l’analyse éditoriale</p>
       <section className="card">
         <h2>État du serveur</h2>
         {state.kind === 'loading' && <p>Connexion à l’API…</p>}
@@ -37,7 +37,7 @@ export function App() {
               Claude API :{' '}
               {state.health.claudeConfigured
                 ? 'clé configurée'
-                : 'clé absente (requise à l’étape 4)'}
+                : 'clé absente (requise à l’étape 4b ; la préparation locale n’en a pas besoin)'}
             </li>
           </ul>
         )}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type Recording } from '../api';
 import { formatDuration } from '../format';
+import { AnalysisPanel } from './AnalysisPanel';
 import { TranscriptionPanel } from './TranscriptionPanel';
 
 /** Enregistrements importés (import : `npm run import -- "<chemin>"`) et leur transcription. */
@@ -50,6 +51,7 @@ export function Recordings() {
         )}
       </section>
       {current && <TranscriptionPanel key={current.id} recording={current} />}
+      {current && <AnalysisPanel key={`analysis-${current.id}`} recording={current} />}
     </>
   );
 }

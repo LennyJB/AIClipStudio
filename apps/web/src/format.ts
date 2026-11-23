@@ -67,3 +67,26 @@ export const JOB_STATUS_LABELS: Record<string, string> = {
   interrupted: 'interrompu',
   cancelled: 'annulé',
 };
+
+/** Libellés FACTUELS des signaux locaux (aucune émotion supposée). */
+export const SIGNAL_LABELS: Record<string, string> = {
+  turn_taking: 'changement d’interlocuteur',
+  simultaneous_speech: 'parole simultanée',
+  question: 'question transcrite',
+  transcribed_laughter: 'mot lié au rire transcrit',
+  interjection: 'interjection transcrite',
+  loudness_peak: 'niveau sonore élevé',
+  game_term: 'terme du jeu',
+  instruction_like: 'ressemble à une consigne',
+  doubtful_transcription: 'transcription douteuse',
+};
+
+export const FRAMING_STATUS_LABELS: Record<string, string> = {
+  none: 'aucun profil : aucune image envoyée',
+  not_validated: 'profil choisi mais non validé : aucune image envoyée',
+  changed: 'profil modifié depuis sa validation : à revalider',
+  missing: 'profil introuvable : aucune image envoyée',
+  validated: 'profil validé',
+};
+
+export const formatUsd = (n: number) => `${n.toFixed(n < 1 ? 3 : 2)} $`;

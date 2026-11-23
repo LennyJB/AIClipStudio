@@ -148,3 +148,40 @@ table.runs td {
 .warn {
   color: var(--warn);
 }
+
+fieldset {
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  margin: 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+}
+
+.previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.previews img {
+  border: 1px solid #d0d5dd;
+  max-width: 100%;
+  height: auto;
+}
+
+pre.payload {
+  white-space: pre-wrap;
+  max-height: 28rem;
+  overflow: auto;
+  background: #f6f7f9;
+  padding: 0.75rem;
+  border-radius: 6px;
+}
+
+button.link {
+  background: none;
+  border: none;
+  color: #1d4ed8;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
