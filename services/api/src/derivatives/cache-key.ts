@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export type DerivativeKind =
-  'audio_transcription' | 'audio_stem' | 'waveform' | 'video_proxy' | 'thumbnail';
+  'audio_transcription' | 'audio_stem' | 'waveform' | 'video_proxy' | 'thumbnail' | 'frame';
 
 export interface DerivativeSpec {
   sourceFingerprint: string;

@@ -3,10 +3,13 @@ import path from 'node:path';
 import {
   AppError,
   CreatorProfileSchema,
+  FramingProfileSchema,
   GameProfileSchema,
   type CreatorProfile,
+  type FramingProfile,
   type GameProfile,
 } from '@acs/shared';
+import { stableHash } from './hash';
 import type { z } from 'zod';
 
 export const GENERIC_GAME_PROFILE_ID = 'generic';
@@ -62,4 +65,42 @@ export async function listGameProfileIds(profilesDir: string): Promise<string[]>
     .filter((f) => f.endsWith('.json'))
     .map((f) => f.slice(0, -'.json'.length))
     .sort();
+}
+
+/** Profil de cadrage (profiles/framing/<id>.json). */
+export async function loadFramingProfile(
+  profilesDir: string,
+  framingId: string,
+): Promise<FramingProfile> {
+  if (!/^[a-z0-9-]+$/.test(framingId)) {
+    throw new AppError('PROFILE_NOT_FOUND', `Identifiant de cadrage invalide : "${framingId}"`);
+  }
+  const filePath = path.join(profilesDir, 'framing', `${framingId}.json`);
+  const profile = parseWith(FramingProfileSchema, await readJson(filePath), filePath);
+  if (profile.id !== framingId) {
+    throw new AppError(
+      'PROFILE_INVALID',
+      `L'id "${profile.id}" ne correspond pas au nom de fichier ${framingId}.json`,
+    );
+  }
+  return profile;
+}
+
+export async function listFramingProfiles(profilesDir: string): Promise<FramingProfile[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(path.join(profilesDir, 'framing'));
+  } catch {
+    return [];
+  }
+  const ids = entries
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => f.slice(0, -'.json'.length))
+    .sort();
+  return Promise.all(ids.map((id) => loadFramingProfile(profilesDir, id)));
+}
+
+/** Empreinte d'un profil validé : une modification du fichier invalide sa validation. */
+export function profileHash(profile: unknown): string {
+  return stableHash(profile);
 }

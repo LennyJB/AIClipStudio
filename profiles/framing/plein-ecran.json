@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "plein-ecran",
+  "displayName": "Plein écran, sans facecam",
+  "description": "Toute l'image est du gameplay et aucune facecam n'est incrustée. Vérifiez l'aperçu : si une facecam ou des pseudos apparaissent, utilisez ou créez un autre profil.",
+  "gameplay": { "x": 0, "y": 0, "w": 1, "h": 1 },
+  "facecam": null,
+  "masks": []
+}

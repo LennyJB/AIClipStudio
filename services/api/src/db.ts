@@ -292,6 +292,173 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX transcript_segments_run ON transcript_segments(transcription_id, src_start_ms);
     `,
   },
+  {
+    version: 4,
+    name: 'analysis_local',
+    sql: `
+      -- Les contraintes CHECK de SQLite ne se modifient pas : on reconstruit deux tables
+      -- (données, clés et index conservés). Les références vers les nouvelles tables sont
+      -- vérifiées à la fin de la transaction.
+      PRAGMA defer_foreign_keys = ON;
+
+      -- 1. Dérivés : nouveau type 'frame' (image extraite de la vidéo).
+      CREATE TABLE media_derivatives_v4 (
+        id                   TEXT PRIMARY KEY,
+        cache_key            TEXT NOT NULL UNIQUE,
+        recording_id         TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        source_fingerprint   TEXT NOT NULL,
+        kind                 TEXT NOT NULL CHECK (kind IN
+                               ('audio_transcription','audio_stem','waveform','video_proxy','thumbnail','frame')),
+        audio_index          INTEGER,
+        src_start_ms         INTEGER,
+        src_end_ms           INTEGER,
+        params_json          TEXT NOT NULL,
+        generator_version    INTEGER NOT NULL,
+        input_derivative_id  TEXT REFERENCES media_derivatives_v4(id) ON DELETE SET NULL,
+        rel_path             TEXT NOT NULL UNIQUE,
+        size_bytes           INTEGER NOT NULL,
+        duration_ms          INTEGER,
+        retention            TEXT NOT NULL DEFAULT 'cache' CHECK (retention IN ('cache','keep')),
+        created_at           TEXT NOT NULL DEFAULT (${NOW}),
+        last_used_at         TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK ((src_start_ms IS NULL) = (src_end_ms IS NULL)),
+        CHECK (src_start_ms IS NULL OR (src_start_ms >= 0 AND src_start_ms < src_end_ms))
+      );
+      INSERT INTO media_derivatives_v4 (id, cache_key, recording_id, source_fingerprint, kind,
+          audio_index, src_start_ms, src_end_ms, params_json, generator_version, input_derivative_id,
+          rel_path, size_bytes, duration_ms, retention, created_at, last_used_at)
+        SELECT id, cache_key, recording_id, source_fingerprint, kind, audio_index, src_start_ms,
+          src_end_ms, params_json, generator_version, input_derivative_id, rel_path, size_bytes,
+          duration_ms, retention, created_at, last_used_at
+        FROM media_derivatives;
+      DROP TABLE media_derivatives;
+      ALTER TABLE media_derivatives_v4 RENAME TO media_derivatives;
+      CREATE INDEX media_derivatives_lookup
+        ON media_derivatives(recording_id, kind, audio_index, generator_version);
+      CREATE INDEX media_derivatives_lru ON media_derivatives(retention, last_used_at);
+
+      -- 2. Traitements : nouvelle file 'analysis' (job_files, qui y fait référence, est
+      --    reconstruite d'abord pour que la suppression de l'ancienne table ne l'efface pas).
+      CREATE TABLE jobs_v4 (
+        id             TEXT PRIMARY KEY,
+        type           TEXT NOT NULL,
+        lane           TEXT NOT NULL CHECK (lane IN ('heavy','interactive','analysis')),
+        target_key     TEXT NOT NULL,
+        recording_id   TEXT REFERENCES recordings(id) ON DELETE CASCADE,
+        params_json    TEXT NOT NULL DEFAULT '{}',
+        status         TEXT NOT NULL CHECK (status IN
+                         ('queued','running','succeeded','failed','interrupted','cancelled')),
+        progress       REAL NOT NULL DEFAULT 0,
+        result_json    TEXT,
+        error_code     TEXT,
+        error_message  TEXT,
+        created_at     TEXT NOT NULL DEFAULT (${NOW}),
+        started_at     TEXT,
+        finished_at    TEXT
+      );
+      INSERT INTO jobs_v4 (id, type, lane, target_key, recording_id, params_json, status, progress,
+          result_json, error_code, error_message, created_at, started_at, finished_at)
+        SELECT id, type, lane, target_key, recording_id, params_json, status, progress,
+          result_json, error_code, error_message, created_at, started_at, finished_at
+        FROM jobs;
+      CREATE TABLE job_files_v4 (
+        job_id    TEXT NOT NULL REFERENCES jobs_v4(id) ON DELETE CASCADE,
+        rel_path  TEXT NOT NULL,
+        usage     TEXT NOT NULL CHECK (usage IN ('input','output')),
+        PRIMARY KEY (job_id, rel_path)
+      );
+      INSERT INTO job_files_v4 (job_id, rel_path, usage) SELECT job_id, rel_path, usage FROM job_files;
+      DROP TABLE job_files;
+      DROP TABLE jobs;
+      ALTER TABLE jobs_v4 RENAME TO jobs;
+      ALTER TABLE job_files_v4 RENAME TO job_files;
+      CREATE UNIQUE INDEX jobs_active_target ON jobs(target_key) WHERE status IN ('queued','running');
+      CREATE INDEX jobs_queue_idx ON jobs(lane, status, created_at);
+      CREATE INDEX jobs_recording_idx ON jobs(recording_id, created_at);
+      CREATE INDEX job_files_path_idx ON job_files(rel_path);
+
+      -- 3. Réglages d'analyse par enregistrement (confidentialité et cadrage).
+      CREATE TABLE recording_analysis_settings (
+        recording_id          TEXT PRIMARY KEY REFERENCES recordings(id) ON DELETE CASCADE,
+        -- Accord explicite pour transmettre le TEXTE de Discord et de la piste « tout »
+        -- (voix d'autres personnes). Jamais accordé par défaut.
+        discord_text_allowed  INTEGER NOT NULL DEFAULT 0 CHECK (discord_text_allowed IN (0,1)),
+        discord_consent_note  TEXT,
+        discord_consent_at    TEXT,
+        facecam_allowed       INTEGER NOT NULL DEFAULT 0 CHECK (facecam_allowed IN (0,1)),
+        framing_profile_id    TEXT,
+        framing_profile_hash  TEXT,      -- empreinte du profil AU MOMENT de la validation
+        framing_validated_at  TEXT,
+        updated_at            TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK (discord_text_allowed = 0 OR discord_consent_at IS NOT NULL),
+        CHECK (framing_validated_at IS NULL
+               OR (framing_profile_id IS NOT NULL AND framing_profile_hash IS NOT NULL))
+      );
+
+      -- 4. Analyses : une ligne par analyse (jamais écrasée ; une nouvelle analyse = une nouvelle ligne).
+      CREATE TABLE analysis_runs (
+        id                      TEXT PRIMARY KEY,
+        recording_id            TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        mode                    TEXT NOT NULL CHECK (mode IN ('dry_run','claude')),
+        status                  TEXT NOT NULL CHECK (status IN ('pending','running','completed',
+                                  'failed','interrupted','cancelled','budget_exhausted')),
+        stage                   TEXT,
+        pipeline_version        INTEGER NOT NULL,
+        prompt_version          TEXT,              -- null : aucun prompt (préparation locale)
+        pricing_version         TEXT NOT NULL,
+        memory_version          TEXT,              -- null : mémoire éditoriale non branchée
+        input_key               TEXT NOT NULL,     -- transcriptions + réglages + profils + versions
+        transcription_ids_json  TEXT NOT NULL,
+        config_json             TEXT NOT NULL,
+        privacy_json            TEXT NOT NULL,     -- réglages de confidentialité copiés au lancement
+        profiles_json           TEXT NOT NULL,     -- empreintes des profils utilisés
+        budget_usd              REAL NOT NULL CHECK (budget_usd > 0),
+        estimate_json           TEXT,
+        spent_usd               REAL NOT NULL DEFAULT 0 CHECK (spent_usd >= 0),
+        reserved_usd            REAL NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0),
+        output_rel_dir          TEXT,              -- contenu préparé, relatif au stockage
+        window_count            INTEGER NOT NULL DEFAULT 0,
+        error_code              TEXT,
+        error_message           TEXT,
+        created_at              TEXT NOT NULL DEFAULT (${NOW}),
+        started_at              TEXT,
+        completed_at            TEXT,
+        updated_at              TEXT NOT NULL DEFAULT (${NOW}),
+        -- Plafond strict garanti par la base : dépensé + réservé ne dépasse jamais le budget.
+        CHECK (spent_usd + reserved_usd <= budget_usd + 0.000001)
+      );
+      CREATE INDEX analysis_runs_recording_idx ON analysis_runs(recording_id, created_at);
+      CREATE INDEX analysis_runs_input_idx ON analysis_runs(input_key, status);
+
+      -- 5. Fenêtres candidates d'une analyse (temps en SourceMs).
+      CREATE TABLE analysis_windows (
+        id                TEXT PRIMARY KEY,
+        run_id            TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+        rank              INTEGER NOT NULL CHECK (rank >= 1),   -- 1 = la plus prioritaire
+        origin            TEXT NOT NULL CHECK (origin IN ('signals','triage','both')),
+        far_start_ms      INTEGER NOT NULL,   -- début du contexte lointain (texte seul)
+        src_start_ms      INTEGER NOT NULL,   -- fenêtre avec contexte proche
+        core_start_ms     INTEGER NOT NULL,   -- zone d'intérêt
+        core_end_ms       INTEGER NOT NULL,
+        src_end_ms        INTEGER NOT NULL,
+        local_score       REAL NOT NULL CHECK (local_score >= 0 AND local_score <= 1),
+        signals_json      TEXT NOT NULL,
+        frames_json       TEXT NOT NULL DEFAULT '[]',
+        payload_rel_path  TEXT,
+        estimate_json     TEXT,
+        status            TEXT NOT NULL CHECK (status IN
+                            ('prepared','pending','analyzed','failed','refused','truncated','skipped')),
+        cache_key         TEXT NOT NULL,
+        cost_usd          REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+        created_at        TEXT NOT NULL DEFAULT (${NOW}),
+        updated_at        TEXT NOT NULL DEFAULT (${NOW}),
+        UNIQUE (run_id, rank),
+        CHECK (far_start_ms >= 0 AND far_start_ms <= src_start_ms AND src_start_ms <= core_start_ms
+               AND core_start_ms < core_end_ms AND core_end_ms <= src_end_ms)
+      );
+      CREATE INDEX analysis_windows_run_idx ON analysis_windows(run_id, rank);
+    `,
+  },
 ];
 
 export function openDatabase(

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "exemple-facecam-bas-droite",
+  "displayName": "Exemple : facecam en bas à droite",
+  "description": "Exemple à adapter : copiez ce fichier, ajustez les zones d'après l'aperçu de VOTRE scène OBS, puis validez-le pour chaque enregistrement.",
+  "gameplay": { "x": 0, "y": 0, "w": 1, "h": 1 },
+  "facecam": { "x": 0.74, "y": 0.7, "w": 0.25, "h": 0.28 },
+  "masks": [
+    { "label": "Fil des éliminations (pseudos)", "x": 0.72, "y": 0.04, "w": 0.27, "h": 0.2 },
+    { "label": "Incrustation Discord", "x": 0.0, "y": 0.2, "w": 0.14, "h": 0.35 }
+  ]
+}
