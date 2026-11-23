@@ -64,6 +64,8 @@ export interface ComparisonGroup {
   audioIndex: number;
   role: string | null;
   transcriptions: Transcription[];
+  /** Faux : périphériques différents, durées non comparables. */
+  sameDevices: boolean;
 }
 
 export interface Job {

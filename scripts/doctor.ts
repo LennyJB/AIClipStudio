@@ -8,7 +8,18 @@ import { access, constants } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { mkdir } from 'node:fs/promises';
+import { parseArgs } from 'node:util';
+import { WhisperWorker, WORKER_SCRIPT } from '@acs/transcription';
 import { loadConfig, loadEnvFile, ROOT_DIR } from '../services/api/src/config';
+
+const { values: cli } = parseArgs({
+  options: {
+    /** Test d'inférence réel sur GPU (télécharge le modèle si nécessaire). */
+    gpu: { type: 'boolean', default: false },
+    'gpu-model': { type: 'string', default: 'tiny' },
+  },
+});
 
 const run = promisify(execFile);
 
@@ -160,6 +171,8 @@ async function main() {
     }
   }
 
+  if (cli.gpu) await gpuInferenceTest(config);
+
   const smi = await tryRun(
     'nvidia-smi',
     ['--query-gpu=name,driver_version,memory.total', '--format=csv,noheader'],
@@ -175,6 +188,73 @@ async function main() {
       : 'absente (requise à l’étape 4)',
     false,
   );
+}
+
+/**
+ * Inférence RÉELLE sur GPU : charge un modèle sur CUDA (sans repli CPU) et transcrit
+ * 3 s de bruit, VAD désactivée pour forcer l'encodeur (c'est là que cuBLAS/cuDNN sont chargés).
+ */
+async function gpuInferenceTest(config: ReturnType<typeof loadConfig>) {
+  const dir = path.join(config.paths.processing, 'doctor');
+  await mkdir(dir, { recursive: true });
+  const wav = path.join(dir, 'gpu-test.wav');
+  const gen = await tryRun(config.tools.ffmpeg, [
+    '-v',
+    'error',
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'anoisesrc=d=3:c=pink:r=16000:a=0.05',
+    '-ac',
+    '1',
+    '-c:a',
+    'pcm_s16le',
+    wav,
+  ]);
+  if (!gen.ok) {
+    add('Inférence GPU', 'fail', `génération de l'audio de test impossible : ${gen.out}`);
+    return;
+  }
+  const model = cli['gpu-model'] ?? 'tiny';
+  const quiet = { info() {}, warn() {}, error() {}, debug() {} };
+  let worker: WhisperWorker | undefined;
+  try {
+    worker = await WhisperWorker.start({
+      command: config.whisper.workerCommand ?? [config.tools.python, '-u', WORKER_SCRIPT],
+      log: quiet,
+      init: {
+        cmd: 'init',
+        model,
+        device: 'cuda',
+        computeType: config.whisper.computeType,
+        cpuFallback: false,
+        cpuComputeType: config.whisper.cpuComputeType,
+        downloadRoot: config.whisper.modelDir,
+        beamSize: 1,
+        batchSize: 0,
+        wordTimestamps: false,
+        hotwords: null,
+        vad: { ...config.whisper.vad, enabled: false },
+      },
+    });
+    const r = await worker.transcribe({ wavPath: wav, startMs: 0, endMs: 3000, language: 'fr' });
+    add(
+      'Inférence GPU',
+      r.device === 'cuda' ? 'ok' : 'fail',
+      r.device === 'cuda'
+        ? `réussie sur CUDA (${model}, ${r.computeType}, ${r.elapsedMs} ms pour 3 s, chargement ${worker.ready?.loadMs} ms)`
+        : `le calcul a tourné sur ${r.device}`,
+    );
+  } catch (err) {
+    add(
+      'Inférence GPU',
+      'fail',
+      `échec CUDA : ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    await worker?.close();
+  }
 }
 
 await main();

@@ -249,7 +249,15 @@ export function TranscriptionPanel({ recording, pollMs = 1000 }: Props) {
               className="runs"
               aria-label={`Comparaison ${g.audioIndex}`}
             >
-              <caption>{ROLE_LABELS[g.role ?? 'unknown'] ?? 'Piste'}</caption>
+              <caption>
+                {ROLE_LABELS[g.role ?? 'unknown'] ?? 'Piste'}
+                {!g.sameDevices && (
+                  <span className="warn small">
+                    {' '}
+                    — périphériques différents : durées non comparables
+                  </span>
+                )}
+              </caption>
               <thead>
                 <tr>
                   <th>Modèle</th>

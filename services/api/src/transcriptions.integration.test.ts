@@ -104,7 +104,7 @@ const getJob = async (id: string) =>
 const list = async (id: string) =>
   (await app.inject({ method: 'GET', url: `/api/recordings/${id}/transcriptions` })).json<{
     transcriptions: TranscriptionDto[];
-    comparisons: { audioIndex: number; transcriptions: TranscriptionDto[] }[];
+    comparisons: { audioIndex: number; transcriptions: TranscriptionDto[]; sameDevices: boolean }[];
   }>();
 
 const transcript = async (id: string, query = '') =>
@@ -510,6 +510,7 @@ describe.skipIf(!enabled)('Transcription (worker simulé)', () => {
     expect(comparisons.map((c) => c.audioIndex).sort()).toEqual([1, 2]);
     for (const g of comparisons) {
       expect(g.transcriptions.map((t) => t.model).sort()).toEqual(['large-v3', 'large-v3-turbo']);
+      expect(g.sameDevices).toBe(true);
       for (const t of g.transcriptions) {
         expect(t.devicesUsed.length).toBeGreaterThan(0);
         expect(t.processingMs).toBeGreaterThan(0);

@@ -263,6 +263,7 @@ describe('TranscriptionPanel', () => {
     expect(within(compare).getByText('×60')).toBeTruthy();
     expect(within(compare).getByText('×20')).toBeTruthy();
     expect(within(compare).getByText('CPU')).toBeTruthy();
+    expect(within(compare).getByText(/périphériques différents/)).toBeTruthy();
     fireEvent.click(
       within(compare)
         .getAllByRole('button', { name: 'Afficher' })

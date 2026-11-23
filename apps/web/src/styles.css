@@ -144,3 +144,7 @@ table.runs td {
   border-radius: 4px;
   padding: 0 4px;
 }
+
+.warn {
+  color: var(--warn);
+}

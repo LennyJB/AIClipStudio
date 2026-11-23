@@ -69,6 +69,11 @@ export interface ComparisonGroup {
   comparisonKey: string;
   /** Transcriptions comparables : même piste, même audio, mêmes paramètres hors modèle. */
   transcriptions: TranscriptionDto[];
+  /**
+   * Faux si les transcriptions n'ont pas tourné sur les mêmes périphériques :
+   * les durées et facteurs temps réel ne sont alors PAS comparables.
+   */
+  sameDevices: boolean;
 }
 
 const JobParams = z
@@ -229,6 +234,7 @@ export class TranscriptionService {
         role: rec?.audioTracks.find((a) => a.audioIndex === t.audioIndex)?.role ?? null,
         comparisonKey: t.comparisonKey,
         transcriptions: [],
+        sameDevices: true,
       };
       g.transcriptions.push(t);
       groups.set(t.comparisonKey, g);
