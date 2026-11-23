@@ -269,3 +269,19 @@ milliseconde la plus proche. Conversion en image au rendu : `floor(editMs × fps
 aléatoirement. Pour tout temps source présent dans un segment, `editToSource(sourceToEdit(t)[i]) = t`
 (à l'arrondi près si `speed ≠ 1`). La durée totale est égale à la somme des durées. Les
 conversions sont monotones à l'intérieur d'un segment.
+
+## 8. Transcription (étape 3)
+
+Détails et compromis : `docs/transcription.md`.
+
+| Décision                                                                                                                            | Raison                                                                                                               |
+| ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Worker Python **persistant** piloté par Node (JSON par ligne), modèle chargé une fois par traitement                                | Faster-Whisper n'existe qu'en Python ; Node garde la logique (blocs, transactions) testable sans modèle              |
+| **Node pilote les blocs**, le worker ne transcrit qu'une tranche du WAV dérivé                                                      | Atomicité et reprise gérées côté base ; le worker reste sans état (hors modèle et langue)                            |
+| Zone centrale + chevauchement avant/après, attribution par **point central** avec tolérance, déduplication temporelle approximative | Ni perte ni doublon aux frontières malgré les variations de Whisper (vérifié par tests de propriétés)                |
+| Segments + bloc + checkpoint dans **une transaction**, checkpoint attendu vérifié, pas d'`INSERT OR IGNORE`                         | Le checkpoint n'avance jamais si le bloc n'est pas enregistré ; `OR IGNORE` masquerait aussi les violations de CHECK |
+| Périphérique réel enregistré **par bloc**                                                                                           | Une transcription partiellement CPU n'est jamais présentée comme GPU                                                 |
+| Clé de cache = audio d'entrée + modèle + paramètres ; clé de comparaison = idem sans le modèle                                      | Réutilisation sans retranscrire ; comparaison des modèles à paramètres égaux                                         |
+| Métriques brutes conservées, `suspicion_score` heuristique séparé                                                                   | Les sorties de Whisper ne sont pas des probabilités calibrées                                                        |
+| Transcriptions = données permanentes ; WAV d'entrée = cache                                                                         | Le nettoyage ne supprime jamais une transcription ; le WAV reste réutilisable                                        |
+| Tests : faux worker (même protocole) en CI Linux/Windows ; vrai modèle `tiny` sur CPU dans un job dédié                             | Couverture complète sans GPU ; le GPU se valide sur la machine du créateur (`doctor --gpu`)                          |

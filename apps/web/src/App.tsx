@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchHealth, type HealthResponse } from './api';
+import { Recordings } from './components/Recordings';
 
 type State =
   { kind: 'loading' } | { kind: 'ok'; health: HealthResponse } | { kind: 'error'; message: string };
@@ -21,7 +22,7 @@ export function App() {
   return (
     <main className="container">
       <h1>AI Clip Studio</h1>
-      <p className="subtitle">Étape 1 — squelette du projet</p>
+      <p className="subtitle">Import, audio et transcription</p>
       <section className="card">
         <h2>État du serveur</h2>
         {state.kind === 'loading' && <p>Connexion à l’API…</p>}
@@ -41,6 +42,7 @@ export function App() {
           </ul>
         )}
       </section>
+      <Recordings />
     </main>
   );
 }

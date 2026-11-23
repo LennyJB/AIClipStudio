@@ -5,7 +5,8 @@ import type { Db } from './db';
 import { loggerOptions } from './logger';
 import { registerRecordingRoutes } from './routes/recordings';
 import { registerStorageRoutes } from './routes/storage';
-import { createServices, type Services } from './services';
+import { createServices, recoverServices, type Services } from './services';
+import { registerTranscriptionRoutes } from './routes/transcriptions';
 
 export interface AppDeps {
   config: AppConfig;
@@ -27,7 +28,7 @@ export function buildApp({ config, db }: AppDeps): { app: FastifyInstance; servi
   const app = Fastify({ logger: loggerOptions(config), bodyLimit: 64 * 1024 });
   const ctx = { config, db, log: app.log };
   const services = createServices(ctx);
-  services.runner.recover();
+  recoverServices(services);
 
   app.setErrorHandler((error, request, reply) => {
     if (isAppError(error)) {
@@ -67,6 +68,7 @@ export function buildApp({ config, db }: AppDeps): { app: FastifyInstance; servi
 
   registerRecordingRoutes(app, ctx, services);
   registerStorageRoutes(app, services);
+  registerTranscriptionRoutes(app, ctx, services);
   app.addHook('onClose', async () => {
     await services.runner.stop();
   });

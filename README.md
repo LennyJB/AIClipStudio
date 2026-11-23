@@ -8,11 +8,11 @@ propose des clips verticaux pour TikTok, YouTube Shorts et Instagram Reels.
 
 > **Principe directeur :** AI Clip Studio est un assistant monteur. Le créateur garde le dernier mot.
 
-**État actuel : étape 2 terminée, fondations comprises.** Import d'enregistrements OBS (par
-référence), lecture des métadonnées, extraction audio pour Whisper et pour le futur éditeur,
-formes d'onde, cache des fichiers dérivés, file de traitements à deux files d'exécution, gestion
-de l'espace disque, modèle temporel du montage (`SourceMs` / `EditMs`). La transcription et
-l'analyse ne sont pas encore implémentées. Voir la [feuille de route](#feuille-de-route).
+**État actuel : étape 3 (transcription) en cours de validation.** Import d'enregistrements OBS,
+fichiers audio dérivés et cache, file de traitements, espace disque, modèle temporel, et
+**transcription locale avec Faster-Whisper** : blocs avec chevauchement, reprise, repli CPU,
+comparaison des modèles, interface de consultation. L'analyse éditoriale (étape 4) n'est pas
+commencée. Voir la [feuille de route](#feuille-de-route).
 
 ---
 
@@ -23,6 +23,7 @@ l'analyse ne sont pas encore implémentées. Voir la [feuille de route](#feuille
 - [Commandes](#commandes)
 - [Configuration](#configuration)
 - [Importer un enregistrement](#importer-un-enregistrement)
+- [Transcription](#transcription)
 - [Architecture](#architecture)
 - [Sécurité](#sécurité)
 - [Workflow de développement](#workflow-de-développement)
@@ -104,11 +105,16 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r packages/transcription/python/requirements.txt
 ```
 
-> **GPU :** les wheels de CTranslate2 incluent le support CUDA, mais Faster-Whisper a aussi
-> besoin des bibliothèques **cuBLAS (CUDA 12) et cuDNN 9** côté système. Sur une RTX 50xx
-> (architecture Blackwell), le bon fonctionnement GPU doit être **vérifié sur votre machine**
-> avec `npm run doctor` puis lors de l'étape 3. En cas d'échec, `WHISPER_DEVICE=cpu` et
-> `WHISPER_COMPUTE_TYPE=int8` permettent de continuer (plus lent).
+GPU NVIDIA (facultatif) : bibliothèques cuBLAS et cuDNN 9, installées dans le même venv :
+
+```bash
+.venv\Scripts\python -m pip install -r packages/transcription/python/requirements-gpu.txt
+```
+
+> **GPU :** la compatibilité avec une RTX 50xx (Blackwell) **n'a pas pu être vérifiée** (aucun GPU
+> dans l'environnement de développement ni dans la CI). Vérifiez-la avec une vraie inférence :
+> `npm run doctor -- --gpu`. En cas d'échec, la transcription bascule sur CPU (plus lent) si
+> `WHISPER_CPU_FALLBACK=true`. Détails : [`docs/transcription.md`](docs/transcription.md).
 
 ### 4. Vérifier l'environnement
 
@@ -132,27 +138,29 @@ npm run dev
 
 ## Commandes
 
-| Commande                   | Rôle                                                          |
-| -------------------------- | ------------------------------------------------------------- |
-| `npm run dev`              | API (rechargement auto) + interface Vite en parallèle         |
-| `npm run dev:api`          | API seule                                                     |
-| `npm run dev:web`          | Interface seule                                               |
-| `npm run start:api`        | API sans rechargement                                         |
-| `npm run build:web`        | Build de production de l'interface                            |
-| `npm run doctor`           | Diagnostic de l'environnement                                 |
-| `npm run import -- <f>`    | Importe un enregistrement et extrait ses pistes audio         |
-| `npm run storage`          | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes` |
-| `npm test`                 | Tous les tests (unitaires + intégration)                      |
-| `npm run test:watch`       | Tests en mode surveillance                                    |
-| `npm run test:coverage`    | Tests avec couverture                                         |
-| `npm run typecheck`        | Vérification TypeScript de tous les workspaces                |
-| `npm run lint`             | ESLint                                                        |
-| `npm run format`           | Formatage Prettier                                            |
-| `npm run test:unit`        | Tests unitaires (sans outil externe)                          |
-| `npm run test:integration` | Tests d'intégration (FFmpeg réel)                             |
-| `npm run test:migrations`  | Migrations de base de données                                 |
-| `npm run smoke`            | Démarrage réel de l'API sur un stockage temporaire            |
-| `npm run check`            | typecheck + lint + format + tests (à lancer avant un commit)  |
+| Commande                               | Rôle                                                          |
+| -------------------------------------- | ------------------------------------------------------------- |
+| `npm run dev`                          | API (rechargement auto) + interface Vite en parallèle         |
+| `npm run dev:api`                      | API seule                                                     |
+| `npm run dev:web`                      | Interface seule                                               |
+| `npm run start:api`                    | API sans rechargement                                         |
+| `npm run build:web`                    | Build de production de l'interface                            |
+| `npm run doctor`                       | Diagnostic de l'environnement                                 |
+| `npm run import -- <f>`                | Importe un enregistrement et extrait ses pistes audio         |
+| `npm run storage`                      | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes` |
+| `npm run transcribe -- <id \| chemin>` | Transcrit ; `--model`, `--force`, `--compare`                 |
+| `npm run doctor -- --gpu`              | Vraie inférence sur le GPU (CUDA, cuBLAS, cuDNN)              |
+| `npm test`                             | Tous les tests (unitaires + intégration)                      |
+| `npm run test:watch`                   | Tests en mode surveillance                                    |
+| `npm run test:coverage`                | Tests avec couverture                                         |
+| `npm run typecheck`                    | Vérification TypeScript de tous les workspaces                |
+| `npm run lint`                         | ESLint                                                        |
+| `npm run format`                       | Formatage Prettier                                            |
+| `npm run test:unit`                    | Tests unitaires (sans outil externe)                          |
+| `npm run test:integration`             | Tests d'intégration (FFmpeg réel)                             |
+| `npm run test:migrations`              | Migrations de base de données                                 |
+| `npm run smoke`                        | Démarrage réel de l'API sur un stockage temporaire            |
+| `npm run check`                        | typecheck + lint + format + tests (à lancer avant un commit)  |
 
 ---
 
@@ -162,26 +170,23 @@ Toutes les variables sont lues **uniquement par le serveur** et validées au dé
 Une valeur invalide arrête le serveur avec un message qui nomme la variable, sans afficher sa
 valeur.
 
-| Variable                 | Défaut                               | Description                           |
-| ------------------------ | ------------------------------------ | ------------------------------------- |
-| `ANTHROPIC_API_KEY`      | _(vide)_                             | Clé Claude API (secrète)              |
-| `CLAUDE_MODEL`           | `claude-opus-5-5`                    | Modèle utilisé pour l'analyse         |
-| `API_HOST`               | `127.0.0.1`                          | Interface d'écoute (local uniquement) |
-| `API_PORT`               | `4000`                               | Port de l'API                         |
-| `LOG_LEVEL`              | `info`                               | Niveau de logs                        |
-| `STORAGE_DIR`            | `./storage`                          | Racine du stockage local              |
-| `DATABASE_PATH`          | `./storage/db/ai-clip-studio.sqlite` | Base SQLite                           |
-| `FFMPEG_PATH`            | `ffmpeg`                             | Binaire FFmpeg                        |
-| `FFPROBE_PATH`           | `ffprobe`                            | Binaire ffprobe                       |
-| `PYTHON_PATH`            | _(auto : `.venv`)_                   | Python du worker de transcription     |
-| `WHISPER_MODEL`          | `large-v3`                           | Modèle Faster-Whisper                 |
-| `WHISPER_DEVICE`         | `cuda`                               | `cuda` ou `cpu`                       |
-| `WHISPER_COMPUTE_TYPE`   | `float16`                            | `float16`, `int8_float16`, `int8`     |
-| `WHISPER_LANGUAGE`       | `fr`                                 | Langue principale des sessions        |
-| `AUDIO_TRACK_ROLES`      | `mix,mic,discord`                    | Rôle des pistes OBS, dans l'ordre     |
-| `CACHE_MAX_GB`           | `30`                                 | Taille max du cache des dérivés       |
-| `CLIP_WINDOW_MARGIN_SEC` | `30`                                 | Marge autour d'un clip                |
-| `CLIP_WINDOW_GRID_SEC`   | `30`                                 | Alignement des fenêtres de clip       |
+| Variable                 | Défaut                               | Description                                         |
+| ------------------------ | ------------------------------------ | --------------------------------------------------- |
+| `ANTHROPIC_API_KEY`      | _(vide)_                             | Clé Claude API (secrète)                            |
+| `CLAUDE_MODEL`           | `claude-opus-5-5`                    | Modèle utilisé pour l'analyse                       |
+| `API_HOST`               | `127.0.0.1`                          | Interface d'écoute (local uniquement)               |
+| `API_PORT`               | `4000`                               | Port de l'API                                       |
+| `LOG_LEVEL`              | `info`                               | Niveau de logs                                      |
+| `STORAGE_DIR`            | `./storage`                          | Racine du stockage local                            |
+| `DATABASE_PATH`          | `./storage/db/ai-clip-studio.sqlite` | Base SQLite                                         |
+| `FFMPEG_PATH`            | `ffmpeg`                             | Binaire FFmpeg                                      |
+| `FFPROBE_PATH`           | `ffprobe`                            | Binaire ffprobe                                     |
+| `PYTHON_PATH`            | _(auto : `.venv`)_                   | Python du worker de transcription                   |
+| `WHISPER_*`              | voir `docs/transcription.md`         | Transcription (modèle, GPU/CPU, langue, VAD, blocs) |
+| `AUDIO_TRACK_ROLES`      | `mix,mic,discord`                    | Rôle des pistes OBS, dans l'ordre                   |
+| `CACHE_MAX_GB`           | `30`                                 | Taille max du cache des dérivés                     |
+| `CLIP_WINDOW_MARGIN_SEC` | `30`                                 | Marge autour d'un clip                              |
+| `CLIP_WINDOW_GRID_SEC`   | `30`                                 | Alignement des fenêtres de clip                     |
 
 ---
 
@@ -298,6 +303,20 @@ cache Drive occupe de l'espace sur `C:`). Préférez rendre le dossier **disponi
 
 ---
 
+## Transcription
+
+Transcription **locale** (aucun audio envoyé à l'extérieur) des pistes micro et Discord, en temps
+source, avec mots horodatés. Guide complet, compromis précision/VRAM/temps et limites :
+[`docs/transcription.md`](docs/transcription.md).
+
+```bash
+npm run transcribe -- "D:\Enregistrements\stream.mkv" --game valorant
+```
+
+Interface : `npm run dev`, puis « Enregistrements », choisir le fichier, « Transcrire ».
+
+---
+
 ## Architecture
 
 Voir [`docs/architecture.md`](docs/architecture.md) pour le détail des choix techniques, et
@@ -312,7 +331,7 @@ AIClipStudio/
 │   ├── shared/                Schémas Zod et types communs (contrats de données), erreurs
 │   ├── media/                 FFmpeg/ffprobe : métadonnées, pistes, extraction, formes d'onde
 │   ├── timeline/              Modèle du montage : SourceMs / EditMs, segments, conversions
-│   ├── transcription/         Pont Node ↔ Faster-Whisper
+│   ├── transcription/         Blocs, reprise, déduplication ; worker Python Faster-Whisper
 │   │   └── python/            Worker Python + requirements.txt (étape 3)
 │   └── editorial/             Profils, fenêtres candidates, prompts, Claude (étape 4)
 ├── profiles/
@@ -363,14 +382,14 @@ unitaires et d'intégration, build et démarrage de l'API.
 
 ## Feuille de route
 
-| Étape | Contenu                                                                              | État        |
-| ----- | ------------------------------------------------------------------------------------ | ----------- |
-| 1     | Analyse, architecture, squelette, outillage, documentation                           | ✅ Terminée |
-| 2     | Import OBS, extraction audio, dérivés et cache, file, espace disque, modèle temporel | ✅ Terminée |
-| 3     | Transcription Faster-Whisper horodatée                                               | À faire     |
-| 4     | Profils éditoriaux, prompts, appel Claude, validation JSON, clips                    | À faire     |
-| 5     | Interface de validation (liste, timestamps, lecture, accepter/refuser)               | À faire     |
-| 6     | Évaluation sur de vrais enregistrements, ajustement des prompts                      | À faire     |
+| Étape | Contenu                                                                              | État          |
+| ----- | ------------------------------------------------------------------------------------ | ------------- |
+| 1     | Analyse, architecture, squelette, outillage, documentation                           | ✅ Terminée   |
+| 2     | Import OBS, extraction audio, dérivés et cache, file, espace disque, modèle temporel | ✅ Terminée   |
+| 3     | Transcription Faster-Whisper horodatée, reprise, repli CPU, comparaison des modèles  | En revue (PR) |
+| 4     | Profils éditoriaux, prompts, appel Claude, validation JSON, clips                    | À faire       |
+| 5     | Interface de validation (liste, timestamps, lecture, accepter/refuser)               | À faire       |
+| 6     | Évaluation sur de vrais enregistrements, ajustement des prompts                      | À faire       |
 
 Le moteur de montage (FFmpeg + Remotion, 9:16, sous-titres, effets) viendra après validation
 du MVP.

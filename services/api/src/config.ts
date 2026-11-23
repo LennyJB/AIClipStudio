@@ -8,6 +8,11 @@ import { AppError, TrackRoleSchema, type TrackRole } from '@acs/shared';
 export const ROOT_DIR = path.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 
 const emptyToUndefined = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? undefined : v);
+const bool = (def: boolean) =>
+  z
+    .enum(['true', 'false', '1', '0'])
+    .default(def ? 'true' : 'false')
+    .transform((v) => v === 'true' || v === '1');
 
 export const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -21,13 +26,59 @@ export const EnvSchema = z.object({
   FFMPEG_PATH: z.string().min(1).default('ffmpeg'),
   FFPROBE_PATH: z.string().min(1).default('ffprobe'),
   PYTHON_PATH: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  WHISPER_MODEL: z.string().min(1).default('large-v3'),
-  WHISPER_DEVICE: z.enum(['cuda', 'cpu']).default('cuda'),
-  WHISPER_COMPUTE_TYPE: z.string().min(1).default('float16'),
+  WHISPER_MODEL: z.string().min(1).default('large-v3-turbo'),
+  WHISPER_MODEL_CHOICES: z
+    .string()
+    .default('large-v3-turbo,large-v3')
+    .transform((v) =>
+      v
+        .split(',')
+        .map((m) => m.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.array(z.string().regex(/^[\w.\-/]+$/)).min(1)),
+  WHISPER_DEVICE: z.enum(['auto', 'cuda', 'cpu']).default('auto'),
+  WHISPER_CPU_FALLBACK: bool(true),
+  WHISPER_COMPUTE_TYPE: z
+    .string()
+    .regex(/^[a-z0-9_]+$/)
+    .default('auto'),
+  WHISPER_CPU_COMPUTE_TYPE: z
+    .string()
+    .regex(/^[a-z0-9_]+$/)
+    .default('int8'),
   WHISPER_LANGUAGE: z
     .string()
-    .regex(/^[a-z]{2}$/)
-    .default('fr'),
+    .regex(/^(auto|[a-z]{2,3})$/)
+    .default('auto'),
+  WHISPER_BEAM_SIZE: z.coerce.number().int().min(1).max(10).default(5),
+  WHISPER_BATCH_SIZE: z.coerce.number().int().min(0).max(64).default(0),
+  WHISPER_WORD_TIMESTAMPS: bool(true),
+  WHISPER_VAD: bool(true),
+  WHISPER_VAD_THRESHOLD: z.coerce.number().min(0.05).max(0.95).default(0.5),
+  WHISPER_VAD_MIN_SILENCE_MS: z.coerce.number().int().min(50).max(10_000).default(500),
+  WHISPER_VAD_MIN_SPEECH_MS: z.coerce.number().int().min(0).max(5_000).default(250),
+  WHISPER_VAD_SPEECH_PAD_MS: z.coerce.number().int().min(0).max(2_000).default(400),
+  WHISPER_CHUNK_SEC: z.coerce.number().int().min(10).max(7_200).default(1_200),
+  WHISPER_CHUNK_OVERLAP_SEC: z.coerce.number().int().min(0).max(300).default(30),
+  WHISPER_BOUNDARY_TOLERANCE_MS: z.coerce.number().int().min(0).max(10_000).default(1_000),
+  WHISPER_MODEL_DIR: z.string().min(1).default('./storage/models'),
+  /** Avancé (tests) : commande du worker en JSON, ex. ["node","fake.mjs"]. Vide = Python + worker.py. */
+  WHISPER_WORKER_COMMAND: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .transform((v, ctx) => {
+        try {
+          return JSON.parse(v) as unknown;
+        } catch {
+          ctx.addIssue({ code: 'custom', message: 'JSON invalide' });
+          return z.NEVER;
+        }
+      })
+      .pipe(z.array(z.string().min(1)).min(1))
+      .optional(),
+  ),
   /** Rôle des pistes audio OBS dans l'ordre du fichier (utilisé si les pistes ne sont pas nommées). */
   AUDIO_TRACK_ROLES: z
     .string()
@@ -60,7 +111,30 @@ export interface AppConfig {
     profiles: string;
   };
   tools: { ffmpeg: string; ffprobe: string; python: string };
-  whisper: { model: string; device: 'cuda' | 'cpu'; computeType: string; language: string };
+  whisper: {
+    model: string;
+    modelChoices: string[];
+    device: 'auto' | 'cuda' | 'cpu';
+    cpuFallback: boolean;
+    computeType: string;
+    cpuComputeType: string;
+    /** 'auto' = détection automatique. */
+    language: string;
+    beamSize: number;
+    batchSize: number;
+    wordTimestamps: boolean;
+    vad: {
+      enabled: boolean;
+      threshold: number;
+      minSilenceDurationMs: number;
+      minSpeechDurationMs: number;
+      speechPadMs: number;
+    };
+    chunking: { coreMs: number; overlapMs: number; boundaryToleranceMs: number };
+    modelDir: string;
+    /** Commande du worker (null = Python du venv + worker.py). */
+    workerCommand: string[] | null;
+  };
   audioTrackRoles: TrackRole[];
   cache: { maxBytes: number };
   clipWindow: { marginMs: number; gridMs: number };
@@ -106,9 +180,29 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
     },
     whisper: {
       model: e.WHISPER_MODEL,
+      modelChoices: [...new Set([e.WHISPER_MODEL, ...e.WHISPER_MODEL_CHOICES])],
       device: e.WHISPER_DEVICE,
+      cpuFallback: e.WHISPER_CPU_FALLBACK,
       computeType: e.WHISPER_COMPUTE_TYPE,
+      cpuComputeType: e.WHISPER_CPU_COMPUTE_TYPE,
       language: e.WHISPER_LANGUAGE,
+      beamSize: e.WHISPER_BEAM_SIZE,
+      batchSize: e.WHISPER_BATCH_SIZE,
+      wordTimestamps: e.WHISPER_WORD_TIMESTAMPS,
+      vad: {
+        enabled: e.WHISPER_VAD,
+        threshold: e.WHISPER_VAD_THRESHOLD,
+        minSilenceDurationMs: e.WHISPER_VAD_MIN_SILENCE_MS,
+        minSpeechDurationMs: e.WHISPER_VAD_MIN_SPEECH_MS,
+        speechPadMs: e.WHISPER_VAD_SPEECH_PAD_MS,
+      },
+      chunking: {
+        coreMs: e.WHISPER_CHUNK_SEC * 1000,
+        overlapMs: e.WHISPER_CHUNK_OVERLAP_SEC * 1000,
+        boundaryToleranceMs: e.WHISPER_BOUNDARY_TOLERANCE_MS,
+      },
+      modelDir: resolve(e.WHISPER_MODEL_DIR),
+      workerCommand: e.WHISPER_WORKER_COMMAND ?? null,
     },
     audioTrackRoles: e.AUDIO_TRACK_ROLES,
     cache: { maxBytes: Math.round(e.CACHE_MAX_GB * 1024 ** 3) },

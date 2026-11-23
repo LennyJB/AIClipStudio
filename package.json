@@ -21,6 +21,7 @@
     "doctor": "tsx scripts/doctor.ts",
     "import": "tsx scripts/import.ts",
     "storage": "tsx scripts/storage.ts",
+    "transcribe": "tsx scripts/transcribe.ts",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",

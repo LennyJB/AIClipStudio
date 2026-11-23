@@ -1,0 +1,3 @@
+# Outils de test du worker (non nécessaires en production)
+-r requirements.txt
+pytest==8.4.2

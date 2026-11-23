@@ -381,6 +381,16 @@ export class JobRepository {
       .run().changes;
   }
 
+  /** Déclare des fichiers supplémentaires pendant l'exécution (ex. WAV produit en cours de route). */
+  addFiles(jobId: string, files: readonly JobFile[]): void {
+    const insert = this.db.prepare(
+      'INSERT OR IGNORE INTO job_files (job_id, rel_path, usage) VALUES (?, ?, ?)',
+    );
+    this.db.transaction(() => {
+      for (const f of files) insert.run(jobId, f.relPath, f.usage);
+    })();
+  }
+
   /** Fichiers déclarés par les traitements actifs : le nettoyage ne doit pas y toucher. */
   activeFilePaths(): Set<string> {
     const rows = this.db

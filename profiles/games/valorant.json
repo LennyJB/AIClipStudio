@@ -28,5 +28,9 @@
   "analysisHints": [
     "Les calls ratés, contradictoires ou mal compris sont souvent plus drôles que les kills",
     "Le contexte d'une manche (achats, plan annoncé) est parfois nécessaire pour comprendre la chute"
-  ]
+  ],
+  "transcription": {
+    "useVocabulary": false,
+    "extraTerms": []
+  }
 }

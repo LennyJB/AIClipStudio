@@ -1,0 +1,5 @@
+# Bibliothèques NVIDIA requises par CTranslate2 (CUDA 12 + cuDNN 9) pour la transcription GPU.
+# Facultatif : à installer uniquement sur une machine équipée d'un GPU NVIDIA.
+-r requirements.txt
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*

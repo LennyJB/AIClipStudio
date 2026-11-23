@@ -36,6 +36,15 @@ export const GameProfileSchema = z
     notableEvents: z.array(nonEmpty).default([]),
     /** Consignes spécifiques au jeu pour l'analyse éditoriale. */
     analysisHints: z.array(nonEmpty).default([]),
+    /** Aide à la transcription : vocabulaire du jeu transmis à Whisper (désactivé par défaut). */
+    transcription: z
+      .object({
+        useVocabulary: z.boolean().default(false),
+        /** Termes ajoutés au vocabulaire (pseudos, lieux…) quand useVocabulary est actif. */
+        extraTerms: z.array(nonEmpty).default([]),
+      })
+      .strict()
+      .default({ useVocabulary: false, extraTerms: [] }),
   })
   .strict();
 export type GameProfile = z.infer<typeof GameProfileSchema>;
