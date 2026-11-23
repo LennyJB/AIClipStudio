@@ -149,7 +149,7 @@ jobs:
       ACS_WHISPER_MODEL_DIR: ${{ github.workspace }}/.whisper-models
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
           cache: pip
