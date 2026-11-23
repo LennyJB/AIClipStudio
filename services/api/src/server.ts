@@ -9,7 +9,7 @@ async function main() {
   const config = loadConfig(process.env);
   await ensureStorageLayout(config.paths);
   const db = openDatabase(config.paths.database);
-  const app = buildApp({ config, db });
+  const { app } = buildApp({ config, db });
 
   let closing = false;
   const shutdown = async (signal: string) => {

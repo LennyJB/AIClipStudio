@@ -6,8 +6,9 @@ propose des clips verticaux pour TikTok, YouTube Shorts et Instagram Reels.
 
 > **Principe directeur :** AI Clip Studio est un assistant monteur. Le créateur garde le dernier mot.
 
-**État actuel : étape 1, squelette du projet.** L'import, la transcription et l'analyse ne sont
-pas encore implémentés. Voir la [feuille de route](#feuille-de-route).
+**État actuel : étape 2 terminée.** Import d'enregistrements OBS (par référence), lecture des
+métadonnées, identification et extraction des pistes audio. La transcription et l'analyse ne sont
+pas encore implémentées. Voir la [feuille de route](#feuille-de-route).
 
 ---
 
@@ -17,6 +18,7 @@ pas encore implémentés. Voir la [feuille de route](#feuille-de-route).
 - [Installation](#installation)
 - [Commandes](#commandes)
 - [Configuration](#configuration)
+- [Importer un enregistrement](#importer-un-enregistrement)
 - [Architecture](#architecture)
 - [Sécurité](#sécurité)
 - [Feuille de route](#feuille-de-route)
@@ -131,6 +133,7 @@ npm run dev
 | `npm run start:api`     | API sans rechargement                                        |
 | `npm run build:web`     | Build de production de l'interface                           |
 | `npm run doctor`        | Diagnostic de l'environnement                                |
+| `npm run import -- <f>` | Importe un enregistrement et extrait ses pistes audio        |
 | `npm test`              | Tous les tests (unitaires + intégration)                     |
 | `npm run test:watch`    | Tests en mode surveillance                                   |
 | `npm run test:coverage` | Tests avec couverture                                        |
@@ -163,6 +166,77 @@ valeur.
 | `WHISPER_DEVICE`       | `cuda`                               | `cuda` ou `cpu`                       |
 | `WHISPER_COMPUTE_TYPE` | `float16`                            | `float16`, `int8_float16`, `int8`     |
 | `WHISPER_LANGUAGE`     | `fr`                                 | Langue principale des sessions        |
+| `AUDIO_TRACK_ROLES`    | `mix,mic,discord`                    | Rôle des pistes OBS, dans l'ordre     |
+
+---
+
+## Importer un enregistrement
+
+### Principe
+
+- L'enregistrement est **référencé par son chemin**, jamais copié ni modifié. Une empreinte
+  (taille + 1er et dernier Mo) est enregistrée : un fichier déplacé ou modifié est détecté avant
+  tout traitement, et réimporter le même fichier ne crée pas de doublon.
+- Formats acceptés : **MKV** (enregistrements OBS) et **MP4** (fichier de secours à piste
+  unique, traité comme un mix).
+- Les pistes **micro** et **Discord** sont extraites séparément (WAV mono 16 kHz, format
+  attendu par Faster-Whisper) dans `storage/processing/<id>/audio/`. La transcription séparée
+  distingue naturellement le créateur de ses coéquipiers. La piste « tout » n'est utilisée qu'en
+  l'absence de pistes de voix séparées.
+- Le WAV est **aligné sur la timeline de la vidéo** : un décalage de départ ou un trou dans
+  l'audio (images perdues par OBS) est comblé par du silence, pour que les timestamps de la
+  transcription correspondent exactement à la vidéo.
+- Un MKV d'un OBS qui a planté n'a souvent pas de durée lisible : il est accepté, et la durée est
+  déduite de l'audio extrait.
+
+Espace disque : environ **115 Mo par heure et par piste** extraite (≈ 1,8 Go pour un stream de
+8 h avec micro + Discord).
+
+### Rôle des pistes audio
+
+Par ordre de priorité :
+
+1. rôles imposés à l'import (`--roles` ou champ `trackRoles` de l'API) ;
+2. fichier à piste unique → `mix` ;
+3. **nom de la piste dans OBS** (Paramètres → Sortie → Audio → Nom) : un nom contenant
+   « Micro », « Discord », « Tout »/« Mix » ou « Jeu » est reconnu ;
+4. ordre défini par `AUDIO_TRACK_ROLES` dans `.env`.
+
+Le plus fiable est de **nommer les pistes dans OBS** (« Tout », « Micro », « Discord ») : les
+futurs enregistrements seront alors reconnus quel que soit l'ordre des pistes.
+
+### En ligne de commande (tests sur de vrais enregistrements)
+
+```bash
+npm run import -- "D:\Enregistrements\2026-11-20 21-03-11.mkv" --game valorant
+```
+
+Options : `--game <id>` (valorant, fortnite, minecraft, generic), `--roles mix,mic,discord`,
+`--no-extract` (métadonnées seulement). `Ctrl+C` interrompt proprement ; relancer la commande
+reprend là où elle s'était arrêtée.
+
+### API
+
+| Méthode | Route                               | Rôle                                         |
+| ------- | ----------------------------------- | -------------------------------------------- |
+| GET     | `/api/games`                        | Profils de jeu disponibles                   |
+| POST    | `/api/recordings`                   | Importer `{ path, gameId?, trackRoles? }`    |
+| GET     | `/api/recordings`                   | Liste des enregistrements                    |
+| GET     | `/api/recordings/:id`               | Détail, pistes et historique des traitements |
+| PATCH   | `/api/recordings/:id/tracks`        | Corriger les rôles `{ roles: [...] }`        |
+| POST    | `/api/recordings/:id/extract-audio` | Lancer l'extraction (asynchrone, 202)        |
+| GET     | `/api/jobs/:id`                     | État et progression d'un traitement          |
+| POST    | `/api/jobs/:id/cancel`              | Annuler un traitement                        |
+
+Les traitements s'exécutent un par un. À l'arrêt du serveur, un traitement en cours est marqué
+« interrompu » ; le relancer ne refait pas les pistes déjà extraites.
+
+### Fichiers sur Google Drive
+
+Si les enregistrements sont dans Google Drive pour ordinateur en mode **streaming**, la lecture
+complète d'un fichier de plusieurs dizaines de Go déclenche son téléchargement (lent, et le
+cache Drive occupe de l'espace sur `C:`). Préférez rendre le dossier **disponible hors connexion**
+(ou le mode « mise en miroir »), ou traiter les fichiers depuis un disque local.
 
 ---
 
@@ -217,7 +291,7 @@ Pipeline du MVP : **Import → Préparation → Transcription → Pré-analyse �
 | Étape | Contenu                                                                | État        |
 | ----- | ---------------------------------------------------------------------- | ----------- |
 | 1     | Analyse, architecture, squelette, outillage, documentation             | ✅ Terminée |
-| 2     | Import OBS, ffprobe, inventaire et extraction des pistes audio         | À faire     |
+| 2     | Import OBS, ffprobe, inventaire et extraction des pistes audio         | ✅ Terminée |
 | 3     | Transcription Faster-Whisper horodatée                                 | À faire     |
 | 4     | Profils éditoriaux, prompts, appel Claude, validation JSON, clips      | À faire     |
 | 5     | Interface de validation (liste, timestamps, lecture, accepter/refuser) | À faire     |

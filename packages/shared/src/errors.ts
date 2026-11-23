@@ -3,7 +3,21 @@
  * (logs, API, tests) ; le message est destiné aux humains.
  */
 export type AppErrorCode =
-  'CONFIG_INVALID' | 'PROFILE_INVALID' | 'PROFILE_NOT_FOUND' | 'TOOL_MISSING' | 'INTERNAL';
+  | 'CONFIG_INVALID'
+  | 'VALIDATION_FAILED'
+  | 'NOT_FOUND'
+  | 'CONFLICT'
+  | 'PROFILE_INVALID'
+  | 'PROFILE_NOT_FOUND'
+  | 'TOOL_MISSING'
+  | 'MEDIA_NOT_FOUND'
+  | 'MEDIA_UNSUPPORTED'
+  | 'MEDIA_PROBE_FAILED'
+  | 'MEDIA_EXTRACT_FAILED'
+  | 'MEDIA_SOURCE_CHANGED'
+  | 'UNSAFE_OUTPUT_PATH'
+  | 'CANCELLED'
+  | 'INTERNAL';
 
 export class AppError extends Error {
   readonly code: AppErrorCode;

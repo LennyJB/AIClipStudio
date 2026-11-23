@@ -19,6 +19,7 @@
     "build:web": "npm run build -w @acs/web",
     "start:api": "npm run start -w @acs/api",
     "doctor": "tsx scripts/doctor.ts",
+    "import": "tsx scripts/import.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

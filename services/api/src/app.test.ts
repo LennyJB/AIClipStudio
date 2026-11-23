@@ -11,7 +11,7 @@ afterEach(async () => {
 
 function makeApp(env: NodeJS.ProcessEnv = {}) {
   const config = loadConfig({ NODE_ENV: 'test', ...env }, '/tmp/acs-root');
-  app = buildApp({ config, db: openDatabase(':memory:') });
+  app = buildApp({ config, db: openDatabase(':memory:') }).app;
   return app;
 }
 
