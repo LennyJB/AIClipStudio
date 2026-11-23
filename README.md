@@ -242,7 +242,9 @@ cache Drive occupe de l'espace sur `C:`). Préférez rendre le dossier **disponi
 
 ## Architecture
 
-Voir [`docs/architecture.md`](docs/architecture.md) pour le détail des choix techniques.
+Voir [`docs/architecture.md`](docs/architecture.md) pour le détail des choix techniques, et
+[`docs/proposition-editeur-memoire.md`](docs/proposition-editeur-memoire.md) pour l’évolution
+prévue (éditeur vidéo, mémoire éditoriale) — en attente de validation.
 
 ```
 AIClipStudio/
