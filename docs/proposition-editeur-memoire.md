@@ -81,32 +81,47 @@ unitairement, partagés entre l'interface et le serveur.
 
 Principes du modèle :
 
-- **Temps en millisecondes entières**, rapportés à la timeline de l'enregistrement original
-  (aucune dérive de virgule flottante, indépendance vis-à-vis des proxies).
-- **Coordonnées normalisées (0 à 1)** pour le recadrage et le placement : indépendantes de la
-  résolution source (1080p, 1440p) et de la sortie.
-- **`schemaVersion` + migrations** : un projet créé aujourd'hui restera ouvrable après évolution
-  du format.
+- **Deux temps distincts, jamais mélangés** (détail au § 10.2) :
+  - **temps source** (`SourceMs`) : position dans l'enregistrement original. C'est le temps de la
+    transcription, des WAV extraits et de FFmpeg ;
+  - **temps montage** (`EditMs`) : position dans le clip exporté (0 = première image du clip).
+- **Millisecondes entières** (aucune dérive de virgule flottante).
+- **Coordonnées normalisées (0 à 1)**, elles aussi dans deux repères distincts : `crop` dans
+  l'image source, `frame` dans l'image de sortie 9:16.
+- **`schemaVersion` + migrations** : un projet créé aujourd'hui restera ouvrable après évolution du format.
 - **Identifiants stables** pour chaque élément (nécessaires à l'historique et à l'apprentissage).
 
 Esquisse (non définitive) :
 
 ```ts
+type SourceMs = number & { __brand: 'SourceMs' }   // temps dans l'original
+type EditMs   = number & { __brand: 'EditMs' }     // temps dans le clip monté
+
+// Placement d'un élément : ancré au contenu (suit les coupes) ou à la structure du montage.
+type Timing =
+  | { anchor: 'source'; srcStartMs: SourceMs; srcEndMs: SourceMs }
+  | { anchor: 'edit';   editStartMs: EditMs;  editEndMs: EditMs }
+
 ClipProject {
   schemaVersion: 1
   id, recordingId, proposalId?, gameId, mode: 'fidele' | 'enrichi'
   output: { width: 1080, height: 1920, fps: 60 }
-  segments: [{ id, srcStartMs, srcEndMs }]          // coupes dans l'original (début/fin modifiables)
-  layout: [{ id, atMs, durMs, layers: [              // facecam + gameplay, éventuellement animés
-    { role: 'gameplay' | 'facecam', crop: Rect, frame: Rect, radius?, border? } ] }]
-  captions: [{ id, atMs, durMs, text, words?: [{ text, atMs, durMs }],
-               style: { preset, color, size, position, highlightColor? } }]
-  effects: [{ id, type: 'zoom' | 'freeze' | 'shake' | …, atMs, durMs, params }]   // params validés par type
-  overlays: [{ id, type: 'image' | 'meme' | 'text', assetId?, atMs, durMs, frame: Rect, anim? }]
-  transitions: [{ id, type, atSegmentBoundary, durMs, params }]
+
+  // SEUL pont entre les deux temps. Les positions en temps montage sont DÉDUITES
+  // (concaténation dans l'ordre), jamais stockées : aucune incohérence possible.
+  segments: [
+    | { id, kind: 'source', srcStartMs, srcEndMs }          // coupe (début/fin modifiables)
+    | { id, kind: 'freeze', srcAtMs, editDurMs }            // arrêt sur image : avance le montage, pas la source
+  ]
+
+  captions:    [{ id, timing: Timing /* toujours 'source' */, text, words?, style }]
+  effects:     [{ id, type, timing: Timing, params }]       // zoom de réaction → 'source'
+  overlays:    [{ id, type: 'image' | 'meme' | 'text', assetId?, timing: Timing, frame: Rect }]
+  transitions: [{ id, type, betweenSegments: [idA, idB], durMs, params }]   // liées à la structure
+  layout:      [{ id, timing: Timing, layers: [{ role: 'gameplay' | 'facecam', crop: Rect, frame: Rect }] }]
   audio: {
-    tracks: [{ role: 'mic' | 'discord' | 'game' | 'mix', gainDb, muted }]
-    sfx: [{ id, assetId, atMs, gainDb }]
+    tracks: [{ audioIndex, role, gainDb, muted, automation?: [{ srcAtMs, gainDb }] }]
+    sfx:    [{ id, assetId, timing: Timing, gainDb }]
   }
   origin: { by: 'ai' | 'user', analysisRunId? }
 }
@@ -294,7 +309,7 @@ intégrer dans `docs/` si vous préférez versionner ces documents avec le code.
 - **Stratégie de test éditorial** : comparer la qualité des propositions **avec et sans** mémoire
   sur le jeu de référence.
 
-## 9. Décisions attendues
+## 9. Décisions attendues (première version)
 
 1. Validez-vous l'architecture (projet de clip comme source unique, nouveaux packages
    `timeline` / `render` / `memory`) ?
@@ -302,3 +317,93 @@ intégrer dans `docs/` si vous préférez versionner ces documents avec le code.
 3. Préférences déduites : **validation obligatoire** avant activation (recommandé) ou activation automatique ?
 4. Ajouterez-vous une **4e piste OBS « Jeu »** (sans voix) pour le réglage des volumes ?
 5. Faut-il versionner le cahier des charges et le plan technique dans `docs/` (en Markdown) ?
+
+## 10. Vérification des trois exigences (audit du code au 23/11/2026)
+
+### 10.1 Pistes audio prévues pour l'éditeur, pas seulement pour Whisper
+
+**Verdict : partiellement satisfait. Correction nécessaire.**
+
+Vérifié sur un enregistrement de test à 4 pistes (« Tout », « Micro », « Discord », « Jeu ») :
+
+| Élément                                                                              | État                                                                                                                                                              |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Inventaire de **toutes** les pistes (index, codec, canaux, fréquence, nom, décalage) | ✅ les 4 pistes sont enregistrées, dont `game` reconnue par son nom                                                                                               |
+| Rôles `mic`, `discord`, `game`, `mix`                                                | ✅ déjà prévus                                                                                                                                                    |
+| Alignement sur le temps source (silence initial, trous comblés)                      | ✅ indépendant du format de sortie                                                                                                                                |
+| **Fichiers dérivés**                                                                 | ❌ un seul emplacement par piste (`audio_tracks.extracted_*`), format figé **16 kHz mono** (adapté à Whisper uniquement), pistes `game` et `mix` jamais extraites |
+| **Type de traitement**                                                               | ❌ `extract_audio` signifie en réalité « audio pour Whisper »                                                                                                     |
+
+Corrections proposées (petites, avant toute donnée réelle) :
+
+1. **Table `media_derivatives`** (migration 2) remplaçant les colonnes `extracted_*` :
+   `kind` (`audio_transcription`, `audio_stem`, `waveform`, `video_proxy`, `thumbnail`),
+   `audio_index` facultatif, **plage source facultative** (`src_start_ms`, `src_end_ms` ; vide =
+   tout l'enregistrement), format (fréquence, canaux, codec), chemin, durée. Une piste peut ainsi
+   avoir plusieurs dérivés : WAV pour Whisper, piste de montage, forme d'onde.
+2. **Profils d'extraction** dans `@acs/media` :
+   - `transcription` : PCM 16 kHz mono, sur tout l'enregistrement ;
+   - `editor` : 48 kHz stéréo pleine qualité, **limité à la fenêtre d'un clip**. Sur 8 h, un WAV
+     48 kHz stéréo pèserait environ 5,5 Go par piste : on ne l'extrait donc que par clip.
+
+   Même filtre d'alignement pour les deux profils.
+
+3. **Deux politiques de sélection distinctes** :
+   - Whisper : micro + Discord (sinon mix), **inchangé** ;
+   - éditeur : micro + Discord + jeu si une piste `game` existe ; sinon le mix seul. Le mix n'est
+     jamais superposé aux pistes de voix, sinon les voix seraient doublées.
+
+### 10.2 Distinction temps source / temps montage
+
+**Verdict : non satisfait dans la première version de la proposition. Corrigé au § 3.1.**
+
+La première esquisse utilisait des champs `atMs` sans dire s'il s'agissait du temps source ou
+du temps montage. Le code actuel, lui, est cohérent : il ne manipule que du temps source.
+Règles retenues :
+
+1. **Deux types distincts** `SourceMs` et `EditMs` (types « marqués » TypeScript) : le
+   compilateur refuse de passer l'un pour l'autre. Champs toujours préfixés `src…` ou `edit…`.
+2. **Les segments sont le seul pont** entre les deux temps. Les positions en temps montage sont
+   calculées, jamais stockées.
+3. **Ancrage explicite de chaque élément** :
+   - au **contenu** (`anchor: 'source'`) : sous-titres, zoom sur une réaction, effet sonore sur un
+     événement. Si l'on déplace une coupe, ils restent sur la bonne parole ou réaction ; si leur
+     passage est coupé, ils disparaissent ;
+   - à la **structure** (`anchor: 'edit'`) : titre d'ouverture, carton de fin, musique globale.
+     Les transitions sont liées aux frontières entre segments.
+4. **Conversions explicites et testées** :
+   - `editToSource(t)` → un temps source, ou l'image figée pendant un arrêt sur image ;
+   - `sourceToEdit(t)` → **une liste** de temps montage : vide si le passage est coupé, plusieurs
+     valeurs si un passage est rejoué (_replay_) ;
+   - `sourceRangeToEditRanges()` : une plage source peut se retrouver découpée en plusieurs morceaux.
+5. **Le « temps média » d'un fichier de travail** (proxy, piste de clip) reste interne à
+   `@acs/media` : `tempsMédia = tempsSource − début de la fenêtre`. Le projet de clip ne le
+   connaît jamais. Seule la table `media_derivatives` stocke la fenêtre source.
+6. Contrats de temps existants : métadonnées en secondes à l'import ; la transcription (étape 3)
+   produira directement du `SourceMs`.
+
+### 10.3 Ajout de l'éditeur et de la mémoire sans reconstruire l'import et le traitement
+
+**Verdict : satisfait pour l'essentiel, sous réserve des corrections 10.1 et de celle ci-dessous.**
+
+| Brique                                                                        | Réutilisable telle quelle ?                                                 |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Import par référence, empreinte, contrôle de l'original                       | ✅                                                                          |
+| Lecture des métadonnées (ffprobe), gestion des MKV corrompus ou non finalisés | ✅                                                                          |
+| Rôles des pistes                                                              | ✅                                                                          |
+| Garde-fou d'écriture (jamais sur l'original, seulement dans `processing/`)    | ✅                                                                          |
+| Lancement des processus sans shell, annulation, fichiers `.part`              | ✅                                                                          |
+| Migrations SQLite                                                             | ✅ (ajouts de tables sans toucher aux données existantes)                   |
+| File de traitements : types de travaux extensibles                            | ✅                                                                          |
+| File de traitements : **unicité par (enregistrement, type)**                  | ❌ empêcherait de préparer les proxies de deux clips du même enregistrement |
+| Stockage des fichiers dérivés                                                 | ❌ voir 10.1                                                                |
+
+Correction supplémentaire : ajouter aux travaux des **paramètres** (`params_json`) et une
+**clé de cible** (`target_key`, par exemple `recording:<id>:transcription` ou
+`clip:<id>:proxy`), sur laquelle porte l'unicité. Le type `extract_audio` est renommé
+`extract_transcription_audio`.
+
+Ces trois corrections (dérivés, profils d'extraction, clé de cible des travaux) relèvent de
+l'étape 2. Elles touchent uniquement `@acs/media`, la base et la file de traitements. Elles
+représentent peu de code, sont couvertes par les tests existants et ne demandent aucune
+reconstruction. Il vaut mieux les faire **maintenant**, avant que de vrais enregistrements soient en base.
