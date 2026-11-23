@@ -41,17 +41,19 @@ Format `type(périmètre): message`, en français, un sujet par commit :
 Déclenchée à chaque Pull Request vers `main` et à chaque push sur `main` ou une branche
 `feature/**`, `fix/**`, `refactor/**`, `test/**`, `docs/**`, `ci/**`, `chore/**`.
 
-| Job                  | Vérifie                                                        | Équivalent local                            |
-| -------------------- | -------------------------------------------------------------- | ------------------------------------------- |
-| Qualité              | Types, lint, formatage                                         | `npm run typecheck`, `lint`, `format:check` |
-| Tests unitaires      | Code pur, SQLite en mémoire                                    | `npm run test:unit`                         |
-| Migrations           | Base neuve, reprise de données, migrations publiées inchangées | `npm run test:migrations`                   |
-| Tests d'intégration  | FFmpeg réel, API complète ; **échoue si FFmpeg est absent**    | `npm run test:integration`                  |
-| Build et démarrage   | Build de l'interface, démarrage réel de l'API                  | `npm run build:web`, `npm run smoke`        |
-| Windows              | Tests et démarrage sous Windows (PR et `main`)                 | —                                           |
-| Recherche de secrets | Tout l'historique Git (gitleaks)                               | —                                           |
+| Job                  | Vérifie                                                          | Équivalent local                            |
+| -------------------- | ---------------------------------------------------------------- | ------------------------------------------- |
+| Qualité              | Types, lint, formatage                                           | `npm run typecheck`, `lint`, `format:check` |
+| Tests unitaires      | Code pur, SQLite en mémoire                                      | `npm run test:unit`                         |
+| Migrations           | Base neuve, reprise de données, migrations publiées inchangées   | `npm run test:migrations`                   |
+| Tests d'intégration  | FFmpeg réel, API complète ; **échoue si FFmpeg est absent**      | `npm run test:integration`                  |
+| Build et démarrage   | Build de l'interface, démarrage réel de l'API                    | `npm run build:web`, `npm run smoke`        |
+| Windows              | Tests et démarrage sous Windows (PR et `main`)                   | —                                           |
+| Worker Python        | pytest + vrai modèle `tiny` sur CPU + bout en bout Node ↔ worker | `pytest` (vrai modèle : CI uniquement)      |
+| Recherche de secrets | Tout l'historique Git (gitleaks)                                 | —                                           |
 
-Prévu : job Python (worker Faster-Whisper, sur CPU) à l'étape 3.
+Aucun runner GitHub n'a de GPU : la transcription GPU se vérifie sur la machine du créateur
+(`npm run doctor -- --gpu`).
 
 ## Secrets et variables d'environnement
 
@@ -63,17 +65,78 @@ Prévu : job Python (worker Faster-Whisper, sur CPU) à l'étape 3.
   clé stockée en _secret_ GitHub dans un _environnement_ protégé exigeant l'approbation du
   créateur, jamais exposée aux PR venant de forks.
 
-## Réglages GitHub recommandés (à faire par le propriétaire du dépôt)
+## Réglages GitHub (à faire par le propriétaire du dépôt)
 
-1. **Settings → General → Default branch** : `main`.
-2. **Settings → General → Pull Requests** : autoriser uniquement _Allow squash merging_ ;
-   cocher _Automatically delete head branches_.
-3. **Settings → Rules → Rulesets → New branch ruleset**, cible `main`, statut _Active_ :
-   - _Restrict deletions_, _Block force pushes_, _Require linear history_ ;
-   - _Require a pull request before merging_ — **0 approbation requise** : les PR sont ouvertes
-     depuis le compte du propriétaire, et GitHub interdit d'approuver sa propre PR. La fusion
-     manuelle par le propriétaire constitue la validation ;
-   - _Require status checks to pass_ : ajouter les jobs de la CI (ils apparaissent après une
-     première exécution) — Qualité, Tests unitaires, Migrations, Tests d'intégration, Build et
-     démarrage, Windows, Recherche de secrets.
-4. **Settings → Code security** : activer _Secret scanning_ et _Push protection_.
+État constaté le 23/11/2026 : branche par défaut **`claude/funny-noether-63ljaj`** (à corriger),
+`main` **non protégée** (aucune règle n'impose la CI avant fusion), PR #1 et #2 fusionnées par
+_merge commit_.
+
+### 1. Branche par défaut
+
+**Settings → General → Default branch** → icône ⇄ → choisir `main` → _Update_ → confirmer.
+
+Conséquences : les nouvelles PR ciblent `main` par défaut, et la page d'accueil du dépôt et le
+badge CI montrent `main`. Ensuite seulement, les anciennes branches pourront être supprimées
+(une branche par défaut ne peut pas l'être).
+
+### 2. Squash and merge uniquement
+
+**Settings → General → Pull Requests** :
+
+- décocher _Allow merge commits_ ;
+- cocher **_Allow squash merging_** (message par défaut : _Pull request title and description_) ;
+- décocher _Allow rebase merging_ ;
+- cocher **_Automatically delete head branches_** ;
+- laisser _Allow auto-merge_ **décoché** (aucune fusion automatique).
+
+### 3. CI obligatoire avant fusion (ruleset sur `main`)
+
+**Settings → Rules → Rulesets → New ruleset → New branch ruleset** :
+
+- _Ruleset name_ : `main` ; _Enforcement status_ : **Active** ;
+- _Bypass list_ : **vide** (personne ne contourne, propriétaire compris) ;
+- _Target branches_ → _Add target_ → **Include default branch** (une fois l'étape 1 faite),
+  ou _Include by pattern_ → `main` ;
+- cocher **Restrict deletions** et **Block force pushes** ;
+- cocher **Require linear history** (cohérent avec Squash and merge) ;
+- cocher **Require a pull request before merging**, avec _Required approvals_ = **0** : les PR
+  sont ouvertes depuis le compte du propriétaire, et GitHub interdit d'approuver sa propre PR.
+  C'est la fusion manuelle par le propriétaire qui vaut validation. _Allowed merge methods_ :
+  **Squash** uniquement ;
+- cocher **Require status checks to pass**, puis :
+  - cocher **Require branches to be up to date before merging** : la CI doit avoir tourné sur la
+    branche à jour de `main`, c'est-à-dire sur le code qui sera réellement fusionné ;
+  - _Add checks_ : saisir **exactement** ces noms (ce sont les noms des jobs ; ils sont proposés
+    dans la liste après une première exécution de la CI) :
+
+    | Vérification obligatoire                            |
+    | --------------------------------------------------- |
+    | `Qualité (TypeScript, lint, format)`                |
+    | `Tests unitaires`                                   |
+    | `Migrations de base de données`                     |
+    | `Tests d'intégration (FFmpeg)`                      |
+    | `Build et démarrage de l'API`                       |
+    | `Windows (tests et démarrage)`                      |
+    | `Worker Python (pytest + vrai modèle tiny sur CPU)` |
+    | `Recherche de secrets (gitleaks)`                   |
+
+  - pour chacun, source : **GitHub Actions** ;
+- _Create_.
+
+Vérification : sur une PR dont un job est rouge ou en cours, le bouton de fusion doit être
+bloqué (« Required statuses must pass »).
+
+> Si un job est renommé dans `.github/workflows/ci.yml`, mettre à jour cette liste **et** le
+> ruleset : un nom obsolète bloque toutes les fusions (vérification attendue qui n'arrive jamais).
+
+### 4. Sécurité
+
+**Settings → Code security** : activer **Secret scanning** et **Push protection** (gratuits pour
+un dépôt public).
+
+### 5. Nettoyage (après l'étape 1)
+
+Les branches `claude/funny-noether-63ljaj`, `feature/etapes-1-2-import-audio` et
+`fix/installation-windows-sqlite` sont déjà fusionnées ou obsolètes et peuvent être supprimées
+(**Code → Branches**). Avec _Automatically delete head branches_, les suivantes le seront
+automatiquement.
