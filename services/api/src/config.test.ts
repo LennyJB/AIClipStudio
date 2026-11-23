@@ -16,6 +16,32 @@ describe('loadConfig', () => {
     expect(c.tools.python).toBe(defaultPythonPath(ROOT));
   });
 
+  it('valeurs par défaut de Whisper conformes aux décisions du créateur', () => {
+    const w = loadConfig({}, ROOT).whisper;
+    expect(w).toMatchObject({
+      model: 'large-v3-turbo',
+      modelChoices: ['large-v3-turbo', 'large-v3'],
+      device: 'auto',
+      cpuFallback: true,
+      language: 'auto',
+      wordTimestamps: true,
+      chunking: { coreMs: 1_200_000, overlapMs: 30_000, boundaryToleranceMs: 1_000 },
+      workerCommand: null,
+    });
+  });
+
+  it('options Whisper : booléens, commande du worker, valeurs invalides', () => {
+    const w = loadConfig(
+      { WHISPER_WORD_TIMESTAMPS: 'false', WHISPER_WORKER_COMMAND: '["node","fake.mjs"]' },
+      ROOT,
+    ).whisper;
+    expect(w.wordTimestamps).toBe(false);
+    expect(w.workerCommand).toEqual(['node', 'fake.mjs']);
+    expect(() => loadConfig({ WHISPER_WORKER_COMMAND: 'node fake.mjs' }, ROOT)).toThrow(AppError);
+    expect(() => loadConfig({ WHISPER_DEVICE: 'tpu' }, ROOT)).toThrow(AppError);
+    expect(() => loadConfig({ WHISPER_LANGUAGE: 'français' }, ROOT)).toThrow(AppError);
+  });
+
   it('traite une clé API vide comme absente', () => {
     expect(loadConfig({ ANTHROPIC_API_KEY: '  ' }, ROOT).claude.apiKey).toBeUndefined();
   });

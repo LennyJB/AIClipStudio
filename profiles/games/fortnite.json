@@ -24,5 +24,9 @@
   "analysisHints": [
     "Les phases calmes de loot et de rotation contiennent souvent les meilleures conversations",
     "Une mort absurde ou un plan qui échoue vaut souvent plus qu'un combat gagné"
-  ]
+  ],
+  "transcription": {
+    "useVocabulary": false,
+    "extraTerms": []
+  }
 }

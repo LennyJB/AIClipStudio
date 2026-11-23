@@ -340,7 +340,7 @@ export class DerivativeService {
 
   /* -------------------------------- Handlers -------------------------------- */
 
-  handlers(): Record<JobType, JobHandler> {
+  handlers(): Record<Exclude<JobType, 'transcribe_recording'>, JobHandler> {
     return {
       extract_transcription_audio: (job, hctx) =>
         this.runAudioJob(job, hctx, 'audio_transcription'),
@@ -355,7 +355,35 @@ export class DerivativeService {
     kind: 'audio_transcription' | 'audio_stem',
   ) {
     const p = AudioJobParams.parse(job.params);
-    const { rec, fp, sourcePath } = this.loadRecording(p.recordingId);
+    const ready = await this.ensureAudio(p.recordingId, kind, p.audioIndexes, p.range, {
+      signal,
+      reportProgress,
+      logContext: { jobId: job.id },
+    });
+    return { derivativeIds: ready.map((d) => d.id) };
+  }
+
+  /** Clé de cache du WAV de transcription d'une piste (entrée de la transcription). */
+  transcriptionAudioKey(recordingId: string, audioIndex: number): string {
+    const { fp } = this.loadRecording(recordingId);
+    return this.audioSpec(fp, recordingId, 'audio_transcription', audioIndex, null).key;
+  }
+
+  /**
+   * Garantit la présence des fichiers audio demandés (cache, sinon extraction en un seul
+   * passage + formes d'onde). Utilisable depuis un autre traitement (ex. transcription).
+   * Renvoie les dérivés dans l'ordre des pistes demandées.
+   */
+  async ensureAudio(
+    recordingId: string,
+    kind: 'audio_transcription' | 'audio_stem',
+    audioIndexes: readonly number[],
+    range: Range,
+    opts: { signal: AbortSignal; reportProgress: (ratio: number) => void; logContext?: object },
+  ): Promise<DerivativeDto[]> {
+    const { signal, reportProgress } = opts;
+    const p = { audioIndexes, range };
+    const { rec, fp, sourcePath } = this.loadRecording(recordingId);
 
     // L'original a-t-il été déplacé ou modifié depuis l'import ?
     if (!existsSync(sourcePath))
@@ -411,7 +439,7 @@ export class DerivativeService {
       }
       this.ctx.log.info(
         {
-          jobId: job.id,
+          ...opts.logContext,
           kind,
           range: p.range,
           tracks: results.map((r) => ({
@@ -434,7 +462,7 @@ export class DerivativeService {
     if (kind === 'audio_transcription' && longestMs > 0) {
       this.recordings.setDurationFromAudioIfUnknown(rec.id, longestMs / 1000);
     }
-    return { derivativeIds: ready.map((d) => d.id) };
+    return audioIndexes.map((i) => ready.find((d) => d.audioIndex === i)!);
   }
 
   private async runWaveformJob(job: JobDto, { signal }: JobHandlerContext) {

@@ -15,7 +15,11 @@ export type TrackRoleSource = 'override' | 'title' | 'config' | 'single_track' |
 export const SUPPORTED_EXTENSIONS = ['.mkv', '.mp4'] as const;
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'cancelled';
-export type JobType = 'extract_transcription_audio' | 'extract_audio_stems' | 'compute_waveform';
+export type JobType =
+  | 'extract_transcription_audio'
+  | 'extract_audio_stems'
+  | 'compute_waveform'
+  | 'transcribe_recording';
 
 /** File d'exécution : `heavy` (long, en arrière-plan) ou `interactive` (préparation de clip). */
 export type JobLane = 'heavy' | 'interactive';

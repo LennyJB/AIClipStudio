@@ -8,5 +8,9 @@
   "analysisHints": [
     "S'appuyer principalement sur la conversation et les réactions",
     "Ne pas supposer de mécanique de jeu précise"
-  ]
+  ],
+  "transcription": {
+    "useVocabulary": false,
+    "extraTerms": []
+  }
 }

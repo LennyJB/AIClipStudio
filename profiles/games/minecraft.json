@@ -23,5 +23,9 @@
   "analysisHints": [
     "Les moments clés naissent souvent de projets qui tournent mal ou de désaccords sur une construction",
     "Les longues discussions peuvent contenir une chute tardive : conserver la mise en place"
-  ]
+  ],
+  "transcription": {
+    "useVocabulary": false,
+    "extraTerms": []
+  }
 }
