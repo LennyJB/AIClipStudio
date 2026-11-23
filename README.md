@@ -1,5 +1,7 @@
 # AI Clip Studio
 
+[![CI](https://github.com/LennyJB/AIClipStudio/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/LennyJB/AIClipStudio/actions/workflows/ci.yml)
+
 Assistant de montage vidéo assisté par IA. Il analyse les enregistrements OBS après le stream,
 repère les moments intéressants (humour, interactions, absurde, malentendus, réactions…) et
 propose des clips verticaux pour TikTok, YouTube Shorts et Instagram Reels.
@@ -23,6 +25,7 @@ l'analyse ne sont pas encore implémentées. Voir la [feuille de route](#feuille
 - [Importer un enregistrement](#importer-un-enregistrement)
 - [Architecture](#architecture)
 - [Sécurité](#sécurité)
+- [Workflow de développement](#workflow-de-développement)
 - [Feuille de route](#feuille-de-route)
 
 ---
@@ -127,23 +130,27 @@ npm run dev
 
 ## Commandes
 
-| Commande                | Rôle                                                          |
-| ----------------------- | ------------------------------------------------------------- |
-| `npm run dev`           | API (rechargement auto) + interface Vite en parallèle         |
-| `npm run dev:api`       | API seule                                                     |
-| `npm run dev:web`       | Interface seule                                               |
-| `npm run start:api`     | API sans rechargement                                         |
-| `npm run build:web`     | Build de production de l'interface                            |
-| `npm run doctor`        | Diagnostic de l'environnement                                 |
-| `npm run import -- <f>` | Importe un enregistrement et extrait ses pistes audio         |
-| `npm run storage`       | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes` |
-| `npm test`              | Tous les tests (unitaires + intégration)                      |
-| `npm run test:watch`    | Tests en mode surveillance                                    |
-| `npm run test:coverage` | Tests avec couverture                                         |
-| `npm run typecheck`     | Vérification TypeScript de tous les workspaces                |
-| `npm run lint`          | ESLint                                                        |
-| `npm run format`        | Formatage Prettier                                            |
-| `npm run check`         | typecheck + lint + format + tests (à lancer avant un commit)  |
+| Commande                   | Rôle                                                          |
+| -------------------------- | ------------------------------------------------------------- |
+| `npm run dev`              | API (rechargement auto) + interface Vite en parallèle         |
+| `npm run dev:api`          | API seule                                                     |
+| `npm run dev:web`          | Interface seule                                               |
+| `npm run start:api`        | API sans rechargement                                         |
+| `npm run build:web`        | Build de production de l'interface                            |
+| `npm run doctor`           | Diagnostic de l'environnement                                 |
+| `npm run import -- <f>`    | Importe un enregistrement et extrait ses pistes audio         |
+| `npm run storage`          | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes` |
+| `npm test`                 | Tous les tests (unitaires + intégration)                      |
+| `npm run test:watch`       | Tests en mode surveillance                                    |
+| `npm run test:coverage`    | Tests avec couverture                                         |
+| `npm run typecheck`        | Vérification TypeScript de tous les workspaces                |
+| `npm run lint`             | ESLint                                                        |
+| `npm run format`           | Formatage Prettier                                            |
+| `npm run test:unit`        | Tests unitaires (sans outil externe)                          |
+| `npm run test:integration` | Tests d'intégration (FFmpeg réel)                             |
+| `npm run test:migrations`  | Migrations de base de données                                 |
+| `npm run smoke`            | Démarrage réel de l'API sur un stockage temporaire            |
+| `npm run check`            | typecheck + lint + format + tests (à lancer avant un commit)  |
 
 ---
 
@@ -335,6 +342,20 @@ Pipeline du MVP : **Import → Préparation → Transcription → Pré-analyse �
   Aucune commande produite par l'IA n'est exécutée.
 - Les réponses d'erreur ne contiennent ni pile d'appel ni détail interne ; les logs masquent
   les en-têtes d'authentification.
+
+---
+
+## Workflow de développement
+
+Branche de référence `main`, une branche et une Pull Request par étape, CI GitHub Actions
+obligatoire, fusion par le créateur uniquement. Détails : [`docs/workflow.md`](docs/workflow.md).
+
+```bash
+npm run check
+```
+
+Cette commande reproduit en local les vérifications de la CI : types, lint, formatage, tests
+unitaires et d'intégration, build et démarrage de l'API.
 
 ---
 
