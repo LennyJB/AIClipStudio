@@ -125,6 +125,17 @@ export function registerAnalysisRoutes(app: FastifyInstance, services: Services)
     return analysis.calls(runId);
   });
 
+  /** Accord après relecture des requêtes Opus : l'analyse approfondie part (plafond reconfirmé). */
+  app.post('/api/analyses/:runId/approve-review', async (req, reply) => {
+    const { runId } = parse(RunParams, req.params);
+    const body = parse(
+      z.object({ acceptBudgetUsd: z.number().positive().optional() }).strict(),
+      req.body ?? {},
+    );
+    const res = analysis.approveReview(runId, body.acceptBudgetUsd);
+    return reply.code(202).send(res);
+  });
+
   /** Requêtes exactes de l'analyse (requetes/), écrites avant tout envoi. */
   app.get('/api/analyses/:runId/requests', async (req) => {
     const { runId } = parse(RunParams, req.params);

@@ -138,34 +138,36 @@ npm run dev
 
 ## Commandes
 
-| Commande                               | Rôle                                                                   |
-| -------------------------------------- | ---------------------------------------------------------------------- |
-| `npm run dev`                          | API (rechargement auto) + interface Vite en parallèle                  |
-| `npm run dev:api`                      | API seule                                                              |
-| `npm run dev:web`                      | Interface seule                                                        |
-| `npm run start:api`                    | API sans rechargement                                                  |
-| `npm run build:web`                    | Build de production de l'interface                                     |
-| `npm run doctor`                       | Diagnostic de l'environnement                                          |
-| `npm run import -- <f>`                | Importe un enregistrement et extrait ses pistes audio                  |
-| `npm run storage`                      | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes`          |
-| `npm run transcribe -- <id \| chemin>` | Transcrit ; `--model`, `--force`, `--compare`                          |
-| `npm run analyze -- <id> --dry-run`    | Prépare l'analyse localement (aucun appel à Claude)                    |
-| `npm run analyze -- <id> --run`        | Analyse avec Claude : estimation, confirmation, plafond de réservation |
-| `npm run doctor -- --claude`           | Clé et modèles Claude accessibles (aucune génération)                  |
-| `npm run analysis-settings -- <id>`    | Confidentialité : accord Discord, facecam                              |
-| `npm run framing -- <commande>`        | Cadrage des images : `list`, `preview`, `validate`, `clear`            |
-| `npm run doctor -- --gpu`              | Vraie inférence sur le GPU (CUDA, cuBLAS, cuDNN)                       |
-| `npm test`                             | Tous les tests (unitaires + intégration)                               |
-| `npm run test:watch`                   | Tests en mode surveillance                                             |
-| `npm run test:coverage`                | Tests avec couverture                                                  |
-| `npm run typecheck`                    | Vérification TypeScript de tous les workspaces                         |
-| `npm run lint`                         | ESLint                                                                 |
-| `npm run format`                       | Formatage Prettier                                                     |
-| `npm run test:unit`                    | Tests unitaires (sans outil externe)                                   |
-| `npm run test:integration`             | Tests d'intégration (FFmpeg réel)                                      |
-| `npm run test:migrations`              | Migrations de base de données                                          |
-| `npm run smoke`                        | Démarrage réel de l'API sur un stockage temporaire                     |
-| `npm run check`                        | typecheck + lint + format + tests (à lancer avant un commit)           |
+| Commande                               | Rôle                                                                                                  |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `npm run dev`                          | API (rechargement auto) + interface Vite en parallèle                                                 |
+| `npm run dev:api`                      | API seule                                                                                             |
+| `npm run dev:web`                      | Interface seule                                                                                       |
+| `npm run start:api`                    | API sans rechargement                                                                                 |
+| `npm run build:web`                    | Build de production de l'interface                                                                    |
+| `npm run doctor`                       | Diagnostic de l'environnement                                                                         |
+| `npm run import -- <f>`                | Importe un enregistrement et extrait ses pistes audio                                                 |
+| `npm run storage`                      | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes`                                         |
+| `npm run transcribe -- <id \| chemin>` | Transcrit ; `--model`, `--force`, `--compare`                                                         |
+| `npm run analyze -- <id> --dry-run`    | Prépare l'analyse localement (aucun appel à Claude)                                                   |
+| `npm run analyze -- <id> --run`        | Analyse avec Claude : estimation, confirmation, plafond de réservation, pause de relecture avant Opus |
+| `npm run analyze -- <id> --continue`   | Requêtes Opus relues : lance l'analyse approfondie mise en pause                                      |
+| `npm run analyze -- <id> --requests`   | Requêtes réelles de la dernière analyse (`--window N` : contenu exact)                                |
+| `npm run doctor -- --claude`           | Clé et modèles Claude accessibles (aucune génération)                                                 |
+| `npm run analysis-settings -- <id>`    | Confidentialité : accord Discord, facecam                                                             |
+| `npm run framing -- <commande>`        | Cadrage des images : `list`, `preview`, `validate`, `clear`                                           |
+| `npm run doctor -- --gpu`              | Vraie inférence sur le GPU (CUDA, cuBLAS, cuDNN)                                                      |
+| `npm test`                             | Tous les tests (unitaires + intégration)                                                              |
+| `npm run test:watch`                   | Tests en mode surveillance                                                                            |
+| `npm run test:coverage`                | Tests avec couverture                                                                                 |
+| `npm run typecheck`                    | Vérification TypeScript de tous les workspaces                                                        |
+| `npm run lint`                         | ESLint                                                                                                |
+| `npm run format`                       | Formatage Prettier                                                                                    |
+| `npm run test:unit`                    | Tests unitaires (sans outil externe)                                                                  |
+| `npm run test:integration`             | Tests d'intégration (FFmpeg réel)                                                                     |
+| `npm run test:migrations`              | Migrations de base de données                                                                         |
+| `npm run smoke`                        | Démarrage réel de l'API sur un stockage temporaire                                                    |
+| `npm run check`                        | typecheck + lint + format + tests (à lancer avant un commit)                                          |
 
 ---
 
@@ -336,7 +338,9 @@ s'arrête alors et le dépassement est affiché). Guide complet : [`docs/analyse
 ```bash
 npm run analyze -- <id> --dry-run              # préparer, résumer, estimer
 npm run analyze -- <id> --dry-run --window 1   # relire la requête exacte qui serait envoyée
-npm run analyze -- <id> --run                  # analyse payante (confirmation « oui »)
+npm run analyze -- <id> --run                  # analyse payante : « oui », repérage, PAUSE (requêtes Opus à relire)
+npm run analyze -- <id> --requests --window 2  # relire une requête Opus réelle avant son envoi
+npm run analyze -- <id> --continue             # second « oui » : analyse Opus
 npm run analyze -- <id> --proposals            # clips puis moments secondaires
 ```
 

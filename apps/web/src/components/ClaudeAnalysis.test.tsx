@@ -6,6 +6,9 @@ let posted: unknown[];
 let configured: boolean;
 /** Dépassement simulé du plafond (0 = aucun). */
 let overrun: number;
+/** Analyse en pause de relecture (requêtes Opus écrites, rien d'envoyé). */
+let paused: boolean;
+let approved: unknown[];
 
 const proposal = (over: Record<string, unknown>) => ({
   id: 'p',
@@ -56,13 +59,37 @@ function mockApi() {
         );
       }
       if (url === '/api/recordings/rec-1/analyses') return json({ runs: [] });
+      if (url === '/api/analyses/run-1/approve-review' && init?.method === 'POST') {
+        approved.push(JSON.parse(String(init.body)));
+        paused = false;
+        return json(
+          {
+            status: 'pending',
+            run: { id: 'run-1' },
+            job: { id: 'job-2', status: 'succeeded', progress: 1, error: null },
+          },
+          202,
+        );
+      }
+      if (url === '/api/analyses/run-1/requests') {
+        return json({
+          requests: [
+            { name: 'reperage-01.json', stage: 'triage', requestHash: 'a', sentToClaude: true },
+            { name: 'fenetre-001.json', stage: 'deep', requestHash: 'b', sentToClaude: !paused },
+            { name: 'fenetre-002.json', stage: 'deep', requestHash: 'c', sentToClaude: !paused },
+          ],
+        });
+      }
       if (url === '/api/analyses/run-1') {
         return json({
           run: {
             id: 'run-1',
             mode: 'claude',
-            status: overrun ? 'budget_exhausted' : 'completed',
-            stage: 'done',
+            status: paused ? 'pending' : overrun ? 'budget_exhausted' : 'completed',
+            stage: paused ? 'awaiting_review' : 'done',
+            config: paused
+              ? { review: { deepRequests: 2, deepMaxUsd: 0.62, remainingUsd: 4.99 } }
+              : {},
             budgetUsd: 5,
             spentUsd: overrun ? 5 : 0.42,
             reservedUsd: 0,
@@ -119,6 +146,8 @@ describe('ClaudeAnalysis', () => {
     posted = [];
     configured = true;
     overrun = 0;
+    paused = false;
+    approved = [];
     mockApi();
   });
   afterEach(() => {
@@ -161,5 +190,27 @@ describe('ClaudeAnalysis', () => {
     expect(alert.textContent).toMatch(/Dépassement du plafond/);
     expect(alert.textContent).toMatch(/0\.310 \$/);
     expect(screen.getByText('5.31 $')).toBeTruthy(); // coût réel complet, pas le plafond
+  });
+
+  it('pause de relecture : requêtes Opus listées, aucun envoi avant l’accord explicite', async () => {
+    paused = true;
+    render(<ClaudeAnalysis recordingId="rec-1" pollMs={10} />);
+    fireEvent.click(await screen.findByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Lancer l’analyse avec Claude' }));
+    const section = await screen.findByRole('region', { name: 'Relecture des requêtes Opus' });
+    expect(section.textContent).toMatch(/Aucune requête n’a encore été envoyée à Opus/);
+    expect(section.textContent).toMatch(/0\.620 \$/);
+    expect(screen.getByRole('link', { name: 'fenetre-002.json' }).getAttribute('href')).toBe(
+      '/api/analyses/run-1/requests/fenetre-002.json',
+    );
+    const go = screen.getByRole('button', { name: 'Lancer l’analyse approfondie (Opus)' });
+    expect((go as HTMLButtonElement).disabled).toBe(true);
+    expect(approved).toEqual([]);
+    fireEvent.click(screen.getByRole('checkbox', { name: /J’ai relu ces requêtes/ }));
+    fireEvent.click(go);
+    await waitFor(() => expect(approved).toEqual([{ acceptBudgetUsd: 5 }]));
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: 'Relecture des requêtes Opus' })).toBeNull(),
+    );
   });
 });

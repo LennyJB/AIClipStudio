@@ -2,11 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   api,
   claudeApi,
+  isAwaitingReview,
   type AnalysisPublicConfig,
   type CallsSummary,
   type ClaudeRun,
   type Job,
   type Proposal,
+  type RunRequest,
 } from '../api';
 import { formatSourceMs, formatUsd, JOB_STATUS_LABELS } from '../format';
 
@@ -17,6 +19,7 @@ interface Props {
 
 const RUN_STATUS: Record<string, string> = {
   pending: 'en attente',
+  awaiting_review: 'en pause : requêtes Opus à relire avant tout envoi',
   running: 'en cours',
   completed: 'terminée',
   budget_exhausted: 'arrêtée : plafond atteint (résultats conservés)',
@@ -40,6 +43,8 @@ export function ClaudeAnalysis({ recordingId, pollMs = 1000 }: Props) {
   >([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [calls, setCalls] = useState<CallsSummary | null>(null);
+  const [requests, setRequests] = useState<RunRequest[]>([]);
+  const [reviewed, setReviewed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -61,12 +66,13 @@ export function ClaudeAnalysis({ recordingId, pollMs = 1000 }: Props) {
   }, [recordingId]);
 
   const load = useCallback(async (id: string) => {
-    const [r, p, c] = await Promise.all([
+    const [r, p, c, q] = await Promise.all([
       claudeApi.run(id),
       claudeApi.proposals(id),
       claudeApi.calls(id),
+      claudeApi.requests(id),
     ]);
-    return { r, p, c };
+    return { r, p, c, q };
   }, []);
 
   const busy = job !== null && (job.status === 'queued' || job.status === 'running');
@@ -75,12 +81,13 @@ export function ClaudeAnalysis({ recordingId, pollMs = 1000 }: Props) {
     let cancelled = false;
     const refresh = () =>
       load(runId).then(
-        ({ r, p, c }) => {
+        ({ r, p, c, q }) => {
           if (cancelled) return;
           setRun(r.run);
           setWindows(r.windows);
           setProposals(p.proposals);
           setCalls(c);
+          setRequests(q.requests);
         },
         (err: unknown) => {
           if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -104,6 +111,18 @@ export function ClaudeAnalysis({ recordingId, pollMs = 1000 }: Props) {
       clearInterval(timer);
     };
   }, [runId, busy, job, pollMs, load]);
+
+  const approve = async () => {
+    if (!run) return;
+    setError(null);
+    try {
+      const res = await claudeApi.approveReview(run.id, run.budgetUsd);
+      setJob(res.job);
+      setReviewed(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const start = async () => {
     if (!config) return;
@@ -164,10 +183,55 @@ export function ClaudeAnalysis({ recordingId, pollMs = 1000 }: Props) {
       )}
       {error && <p className="error">{error}</p>}
 
+      {run && isAwaitingReview(run) && (
+        <section aria-label="Relecture des requêtes Opus">
+          <h4>Repérage terminé : en attente de ta relecture</h4>
+          <p>
+            Aucune requête n’a encore été envoyée à Opus. Les{' '}
+            {run.config?.review?.deepRequests ?? '…'} requête(s) exactes sont enregistrées (dossier{' '}
+            <code>requetes/</code> de l’analyse, ou{' '}
+            <code>npm run analyze -- {recordingId} --requests</code>) ; pire cas estimé{' '}
+            {formatUsd(run.config?.review?.deepMaxUsd ?? 0)}, plafond restant{' '}
+            {formatUsd(run.config?.review?.remainingUsd ?? 0)}.
+          </p>
+          <ul>
+            {requests
+              .filter((q) => q.stage === 'deep')
+              .map((q) => (
+                <li key={q.name}>
+                  <a
+                    href={`/api/analyses/${run.id}/requests/${q.name}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {q.name}
+                  </a>{' '}
+                  — {q.sentToClaude ? 'envoyée' : 'pas envoyée'}
+                </li>
+              ))}
+          </ul>
+          <label>
+            <input
+              type="checkbox"
+              checked={reviewed}
+              onChange={(e) => setReviewed(e.target.checked)}
+            />{' '}
+            J’ai relu ces requêtes et je confirme le plafond de réservation de{' '}
+            {formatUsd(run.budgetUsd)}
+          </label>{' '}
+          <button type="button" disabled={!reviewed || busy} onClick={() => void approve()}>
+            Lancer l’analyse approfondie (Opus)
+          </button>
+        </section>
+      )}
+
       {run && (
         <>
           <p>
-            Analyse {RUN_STATUS[run.status] ?? run.status}
+            Analyse{' '}
+            {isAwaitingReview(run)
+              ? RUN_STATUS['awaiting_review']
+              : (RUN_STATUS[run.status] ?? run.status)}
             {run.error && run.status !== 'completed' ? ` — ${run.error.message}` : ''}. Coût réel
             calculé : <strong>{formatUsd(calls?.costs.realCostUsd ?? run.totalCostUsd)}</strong>{' '}
             (plafond de réservation {formatUsd(run.budgetUsd)})

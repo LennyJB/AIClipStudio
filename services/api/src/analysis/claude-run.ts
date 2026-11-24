@@ -47,7 +47,7 @@ import type { AppContext } from '../context';
 import type { DerivativeService } from '../derivatives/service';
 import type { JobHandlerContext } from '../jobs/runner';
 import { toAbs } from '../storage/paths';
-import { CallExecutor } from './executor';
+import { CallExecutor, localWorstCaseUsd } from './executor';
 import {
   deepRequestName,
   recordedHash,
@@ -55,7 +55,7 @@ import {
   writeRequestFile,
 } from './request-files';
 import { ProposalRepository, type NewProposal } from './proposals';
-import type { AnalysisRunDto, AnalysisWindowDto, NewWindow } from './repository';
+import { type AnalysisRunDto, type AnalysisWindowDto, type NewWindow } from './repository';
 import type { AnalysisService, Inputs } from './service';
 
 type Context = Awaited<ReturnType<AnalysisService['buildContext']>>;
@@ -195,6 +195,29 @@ export class ClaudeRunner {
       const todo = windows.filter((w) =>
         ['pending', 'failed', 'skipped', 'prepared'].includes(w.status),
       );
+
+      // Pause de relecture (par défaut) : rien n'est envoyé à Opus avant l'accord explicite du
+      // créateur, donné après avoir pu relire les requêtes écrites dans requetes/.
+      const rc = run.config as { reviewBeforeDeep?: boolean; reviewApprovedAt?: string };
+      if (rc.reviewBeforeDeep && !rc.reviewApprovedAt && todo.length > 0) {
+        const fresh = s.repo.getRun(run.id)!;
+        s.repo.pauseForReview(run.id, {
+          pausedAt: new Date().toISOString(),
+          deepRequests: todo.length,
+          deepMaxUsd:
+            Math.ceil(
+              todo.reduce((sum, w) => sum + localWorstCaseUsd(deepReqs.get(w.id)!.req), 0) * 1e4,
+            ) / 1e4,
+          remainingUsd:
+            Math.round((fresh.budgetUsd - fresh.spentUsd - fresh.reservedUsd) * 1e4) / 1e4,
+        });
+        this.ctx.log.info(
+          { runId: run.id, deepRequests: todo.length },
+          'Repérage terminé : requêtes Opus écrites, en attente de relecture (aucun envoi)',
+        );
+        reportProgress(1);
+        return this.summary(run.id, proposals);
+      }
       let done = windows.length - todo.length;
       const queue = [...todo];
       let budgetHit: AppError | null = null;
@@ -439,10 +462,19 @@ export class ClaudeRunner {
         await this.service.requestImages(frames),
         streamSummary,
       );
-      await writeRequestFile(
-        toAbs(this.ctx.config.paths.storage, `${relDir}/requetes/${deepRequestName(w.rank)}`),
-        req,
+      const file = toAbs(
+        this.ctx.config.paths.storage,
+        `${relDir}/requetes/${deepRequestName(w.rank)}`,
       );
+      // Reprise (après relecture ou interruption) : la requête doit être celle déjà écrite.
+      const before = await recordedHash(file);
+      if (before !== null && before !== requestHash(req)) {
+        throw new AppError(
+          'CONFLICT',
+          `La requête Opus de la fenêtre ${w.rank} a changé depuis son enregistrement : relancez une nouvelle analyse (--force)`,
+        );
+      }
+      if (before === null) await writeRequestFile(file, req);
       out.set(w.id, { frames, payload, req });
     }
     return out;

@@ -187,6 +187,8 @@ async function analyze(recId: string, body: Record<string, unknown> = {}) {
     {
       mode: 'claude',
       acceptBudgetUsd: config.analysis.maxCostUsd,
+      // Ces tests enchaînent tout explicitement ; la pause de relecture (défaut) a son propre test.
+      review: false,
       ...body,
     },
   );
@@ -426,6 +428,57 @@ describe.skipIf(!enabled)('Analyse avec Claude (faux modèle, aucun appel réel)
     expect(a.calls.filter((c) => c.stage === 'deep')).toHaveLength(1);
   });
 
+  it('pause de relecture (défaut) : rien ne part chez Opus avant l’accord explicite ; ce qui part est ce qui a été relu', async () => {
+    await setup(smart);
+    const rec = await importAndTranscribe();
+    // Demande sans l'option `review` : la pause est le comportement par défaut.
+    const a = await analyze(rec.id, { review: undefined });
+    expect(a.run).toMatchObject({ status: 'pending', stage: 'awaiting_review' });
+    expect(model.calls.filter((c) => c.stage === 'triage').length).toBeGreaterThan(0);
+    expect(model.calls.filter((c) => c.stage === 'deep')).toHaveLength(0);
+    const review = (a.run!.config as { review: Record<string, number> }).review;
+    expect(review).toMatchObject({ deepRequests: 2 });
+    expect(review['deepMaxUsd']).toBeGreaterThan(0);
+    expect(review['remainingUsd']).toBeLessThanOrEqual(5);
+
+    // Requêtes Opus consultables pendant la pause, dont celle née du repérage ; aucune envoyée.
+    const list = (
+      await call<{
+        requests: { name: string; stage: string; requestHash: string; sentToClaude: boolean }[];
+      }>('GET', `/api/analyses/${a.run!.id}/requests`)
+    ).body.requests;
+    const deep = list.filter((r) => r.stage === 'deep');
+    expect(deep).toHaveLength(2);
+    expect(deep.some((r) => r.sentToClaude)).toBe(false);
+    const reviewed = new Set(deep.map((r) => r.requestHash));
+
+    // Redemander la même analyse ne relance rien ; un redémarrage du serveur garde la pause.
+    const again = await analyze(rec.id, { review: undefined });
+    expect(again.run!.id).toBe(a.run!.id);
+    services.analysis.recover();
+    expect(services.analysis.repo.getRun(a.run!.id)).toMatchObject({
+      status: 'pending',
+      stage: 'awaiting_review',
+    });
+    expect(model.calls.filter((c) => c.stage === 'deep')).toHaveLength(0);
+
+    // Accord : le plafond doit être reconfirmé.
+    const url = `/api/analyses/${a.run!.id}/approve-review`;
+    expect((await call('POST', url, {})).status).toBe(400);
+    expect((await call('POST', url, { acceptBudgetUsd: 5 })).status).toBe(202);
+    await services.runner.idle();
+    const run = services.analysis.repo.getRun(a.run!.id)!;
+    expect(run.status).toBe('completed');
+    const sent = model.calls.filter((c) => c.stage === 'deep');
+    expect(sent).toHaveLength(2);
+    for (const r of sent) expect(reviewed.has(requestHash(r))).toBe(true); // exactement les requêtes relues
+    expect(model.calls.filter((c) => c.stage === 'triage')).toHaveLength(
+      a.calls.filter((c) => c.stage === 'triage').length,
+    ); // repérage non repayé
+    // Un second accord est refusé.
+    expect((await call('POST', url, { acceptBudgetUsd: 5 })).status).toBe(409);
+  });
+
   it('zéro clip est un résultat normal ; une nouvelle analyse réutilise toutes les réponses (0 $)', async () => {
     const none: Script = (req) =>
       req.stage === 'triage'
@@ -577,6 +630,7 @@ describe.skipIf(!enabled)('Analyse avec Claude (faux modèle, aucun appel réel)
     const r = await call<{ run: AnalysisRunDto }>('POST', `/api/recordings/${rec.id}/analyses`, {
       mode: 'claude',
       acceptBudgetUsd: 5,
+      review: false,
     });
     const runId = r.body.run.id;
     while (!model.calls.some((c) => c.stage === 'deep'))

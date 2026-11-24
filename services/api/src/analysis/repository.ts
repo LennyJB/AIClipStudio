@@ -46,6 +46,30 @@ export const defaultSettings = (recordingId: string): AnalysisSettingsDto => ({
 export type AnalysisRunStatus =
   'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'budget_exhausted';
 
+/** Étape d'une analyse avec Claude en pause, en attente de la relecture des requêtes Opus. */
+export const AWAITING_REVIEW = 'awaiting_review';
+
+/** Ce qui est montré au créateur pendant la pause de relecture. */
+export interface ReviewInfo {
+  pausedAt: string;
+  /** Requêtes Opus prêtes (une par fenêtre restant à analyser), dans requetes/. */
+  deepRequests: number;
+  /** Pire cas estimé localement (sans comptage par l'API) de ces requêtes. */
+  deepMaxUsd: number;
+  /** Plafond restant (plafond − déjà dépensé). */
+  remainingUsd: number;
+}
+
+/** Pause de relecture : en attente (pas encore approuvée) ? */
+export function isAwaitingReview(run: AnalysisRunDto): boolean {
+  return (
+    run.mode === 'claude' &&
+    run.status === 'pending' &&
+    run.stage === AWAITING_REVIEW &&
+    !(run.config as { reviewApprovedAt?: string }).reviewApprovedAt
+  );
+}
+
 export interface AnalysisRunDto {
   id: string;
   recordingId: string;
@@ -471,13 +495,43 @@ export class AnalysisRepository {
   }
 
   markStaleAsInterrupted(): number {
+    // Une analyse en pause de relecture n'a aucun traitement en cours : elle reste en pause.
     return this.db
       .prepare(
         `UPDATE analysis_runs SET status = 'interrupted', error_code = 'INTERRUPTED',
            error_message = 'Interrompue (arrêt du serveur)', updated_at = ${NOW}
-         WHERE status IN ('pending','running')`,
+         WHERE status = 'running'
+            OR (status = 'pending' AND COALESCE(stage, '') <> '${AWAITING_REVIEW}')`,
       )
       .run().changes;
+  }
+
+  /**
+   * Pause après le repérage : toutes les requêtes Opus sont écrites, aucune n'est envoyée.
+   * L'état tient dans les colonnes existantes : statut `pending`, étape `awaiting_review`,
+   * détail dans `config_json.review` (aucune migration).
+   */
+  pauseForReview(id: string, info: ReviewInfo) {
+    this.db
+      .prepare(
+        `UPDATE analysis_runs SET status = 'pending', stage = '${AWAITING_REVIEW}',
+           config_json = json_set(config_json, '$.review', json(?)), updated_at = ${NOW} WHERE id = ?`,
+      )
+      .run(JSON.stringify(info), id);
+  }
+
+  /** Relecture faite : l'analyse approfondie est autorisée (une seule fois, sur une pause). */
+  approveReview(id: string): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE analysis_runs SET config_json = json_set(config_json, '$.reviewApprovedAt', ${NOW}),
+             updated_at = ${NOW}
+           WHERE id = ? AND status = 'pending' AND stage = '${AWAITING_REVIEW}'
+             AND json_extract(config_json, '$.reviewApprovedAt') IS NULL`,
+        )
+        .run(id).changes === 1
+    );
   }
 
   listWindows(runId: string): AnalysisWindowDto[] {

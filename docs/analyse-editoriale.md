@@ -283,7 +283,13 @@ migrations 1 à 3 ne sont pas modifiées.
    identifiants doivent appartenir à la tranche ; le repérage est facultatif (une tranche en
    échec n'arrête pas l'analyse). **C'est lui qui trouve l'ironie calme sans signal local.**
 3. **Fenêtres** : fenêtres à signaux ∪ zones repérées (origine `signals`, `triage` ou `both`),
-   par ordre de priorité ; une reprise réutilise les mêmes fenêtres.
+   par ordre de priorité ; une reprise réutilise les mêmes fenêtres. **Toutes les requêtes Opus**
+   (y compris celles des fenêtres nées du repérage, avec le résumé réel) sont alors écrites dans
+   `requetes/` de l'analyse, avant le premier appel Opus.
+   **Pause de relecture (par défaut)** : l'analyse s'arrête ici (statut `pending`, étape
+   `awaiting_review`), sans rien envoyer à Opus. Le créateur relit les requêtes (`--requests`,
+   interface) puis donne un second accord (`--continue`, ou « oui » dans le terminal, ou le bouton
+   de l'interface), avec reconfirmation du plafond. `--no-review` enchaîne tout explicitement.
 4. **Analyse approfondie** (`claude-opus-5-5`, effort `high`) : une requête par fenêtre ; réponse
    `DeepResult` (0 à 3 moments). Le résumé du stream y figure comme **non vérifié**.
 5. **Vérification locale** (`verify.ts`) : identifiants réellement transmis, ordre mise en place →
@@ -364,7 +370,24 @@ analyse** ; le coût cumulé d'un enregistrement est visible avec `--costs`.
   budget** ; les appels réussis sont réutilisés, seuls les manquants sont payés. Un appel coupé
   en cours a pu être facturé : il est compté au pire cas et pourra être payé une seconde fois.
 
-### 11.4 Traçabilité
+### 11.4 Transparence des requêtes et traçabilité
+
+**Pourquoi une pause ?** Les requêtes Opus dépendent de la réponse de Haiku : résumé du stream
+et fenêtres découvertes par le repérage. Le dry-run ne peut donc pas les montrer (il affiche un
+repère à la place du résumé, et ignore les fenêtres que le repérage trouvera). Sans pause, elles
+seraient enregistrées et consultables, mais l'analyse enchaînerait aussitôt : ce serait une
+traçabilité, pas une relecture préalable. **Seule la pause garantit qu'on peut les relire avant
+leur envoi** ; elle est donc active par défaut.
+
+| Requête          | Écrite dans `requetes/` de l'analyse            | Garantie avant l'envoi                                                                                 |
+| ---------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Repérage (Haiku) | Avant son envoi                                 | Identique à celle du dry-run relu (même empreinte), sinon arrêt                                        |
+| Analyse (Opus)   | Toutes, avant le premier appel Opus, puis pause | Identique au fichier relu (empreinte comparée juste avant l'envoi), sinon la fenêtre échoue sans appel |
+
+Une requête Opus ne peut pas changer entre la relecture et l'envoi : à la reprise, chaque
+requête reconstruite est comparée au fichier déjà écrit ; une différence arrête l'analyse
+(`CONFLICT`). Consultation : `npm run analyze -- <id> --requests [--window N]`,
+`GET /api/analyses/:runId/requests[/:nom]`, ou l'interface pendant la pause.
 
 Pour chaque appel : `appels/<id>.request.json` (corps sans clé, images par empreinte, réservation,
 ce qui a été transmis) et `appels/<id>.response.json` (message brut, usage, `stop_reason`,
@@ -395,7 +418,11 @@ Ajouts uniquement : aucune table existante n'est reconstruite ; les migrations 1
 - **Intégration** (FFmpeg réel + faux modèle) : ironie calme trouvée par le repérage seul et
   retenue comme clip ; zéro clip ; réutilisation sans aucun nouvel appel ; plafond trop bas →
   `budget_exhausted` ; refus ; citation inventée rejetée ; arrêt du serveur pendant un appel puis
-  reprise de la même analyse ; aucune donnée Discord ni nom réel dans les requêtes.
+  reprise de la même analyse ; aucune donnée Discord ni nom réel dans les requêtes ;
+  `--force-recall` (nouvelle analyse, tout redemandé) ; dépassement réel du plafond (arrêt, coût
+  complet visible) ; requêtes Opus toutes écrites avant le premier appel Opus et identiques à ce
+  qui part ; requête altérée sur disque → aucun appel ; pause de relecture (rien ne part avant
+  l'accord, la pause survit à un redémarrage, l'accord exige le plafond, envoi = requêtes relues).
 
 ### 11.7 Limites connues
 

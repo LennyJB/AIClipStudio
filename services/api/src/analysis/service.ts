@@ -69,6 +69,7 @@ import { ClaudeRunner } from './claude-run';
 import { ProposalRepository } from './proposals';
 import {
   AnalysisRepository,
+  isAwaitingReview,
   type AnalysisRunDto,
   type AnalysisSettingsDto,
   type AnalysisWindowDto,
@@ -125,6 +126,11 @@ export const AnalysisRequestSchema = z
     forceRecall: z.boolean().default(false),
     /** Mode claude : plafond accepté par le créateur (doit être égal au plafond configuré). */
     acceptBudgetUsd: z.number().positive().optional(),
+    /**
+     * Mode claude : pause après le repérage pour relire les requêtes Opus avant tout envoi
+     * (défaut). `false` enchaîne tout, explicitement.
+     */
+    review: z.boolean().default(true),
   })
   .strict();
 
@@ -621,6 +627,10 @@ export class AnalysisService {
     const fresh = opts.force || opts.forceRecall;
     const active = this.repo.findReusable(key, 'claude');
     const finished = active?.status === 'completed' || active?.status === 'budget_exhausted';
+    // En pause de relecture : rien ne part sans l'accord explicite (approveReview).
+    if (active && isAwaitingReview(active) && !fresh) {
+      return { status: 'pending' as const, run: active, job: null, reused: true };
+    }
     if (active && !finished) {
       if (opts.forceRecall && !active.forceRecall) {
         throw new AppError(
@@ -660,6 +670,7 @@ export class AnalysisService {
         minRelevance: this.cfg.minRelevance,
         minReliability: this.cfg.minReliability,
         triageEffort: this.cfg.triageEffort,
+        reviewBeforeDeep: opts.review,
       },
       privacy: inp.privacy,
       profiles: inp.profiles,
@@ -672,6 +683,29 @@ export class AnalysisService {
       'Analyse avec Claude demandée (plafond accepté)',
     );
     return { status: 'pending' as const, run, job: this.enqueueClaude(run).job, reused: false };
+  }
+
+  /**
+   * Accord du créateur après relecture des requêtes Opus : l'analyse approfondie peut partir.
+   * Exige à nouveau la confirmation du plafond.
+   */
+  approveReview(runId: string, acceptBudgetUsd: number | undefined) {
+    const { run } = this.getRun(runId);
+    if (!this.modelProvider()) {
+      throw new AppError('CLAUDE_NOT_CONFIGURED', 'ANTHROPIC_API_KEY absente');
+    }
+    if (acceptBudgetUsd === undefined || Math.abs(acceptBudgetUsd - run.budgetUsd) > 1e-9) {
+      throw new AppError(
+        'BUDGET_NOT_CONFIRMED',
+        `Confirmez le plafond de ${run.budgetUsd} $ avant l’analyse approfondie (acceptBudgetUsd)`,
+      );
+    }
+    if (!isAwaitingReview(run) || !this.repo.approveReview(runId)) {
+      throw new AppError('CONFLICT', 'Cette analyse n’attend pas de relecture');
+    }
+    const approved = this.repo.getRun(runId)!;
+    this.ctx.log.info({ runId }, 'Requêtes Opus relues : analyse approfondie autorisée');
+    return { status: 'pending' as const, run: approved, job: this.enqueueClaude(approved).job };
   }
 
   private enqueueClaude(run: AnalysisRunDto) {

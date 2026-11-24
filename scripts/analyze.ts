@@ -7,8 +7,13 @@
  *   npm run analyze -- <id> --dry-run --show-payload  TOUT le contenu qui serait transmis
  *
  * Analyse avec Claude (PAYANTE, plafond de réservation, confirmation obligatoire) :
- *   npm run analyze -- <id> --run                     prépare, affiche l'estimation, demande « oui »
- *   npm run analyze -- <id> --run --yes               confirmation explicite sans question
+ *   npm run analyze -- <id> --run                     prépare, estime, demande « oui », fait le
+ *                                                     repérage Haiku puis S'ARRÊTE : requêtes Opus
+ *                                                     écrites et affichées, second « oui » pour Opus
+ *   npm run analyze -- <id> --continue [--yes]        relu : lancer l'analyse Opus mise en pause
+ *   npm run analyze -- <id> --run --no-review         tout enchaîner sans pause (explicite)
+ *   npm run analyze -- <id> --run --yes               confirmation du plafond sans question (la pause
+ *                                                     de relecture reste : --continue ensuite)
  *   npm run analyze -- <id> --run --force             nouvelle analyse (réponses identiques réutilisées, 0 $)
  *   npm run analyze -- <id> --run --force-recall      nouvelle analyse qui redemande TOUT à Claude (payant)
  *
@@ -28,7 +33,11 @@ import {
   type AnalysisEstimate,
   type Signal,
 } from '@acs/editorial';
-import type { AnalysisRunDto } from '../services/api/src/analysis/repository';
+import {
+  isAwaitingReview,
+  type AnalysisRunDto,
+  type ReviewInfo,
+} from '../services/api/src/analysis/repository';
 import { costSummaryLines } from '../services/api/src/analysis/cost-report';
 import { JobRepository } from '../services/api/src/recordings/repository';
 import { openCliContext, runMain } from './lib/context';
@@ -48,6 +57,8 @@ const { values, positionals } = parseArgs({
     calls: { type: 'boolean', default: false },
     costs: { type: 'boolean', default: false },
     requests: { type: 'boolean', default: false },
+    continue: { type: 'boolean', default: false },
+    'no-review': { type: 'boolean', default: false },
   },
 });
 
@@ -162,6 +173,52 @@ async function printPreparation(ctx: Ctx, run: AnalysisRunDto, fileName: string)
   }
 }
 
+function finishRun(ctx: Ctx, run: AnalysisRunDto): number {
+  printProposals(ctx, run);
+  printCalls(ctx, run);
+  return run.status === 'completed' || run.status === 'budget_exhausted' ? 0 : 1;
+}
+
+/**
+ * Pause de relecture : les requêtes Opus sont écrites, rien n'est envoyé. Le créateur les relit
+ * puis confirme par « oui ». Lors du premier passage (`--run`), `--yes` ne vaut PAS accord de
+ * relecture : sans terminal, l'analyse reste en pause et `--continue [--yes]` la reprend.
+ */
+async function reviewAndContinue(ctx: Ctx, run: AnalysisRunDto, explicit: boolean) {
+  const review = (run.config as { review?: ReviewInfo }).review;
+  console.log('\nRepérage terminé. AUCUNE requête n’a encore été envoyée à Opus.');
+  await printRunRequests(ctx, run);
+  if (review) {
+    console.log(
+      `\nAnalyse approfondie : ${review.deepRequests} requête(s) Opus, pire cas estimé ${usd(review.deepMaxUsd)}` +
+        ` (plafond restant ${usd(review.remainingUsd)} ; au-delà, les fenêtres les moins prioritaires sont sautées).`,
+    );
+  }
+  const interactive = Boolean(process.stdin.isTTY);
+  if (!explicit && !interactive) {
+    console.log(
+      '\nRelisez les requêtes (--requests --window N), puis lancez l’analyse Opus avec :\n' +
+        `  npm run analyze -- ${run.recordingId} --continue [--yes]`,
+    );
+    return 0;
+  }
+  const ok = explicit
+    ? await confirm('Requêtes relues : lancer l’analyse Opus ? Tapez « oui » pour confirmer : ')
+    : await confirmInteractive(
+        'Requêtes relues : lancer l’analyse Opus ? Tapez « oui » pour confirmer : ',
+      );
+  if (!ok) {
+    console.log(
+      `Analyse Opus non lancée (en pause). Plus tard : npm run analyze -- ${run.recordingId} --continue`,
+    );
+    return 0;
+  }
+  const a = ctx.services.analysis;
+  const res = a.approveReview(run.id, run.budgetUsd);
+  await waitJobs(ctx, res.job?.id, 'analyse approfondie (Opus)');
+  return finishRun(ctx, a.getRun(run.id).run);
+}
+
 /** Requêtes réelles d'une analyse avec Claude : chaque fichier, et s'il est parti chez Claude. */
 async function printRunRequests(ctx: Ctx, run: AnalysisRunDto) {
   const a = ctx.services.analysis;
@@ -230,6 +287,16 @@ function printCalls(ctx: Ctx, run: AnalysisRunDto) {
   for (const line of costSummaryLines(costs)) console.log(line);
 }
 
+/** Question posée dans le terminal, sans tenir compte de --yes. */
+async function confirmInteractive(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await rl.question(question)).trim().toLowerCase() === 'oui';
+  } finally {
+    rl.close();
+  }
+}
+
 async function confirm(question: string): Promise<boolean> {
   if (values.yes) return true;
   if (!process.stdin.isTTY) {
@@ -248,11 +315,21 @@ async function confirm(question: string): Promise<boolean> {
 
 async function main(): Promise<number> {
   const id = positionals[0];
-  const modes = ['dry-run', 'run', 'list', 'proposals', 'calls', 'costs', 'requests'] as const;
+  const modes = [
+    'dry-run',
+    'run',
+    'continue',
+    'list',
+    'proposals',
+    'calls',
+    'costs',
+    'requests',
+  ] as const;
   if (!id || !modes.some((m) => values[m])) {
     console.error(
       'Usage : npm run analyze -- <id> --dry-run [--show-payload | --window N] [--force]\n' +
-        '        npm run analyze -- <id> --run [--yes] [--force] [--force-recall]\n' +
+        '        npm run analyze -- <id> --run [--yes] [--no-review] [--force] [--force-recall]\n' +
+        '        npm run analyze -- <id> --continue [--yes]\n' +
         '        npm run analyze -- <id> --proposals | --calls | --costs | --list\n' +
         '        npm run analyze -- <id> --requests [--window N]',
     );
@@ -304,6 +381,15 @@ async function main(): Promise<number> {
       return 0;
     }
 
+    if (values.continue) {
+      const run = latestClaudeRun(ctx, rec.id);
+      if (!run || !isAwaitingReview(run)) {
+        console.log('Aucune analyse avec Claude en attente de relecture pour cet enregistrement.');
+        return 1;
+      }
+      return await reviewAndContinue(ctx, run, true);
+    }
+
     process.once('SIGINT', () => {
       console.log(
         '\nInterruption : relancer la même commande reprend l’analyse sans repayer les appels réussis.',
@@ -344,6 +430,7 @@ async function main(): Promise<number> {
       acceptBudgetUsd: budget,
       force: values.force,
       forceRecall: values['force-recall'],
+      review: !values['no-review'],
     });
     if (res.reused && res.status === 'ready')
       console.log(
@@ -352,11 +439,10 @@ async function main(): Promise<number> {
               '--force lance une NOUVELLE analyse avec un nouveau plafond (réponses déjà obtenues réutilisées).'
           : 'Analyse identique déjà terminée (--force pour en refaire une, sans repayer).',
       );
-    await waitJobs(ctx, res.job?.id, 'analyse avec Claude');
+    await waitJobs(ctx, res.job?.id, 'repérage et préparation des requêtes Opus');
     const { run } = a.getRun(res.run.id);
-    printProposals(ctx, run);
-    printCalls(ctx, run);
-    return run.status === 'completed' || run.status === 'budget_exhausted' ? 0 : 1;
+    if (isAwaitingReview(run)) return await reviewAndContinue(ctx, run, false);
+    return finishRun(ctx, run);
   } finally {
     ctx.db.close();
   }

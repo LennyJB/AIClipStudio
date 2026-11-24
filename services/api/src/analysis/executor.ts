@@ -33,6 +33,26 @@ import { LlmCallRepository, type NewCall } from './calls';
 /** Majoration locale prudente d'une image (au plus ≈ 1 600 jetons pour 1024 px de large). */
 const IMAGE_TOKENS_FALLBACK = 2_000;
 
+/** Estimation locale des jetons d'entrée d'une requête (secours si le comptage échoue). */
+export function localInputTokens(req: ModelRequest): number {
+  return (
+    estimateTextTokens(req.system) +
+    estimateTextTokens(req.userText) +
+    req.images.length * IMAGE_TOKENS_FALLBACK
+  );
+}
+
+/** Pire cas d'une requête estimé localement (sans appel), comme la réservation de secours. */
+export function localWorstCaseUsd(req: ModelRequest): number {
+  return reservationUsd({
+    model: req.model,
+    countedInputTokens: null,
+    localInputTokens: localInputTokens(req),
+    schemaJson: JSON.stringify(req.schema),
+    maxOutputTokens: req.maxTokens,
+  });
+}
+
 export type ExecuteResult<T> =
   | { status: 'ok'; value: T; callId: string; reused: boolean }
   | {
@@ -174,10 +194,7 @@ export class CallExecutor {
         // Le comptage est facultatif : estimation locale plus prudente.
         this.ctx.log.warn({ err: (err as Error).message }, 'Comptage des jetons indisponible');
       }
-      const local =
-        estimateTextTokens(p.req.system) +
-        estimateTextTokens(p.req.userText) +
-        p.req.images.length * IMAGE_TOKENS_FALLBACK;
+      const local = localInputTokens(p.req);
       const amount = reservationUsd({
         model: p.req.model,
         countedInputTokens: counted,

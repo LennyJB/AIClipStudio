@@ -281,7 +281,23 @@ export interface ClaudeRun {
   error: { code: string; message: string } | null;
   createdAt: string;
   mode: string;
+  /** Pause de relecture : `review` est renseigné à la pause, `reviewApprovedAt` à l'accord. */
+  config?: {
+    review?: { deepRequests: number; deepMaxUsd: number; remainingUsd: number };
+    reviewApprovedAt?: string;
+  };
 }
+
+export interface RunRequest {
+  name: string;
+  stage: 'triage' | 'deep';
+  requestHash: string | null;
+  sentToClaude: boolean;
+}
+
+/** Pause de relecture : requêtes Opus écrites, rien n'est envoyé avant l'accord. */
+export const isAwaitingReview = (run: ClaudeRun) =>
+  run.status === 'pending' && run.stage === 'awaiting_review' && !run.config?.reviewApprovedAt;
 
 export interface Proposal {
   id: string;
@@ -338,4 +354,11 @@ export const claudeApi = {
   proposals: (runId: string) =>
     getJson<{ proposals: Proposal[] }>(`/api/analyses/${runId}/proposals`),
   calls: (runId: string) => getJson<CallsSummary>(`/api/analyses/${runId}/calls`),
+  requests: (runId: string) =>
+    getJson<{ requests: RunRequest[] }>(`/api/analyses/${runId}/requests`),
+  approveReview: (runId: string, acceptBudgetUsd: number) =>
+    getJson<{ status: 'pending'; run: ClaudeRun; job: Job | null }>(
+      `/api/analyses/${runId}/approve-review`,
+      send('POST', { acceptBudgetUsd }),
+    ),
 };
