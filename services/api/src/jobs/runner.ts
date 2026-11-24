@@ -28,7 +28,7 @@ export interface RunnerHooks {
 }
 
 const PROGRESS_MIN_INTERVAL_MS = 1000;
-const LANES: readonly JobLane[] = ['heavy', 'interactive'];
+const LANES: readonly JobLane[] = ['heavy', 'interactive', 'analysis'];
 
 interface LaneState {
   current: { id: string; controller: AbortController } | null;
@@ -36,16 +36,18 @@ interface LaneState {
 }
 
 /**
- * File de traitements persistée dans SQLite, avec deux files d'exécution
+ * File de traitements persistée dans SQLite, avec trois files d'exécution
  * indépendantes (un traitement à la fois dans chacune) :
  *  - heavy       : transcription, extraction complète, rendu ;
- *  - interactive : préparation de clips (pistes de montage, formes d'onde).
+ *  - interactive : préparation de clips (pistes de montage, formes d'onde) ;
+ *  - analysis    : analyse éditoriale (indépendante du GPU).
  */
 export class JobRunner {
   private readonly jobs: JobRepository;
   private readonly lanes: Record<JobLane, LaneState> = {
     heavy: { current: null, loop: null },
     interactive: { current: null, loop: null },
+    analysis: { current: null, loop: null },
   };
   private stopped = false;
 
@@ -106,7 +108,7 @@ export class JobRunner {
     return this.jobs.get(jobId)!;
   }
 
-  /** Attend que les deux files soient vides (tests, CLI). */
+  /** Attend que toutes les files soient vides (tests, CLI). */
   async idle(): Promise<void> {
     for (;;) {
       const loops = LANES.map((l) => this.lanes[l].loop).filter(

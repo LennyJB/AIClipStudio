@@ -27,8 +27,8 @@
     "autre": 0.3
   },
   "clipDuration": {
-    "minSeconds": 15,
-    "maxSeconds": 90,
+    "minSeconds": 20,
+    "maxSeconds": 80,
     "preferredLeadInSeconds": 8
   },
   "editingStyle": {

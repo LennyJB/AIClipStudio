@@ -3,6 +3,7 @@ import { isAppError, type AppErrorCode } from '@acs/shared';
 import type { AppConfig } from './config';
 import type { Db } from './db';
 import { loggerOptions } from './logger';
+import { registerAnalysisRoutes } from './routes/analysis';
 import { registerRecordingRoutes } from './routes/recordings';
 import { registerStorageRoutes } from './routes/storage';
 import { createServices, recoverServices, type Services } from './services';
@@ -13,10 +14,11 @@ export interface AppDeps {
   db: Db;
 }
 
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.4.0';
 
 const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   NOT_FOUND: 404,
+  ANALYSIS_NOT_READY: 409,
   MEDIA_NOT_FOUND: 404,
   PROFILE_NOT_FOUND: 404,
   CONFLICT: 409,
@@ -69,6 +71,7 @@ export function buildApp({ config, db }: AppDeps): { app: FastifyInstance; servi
   registerRecordingRoutes(app, ctx, services);
   registerStorageRoutes(app, services);
   registerTranscriptionRoutes(app, ctx, services);
+  registerAnalysisRoutes(app, services);
   app.addHook('onClose', async () => {
     await services.runner.stop();
   });

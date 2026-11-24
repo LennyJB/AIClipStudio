@@ -19,7 +19,14 @@ export type JobType =
   | 'extract_transcription_audio'
   | 'extract_audio_stems'
   | 'compute_waveform'
-  | 'transcribe_recording';
+  | 'transcribe_recording'
+  | 'prepare_analysis';
 
-/** File d'exécution : `heavy` (long, en arrière-plan) ou `interactive` (préparation de clip). */
-export type JobLane = 'heavy' | 'interactive';
+/**
+ * File d'exécution :
+ *  - `heavy`       : long, en arrière-plan (extraction complète, transcription sur GPU) ;
+ *  - `interactive` : préparation de clip (pistes de montage, formes d'onde) ;
+ *  - `analysis`    : analyse éditoriale (préparation locale légère, puis appels réseau à
+ *                    l'étape 4b), indépendante du GPU.
+ */
+export type JobLane = 'heavy' | 'interactive' | 'analysis';

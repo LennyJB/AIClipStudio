@@ -2,7 +2,13 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { AppError, TrackRoleSchema, type TrackRole } from '@acs/shared';
+import {
+  AppError,
+  TrackRoleSchema,
+  TriageScopeSchema,
+  type TrackRole,
+  type TriageScope,
+} from '@acs/shared';
 
 /** Racine du dépôt (services/api/src → ../../..). */
 export const ROOT_DIR = path.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
@@ -17,7 +23,16 @@ const bool = (def: boolean) =>
 export const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   ANTHROPIC_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  CLAUDE_MODEL: z.string().min(1).default('claude-opus-5-5'),
+  /** Modèle de l'analyse approfondie (étape 4b). */
+  CLAUDE_MODEL: z
+    .string()
+    .regex(/^[a-z0-9.-]+$/)
+    .default('claude-opus-5-5'),
+  /** Modèle du repérage global, économique (étape 4b). */
+  CLAUDE_TRIAGE_MODEL: z
+    .string()
+    .regex(/^[a-z0-9.-]+$/)
+    .default('claude-haiku-5-5'),
   API_HOST: z.string().min(1).default('127.0.0.1'),
   API_PORT: z.coerce.number().int().min(1).max(65535).default(4000),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
@@ -93,6 +108,26 @@ export const EnvSchema = z.object({
   CACHE_MAX_GB: z.coerce.number().positive().max(10_000).default(30),
   CLIP_WINDOW_MARGIN_SEC: z.coerce.number().int().min(0).max(600).default(30),
   CLIP_WINDOW_GRID_SEC: z.coerce.number().int().min(1).max(600).default(30),
+  /* ---------------------------- Analyse éditoriale ---------------------------- */
+  ANALYSIS_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
+  /** Plafond STRICT de dépense par analyse, en dollars (jetons de réflexion et cache compris). */
+  ANALYSIS_MAX_COST_USD: z.coerce.number().positive().max(1000).default(5),
+  /** Jetons de sortie maximum par appel d'analyse approfondie (réflexion comprise). */
+  ANALYSIS_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1000).max(128_000).default(12_000),
+  /** Jetons de sortie maximum par tranche de repérage (réflexion comprise). */
+  ANALYSIS_TRIAGE_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(500).max(64_000).default(4_000),
+  /** off : aucun repérage global ; signals : autour des signaux locaux ; full : tout le texte autorisé. */
+  ANALYSIS_TRIAGE_SCOPE: TriageScopeSchema.default('full'),
+  ANALYSIS_TRIAGE_CHUNK_SEC: z.coerce.number().int().min(60).max(3_600).default(1_200),
+  ANALYSIS_CONTEXT_BEFORE_SEC: z.coerce.number().int().min(0).max(600).default(45),
+  ANALYSIS_CONTEXT_AFTER_SEC: z.coerce.number().int().min(0).max(600).default(20),
+  ANALYSIS_FAR_CONTEXT_SEC: z.coerce.number().int().min(0).max(1_800).default(180),
+  /** Score local minimal (0..1) pour qu'une zone devienne une fenêtre candidate. */
+  ANALYSIS_LOCAL_MIN_SCORE: z.coerce.number().min(0).max(1).default(0.35),
+  ANALYSIS_FRAMES_PER_WINDOW: z.coerce.number().int().min(0).max(12).default(4),
+  ANALYSIS_FRAME_WIDTH: z.coerce.number().int().min(256).max(2_048).default(1_024),
+  /** Fichier des pseudonymes (contient des noms réels : hors dépôt). */
+  ANALYSIS_PRIVACY_FILE: z.string().min(1).default('./storage/config/privacy.json'),
 });
 
 export interface AppConfig {
@@ -101,7 +136,7 @@ export interface AppConfig {
   server: { host: string; port: number };
   logLevel: z.infer<typeof EnvSchema>['LOG_LEVEL'];
   /** La clé n'est exposée que via ce champ côté serveur ; jamais renvoyée par l'API. */
-  claude: { apiKey: string | undefined; model: string };
+  claude: { apiKey: string | undefined; model: string; triageModel: string };
   paths: {
     storage: string;
     originals: string;
@@ -138,6 +173,23 @@ export interface AppConfig {
   audioTrackRoles: TrackRole[];
   cache: { maxBytes: number };
   clipWindow: { marginMs: number; gridMs: number };
+  analysis: {
+    effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    maxCostUsd: number;
+    maxOutputTokens: number;
+    triageMaxOutputTokens: number;
+    triageScope: TriageScope;
+    triageChunkMs: number;
+    contextBeforeMs: number;
+    contextAfterMs: number;
+    farContextMs: number;
+    localMinScore: number;
+    framesPerWindow: number;
+    frameWidth: number;
+    privacyFile: string;
+    /** Contenu préparé et aperçus (hors processing/ : jamais supprimé par le nettoyage du cache). */
+    outputDir: string;
+  };
 }
 
 export function defaultPythonPath(rootDir: string, platform: NodeJS.Platform = process.platform) {
@@ -164,7 +216,11 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
     rootDir,
     server: { host: e.API_HOST, port: e.API_PORT },
     logLevel: e.LOG_LEVEL,
-    claude: { apiKey: e.ANTHROPIC_API_KEY, model: e.CLAUDE_MODEL },
+    claude: {
+      apiKey: e.ANTHROPIC_API_KEY,
+      model: e.CLAUDE_MODEL,
+      triageModel: e.CLAUDE_TRIAGE_MODEL,
+    },
     paths: {
       storage,
       originals: path.join(storage, 'originals'),
@@ -209,6 +265,22 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
     clipWindow: {
       marginMs: e.CLIP_WINDOW_MARGIN_SEC * 1000,
       gridMs: e.CLIP_WINDOW_GRID_SEC * 1000,
+    },
+    analysis: {
+      effort: e.ANALYSIS_EFFORT,
+      maxCostUsd: e.ANALYSIS_MAX_COST_USD,
+      maxOutputTokens: e.ANALYSIS_MAX_OUTPUT_TOKENS,
+      triageMaxOutputTokens: e.ANALYSIS_TRIAGE_MAX_OUTPUT_TOKENS,
+      triageScope: e.ANALYSIS_TRIAGE_SCOPE,
+      triageChunkMs: e.ANALYSIS_TRIAGE_CHUNK_SEC * 1000,
+      contextBeforeMs: e.ANALYSIS_CONTEXT_BEFORE_SEC * 1000,
+      contextAfterMs: e.ANALYSIS_CONTEXT_AFTER_SEC * 1000,
+      farContextMs: e.ANALYSIS_FAR_CONTEXT_SEC * 1000,
+      localMinScore: e.ANALYSIS_LOCAL_MIN_SCORE,
+      framesPerWindow: e.ANALYSIS_FRAMES_PER_WINDOW,
+      frameWidth: e.ANALYSIS_FRAME_WIDTH,
+      privacyFile: resolve(e.ANALYSIS_PRIVACY_FILE),
+      outputDir: path.join(storage, 'analysis'),
     },
   };
 }

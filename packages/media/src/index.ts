@@ -5,6 +5,7 @@
  */
 export * from './extract';
 export * from './fingerprint';
+export * from './frames';
 export * from './probe';
 export * from './process';
 export * from './safe-path';

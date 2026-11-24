@@ -36,6 +36,15 @@ export const GameProfileSchema = z
     notableEvents: z.array(nonEmpty).default([]),
     /** Consignes spécifiques au jeu pour l'analyse éditoriale. */
     analysisHints: z.array(nonEmpty).default([]),
+    /**
+     * Durée des clips propre au jeu (facultative) : remplace celle du profil créateur.
+     * Utile pour un jeu où les échanges sont plus longs ou plus courts.
+     */
+    clipDuration: z
+      .object({ minSeconds: z.number().positive(), maxSeconds: z.number().positive() })
+      .strict()
+      .refine((d) => d.minSeconds < d.maxSeconds, 'minSeconds doit être < maxSeconds')
+      .optional(),
     /** Aide à la transcription : vocabulaire du jeu transmis à Whisper (désactivé par défaut). */
     transcription: z
       .object({
@@ -83,3 +92,15 @@ export const CreatorProfileSchema = z
   })
   .strict();
 export type CreatorProfile = z.infer<typeof CreatorProfileSchema>;
+
+/** Durée de clip effective : celle du jeu si elle est définie, sinon celle du créateur. */
+export function effectiveClipDuration(
+  creator: CreatorProfile,
+  game: GameProfile,
+): { minSeconds: number; maxSeconds: number; preferredLeadInSeconds: number } {
+  return {
+    minSeconds: game.clipDuration?.minSeconds ?? creator.clipDuration.minSeconds,
+    maxSeconds: game.clipDuration?.maxSeconds ?? creator.clipDuration.maxSeconds,
+    preferredLeadInSeconds: creator.clipDuration.preferredLeadInSeconds,
+  };
+}

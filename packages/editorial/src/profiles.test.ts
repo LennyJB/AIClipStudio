@@ -52,3 +52,53 @@ describe('loadGameProfile', () => {
     await expect(loadGameProfile(dir, 'autre')).rejects.toMatchObject({ code: 'PROFILE_INVALID' });
   });
 });
+
+describe('profils de cadrage et durée des clips', () => {
+  it('les profils de cadrage du dépôt sont valides', async () => {
+    const { listFramingProfiles } = await import('./profiles');
+    const profiles = await listFramingProfiles(
+      path.resolve(import.meta.dirname, '../../../profiles'),
+    );
+    expect(profiles.map((p) => p.id)).toEqual(
+      expect.arrayContaining(['plein-ecran', 'exemple-facecam-bas-droite']),
+    );
+  });
+
+  it('refuse une zone qui sort de l’image et un identifiant dangereux', async () => {
+    const { loadFramingProfile } = await import('./profiles');
+    const dir = await mkdtemp(path.join(tmpdir(), 'acs-framing-'));
+    await mkdir(path.join(dir, 'framing'));
+    await writeFile(
+      path.join(dir, 'framing', 'x.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        id: 'x',
+        displayName: 'X',
+        gameplay: { x: 0.5, y: 0, w: 0.6, h: 1 },
+        facecam: null,
+      }),
+    );
+    await expect(loadFramingProfile(dir, 'x')).rejects.toMatchObject({ code: 'PROFILE_INVALID' });
+    await expect(loadFramingProfile(dir, '../x')).rejects.toMatchObject({
+      code: 'PROFILE_NOT_FOUND',
+    });
+  });
+
+  it('durée par défaut 20–80 s (profil créateur), remplaçable par le profil de jeu', async () => {
+    const { loadCreatorProfile } = await import('./profiles');
+    const { effectiveClipDuration } = await import('@acs/shared');
+    const root = path.resolve(import.meta.dirname, '../../../profiles');
+    const creator = await loadCreatorProfile(root);
+    const game = await loadGameProfile(root, 'valorant');
+    expect(effectiveClipDuration(creator, game)).toMatchObject({ minSeconds: 20, maxSeconds: 80 });
+    expect(
+      effectiveClipDuration(creator, { ...game, clipDuration: { minSeconds: 30, maxSeconds: 60 } }),
+    ).toMatchObject({ minSeconds: 30, maxSeconds: 60 });
+  });
+
+  it('l’empreinte d’un profil change si son contenu change', async () => {
+    const { profileHash } = await import('./profiles');
+    expect(profileHash({ a: 1, b: [1, 2] })).toBe(profileHash({ b: [1, 2], a: 1 }));
+    expect(profileHash({ a: 1 })).not.toBe(profileHash({ a: 2 }));
+  });
+});

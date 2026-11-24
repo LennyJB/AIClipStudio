@@ -16,6 +16,24 @@ describe('loadConfig', () => {
     expect(c.tools.python).toBe(defaultPythonPath(ROOT));
   });
 
+  it('analyse : valeurs par défaut conformes aux décisions du créateur (étape 4)', () => {
+    const c = loadConfig({}, ROOT);
+    expect(c.claude).toMatchObject({ model: 'claude-opus-5-5', triageModel: 'claude-haiku-5-5' });
+    expect(c.analysis).toMatchObject({
+      effort: 'high',
+      maxCostUsd: 5,
+      triageScope: 'full',
+      contextBeforeMs: 45_000,
+      contextAfterMs: 20_000,
+      farContextMs: 180_000,
+      privacyFile: path.join(ROOT, 'storage', 'config', 'privacy.json'),
+      outputDir: path.join(ROOT, 'storage', 'analysis'),
+    });
+    expect(() => loadConfig({ ANALYSIS_TRIAGE_SCOPE: 'tout' }, ROOT)).toThrow(AppError);
+    expect(() => loadConfig({ ANALYSIS_MAX_COST_USD: '0' }, ROOT)).toThrow(AppError);
+    expect(() => loadConfig({ CLAUDE_MODEL: 'claude opus; rm' }, ROOT)).toThrow(AppError);
+  });
+
   it('valeurs par défaut de Whisper conformes aux décisions du créateur', () => {
     const w = loadConfig({}, ROOT).whisper;
     expect(w).toMatchObject({

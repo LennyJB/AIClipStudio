@@ -149,6 +149,9 @@ npm run dev
 | `npm run import -- <f>`                | Importe un enregistrement et extrait ses pistes audio         |
 | `npm run storage`                      | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes` |
 | `npm run transcribe -- <id \| chemin>` | Transcrit ; `--model`, `--force`, `--compare`                 |
+| `npm run analyze -- <id> --dry-run`    | Prépare l'analyse localement (aucun appel à Claude)           |
+| `npm run analysis-settings -- <id>`    | Confidentialité : accord Discord, facecam                     |
+| `npm run framing -- <commande>`        | Cadrage des images : `list`, `preview`, `validate`, `clear`   |
 | `npm run doctor -- --gpu`              | Vraie inférence sur le GPU (CUDA, cuBLAS, cuDNN)              |
 | `npm test`                             | Tous les tests (unitaires + intégration)                      |
 | `npm run test:watch`                   | Tests en mode surveillance                                    |
@@ -317,6 +320,24 @@ Interface : `npm run dev`, puis « Enregistrements », choisir le fichier, « Tr
 
 ---
 
+## Analyse éditoriale (étape 4a : préparation locale)
+
+Repère les moments candidats à partir de **signaux locaux factuels** (échanges micro ↔ Discord,
+questions, rires et interjections **transcrits**, niveau sonore), prépare **exactement** le
+contenu qui serait transmis à Claude et estime son coût sous un plafond strict de 5 $.
+**Aucun appel à Claude API à cette étape.** Guide complet : [`docs/analyse-editoriale.md`](docs/analyse-editoriale.md).
+
+```bash
+npm run analyze -- <id> --dry-run              # préparer, résumer, estimer
+npm run analyze -- <id> --dry-run --window 1   # relire le contenu qui serait transmis
+```
+
+Par défaut, seul le texte du **micro** serait transmis (pseudonymisé) ; Discord et la piste
+« tout » exigent un accord par enregistrement ; aucune image sans profil de cadrage validé ;
+la facecam est masquée.
+
+---
+
 ## Architecture
 
 Voir [`docs/architecture.md`](docs/architecture.md) pour le détail des choix techniques, et
@@ -333,16 +354,19 @@ AIClipStudio/
 │   ├── timeline/              Modèle du montage : SourceMs / EditMs, segments, conversions
 │   ├── transcription/         Blocs, reprise, déduplication ; worker Python Faster-Whisper
 │   │   └── python/            Worker Python + requirements.txt (étape 3)
-│   └── editorial/             Profils, fenêtres candidates, prompts, Claude (étape 4)
+│   └── editorial/             Profils, signaux, fenêtres candidates, confidentialité, coûts (étape 4)
 ├── profiles/
 │   ├── creator.json           Identité éditoriale du créateur (indépendante du jeu)
-│   └── games/                 valorant, fortnite, minecraft, generic
+│   ├── games/                 valorant, fortnite, minecraft, generic
+│   └── framing/               Profils de cadrage des images (gameplay, facecam, zones masquées)
 ├── storage/                   Données locales (ignorées par Git)
 │   ├── originals/             Enregistrements importés — jamais modifiés
 │   ├── processing/            Fichiers dérivés en cache (régénérables)
+│   ├── analysis/              Contenu préparé pour l'analyse (consultable avant tout envoi)
+│   ├── config/                privacy.json : pseudonymes (noms réels, jamais versionné)
 │   ├── exports/               Rapports et futurs clips
 │   └── db/                    Base SQLite
-├── scripts/                   doctor (diagnostic), import, storage (espace disque)
+├── scripts/                   doctor, import, storage, transcribe, analyze, analysis-settings
 ├── tests/                     Tests d'intégration transverses
 ├── .env.example
 └── README.md
@@ -361,6 +385,8 @@ Pipeline du MVP : **Import → Préparation → Transcription → Pré-analyse �
 - Les profils et la configuration sont validés par des schémas stricts (champs inconnus refusés).
 - Les outils externes sont lancés avec `execFile` (sans shell) et des arguments contrôlés.
   Aucune commande produite par l'IA n'est exécutée.
+- Les transcriptions sont traitées comme des **données non fiables** (neutralisées, encadrées) ;
+  rien n'est transmis à l'extérieur sans être d'abord consultable (`npm run analyze -- --dry-run`).
 - Les réponses d'erreur ne contiennent ni pile d'appel ni détail interne ; les logs masquent
   les en-têtes d'authentification.
 
@@ -386,8 +412,9 @@ unitaires et d'intégration, build et démarrage de l'API.
 | ----- | ------------------------------------------------------------------------------------ | ------------- |
 | 1     | Analyse, architecture, squelette, outillage, documentation                           | ✅ Terminée   |
 | 2     | Import OBS, extraction audio, dérivés et cache, file, espace disque, modèle temporel | ✅ Terminée   |
-| 3     | Transcription Faster-Whisper horodatée, reprise, repli CPU, comparaison des modèles  | En revue (PR) |
-| 4     | Profils éditoriaux, prompts, appel Claude, validation JSON, clips                    | À faire       |
+| 3     | Transcription Faster-Whisper horodatée, reprise, repli CPU, comparaison des modèles  | ✅ Terminée   |
+| 4a    | Signaux locaux, fenêtres, confidentialité, cadrage, contenu préparé, coûts estimés   | En revue (PR) |
+| 4b    | Appels Claude (repérage + analyse), vérifications, pertinence et fiabilité           | À faire       |
 | 5     | Interface de validation (liste, timestamps, lecture, accepter/refuser)               | À faire       |
 | 6     | Évaluation sur de vrais enregistrements, ajustement des prompts                      | À faire       |
 

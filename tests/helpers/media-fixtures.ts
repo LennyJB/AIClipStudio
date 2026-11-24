@@ -262,3 +262,76 @@ export function bestLagMs(
   }
   return (best / sampleRate) * 1000;
 }
+
+/**
+ * Vidéo 320×180 de 6 s, avec deux pistes audio nommées Micro / Discord :
+ * fond ROUGE de 0 à 2 s, VERT de 2 à 4 s, BLEU de 4 à 6 s (instants vérifiables au pixel).
+ */
+export function createColorVideo(dir: string): string {
+  const out = path.join(dir, 'couleurs.mkv');
+  ff([
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=red:s=320x180:r=30:d=2',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=lime:s=320x180:r=30:d=2',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=c=blue:s=320x180:r=30:d=2',
+    ...sine(440, 6),
+    ...sine(660, 6),
+    '-filter_complex',
+    '[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]',
+    '-map',
+    '[v]',
+    '-map',
+    '3:a',
+    '-map',
+    '4:a',
+    '-metadata:s:a:0',
+    'title=Micro',
+    '-metadata:s:a:1',
+    'title=Discord',
+    '-c:v',
+    'libx264',
+    '-g',
+    '15',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    out,
+  ]);
+  return out;
+}
+
+/** Couleur RVB d'un pixel d'une image (décodée par FFmpeg). */
+export function pixelAt(imagePath: string, x: number, y: number): [number, number, number] {
+  const raw = execFileSync(
+    FFMPEG,
+    ['-v', 'error', '-nostdin', '-i', imagePath, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+    { maxBuffer: 64 * 1024 * 1024 },
+  );
+  const probe = execFileSync(
+    FFPROBE,
+    [
+      '-v',
+      'error',
+      '-select_streams',
+      'v:0',
+      '-show_entries',
+      'stream=width',
+      '-of',
+      'csv=p=0',
+      imagePath,
+    ],
+    { encoding: 'utf8' },
+  );
+  const width = Number(probe.trim());
+  const i = (y * width + x) * 3;
+  return [raw[i]!, raw[i + 1]!, raw[i + 2]!];
+}
