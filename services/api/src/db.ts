@@ -587,6 +587,131 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX proposal_evidence_idx ON proposal_evidence(proposal_id);
     `,
   },
+  {
+    version: 6,
+    name: 'editorial_feedback',
+    // Étape 5 : validation des propositions et mémoire éditoriale v1. Ajouts uniquement.
+    //  - moments : regroupement stable des propositions équivalentes (référence figée) ;
+    //  - proposal_reviews : décision propre à chaque proposition (source de vérité) ;
+    //  - feedback_events : journal éditorial, en ajout seul, autonome (aucune clé étrangère) ;
+    //  - review_requests / moment_changes : journaux techniques (idempotence, regroupements).
+    // clip_proposals.review_status (migration 5) n'est plus jamais lue.
+    sql: `
+      CREATE TABLE review_moments (
+        id                        TEXT PRIMARY KEY,
+        recording_id              TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        rule_version              INTEGER NOT NULL CHECK (rule_version >= 1),
+        ref_proposal_id           TEXT NOT NULL,     -- fondatrice, pour mémoire
+        -- Référence FIGÉE, copiée de la fondatrice ; mêmes types que clip_proposals (migration 5).
+        ref_punchline_segment_id  INTEGER NOT NULL,
+        ref_punchline_ms          INTEGER NOT NULL,
+        ref_src_start_ms          INTEGER NOT NULL,
+        ref_src_end_ms            INTEGER NOT NULL,
+        created_at                TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK (ref_src_start_ms >= 0 AND ref_src_start_ms < ref_src_end_ms)
+      );
+      CREATE INDEX review_moments_recording_idx ON review_moments(recording_id, created_at);
+      CREATE TRIGGER review_moments_frozen BEFORE UPDATE ON review_moments
+      BEGIN SELECT RAISE(ABORT, 'review_moments : la référence d''un moment est figée'); END;
+
+      CREATE TABLE moment_members (
+        proposal_id   TEXT PRIMARY KEY REFERENCES clip_proposals(id) ON DELETE CASCADE,
+        moment_id     TEXT NOT NULL REFERENCES review_moments(id) ON DELETE CASCADE,
+        match_kind    TEXT NOT NULL
+                        CHECK (match_kind IN ('founder','same_punchline','overlap','detached')),
+        score         REAL NOT NULL CHECK (score >= 0 AND score <= 1),
+        rule_version  INTEGER NOT NULL CHECK (rule_version >= 1),
+        linked_at     TEXT NOT NULL DEFAULT (${NOW})
+      );
+      CREATE INDEX moment_members_moment_idx ON moment_members(moment_id);
+      -- Une appartenance n'est jamais modifiée : seul le détachement explicite la remplace
+      -- (suppression + insertion tracées dans moment_changes).
+      CREATE TRIGGER moment_members_stable BEFORE UPDATE ON moment_members
+      BEGIN SELECT RAISE(ABORT, 'moment_members : une appartenance n''est jamais modifiée'); END;
+
+      CREATE TABLE moment_changes (
+        seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+        id              TEXT NOT NULL UNIQUE,
+        request_id      TEXT NOT NULL UNIQUE,
+        kind            TEXT NOT NULL CHECK (kind IN ('detach')),
+        proposal_id     TEXT NOT NULL,
+        from_moment_id  TEXT NOT NULL,
+        to_moment_id    TEXT NOT NULL,
+        comment         TEXT CHECK (comment IS NULL OR length(comment) <= 2000),
+        source          TEXT NOT NULL CHECK (source IN ('ui','cli','api')),
+        occurred_at     TEXT NOT NULL DEFAULT (${NOW})
+      );
+
+      CREATE TABLE feedback_events (
+        seq                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        id                     TEXT NOT NULL UNIQUE,
+        request_id             TEXT NOT NULL UNIQUE,
+        schema_version         INTEGER NOT NULL CHECK (schema_version >= 1),
+        type                   TEXT NOT NULL,       -- validé par Zod (types extensibles)
+        occurred_at            TEXT NOT NULL DEFAULT (${NOW}),
+        recording_id           TEXT NOT NULL,       -- pas de clé étrangère : le journal survit
+        game_id                TEXT NOT NULL,
+        proposal_id            TEXT NOT NULL,
+        run_id                 TEXT NOT NULL,
+        moment_id_at_decision  TEXT NOT NULL,
+        previous_status        TEXT NOT NULL CHECK (previous_status IN ('pending','accepted','rejected')),
+        new_status             TEXT NOT NULL CHECK (new_status IN ('pending','accepted','rejected')),
+        reasons_json           TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(reasons_json)),
+        comment                TEXT CHECK (comment IS NULL OR length(comment) <= 2000),
+        reevaluates_event_id   TEXT,
+        snapshot_json          TEXT NOT NULL CHECK (json_valid(snapshot_json)),
+        source                 TEXT NOT NULL CHECK (source IN ('ui','cli','api'))
+      );
+      CREATE INDEX feedback_events_recording_idx ON feedback_events(recording_id, seq);
+      CREATE INDEX feedback_events_game_idx ON feedback_events(game_id, seq);
+      CREATE INDEX feedback_events_proposal_idx ON feedback_events(proposal_id, seq);
+      CREATE INDEX feedback_events_moment_idx ON feedback_events(moment_id_at_decision, seq);
+      CREATE INDEX feedback_events_type_idx ON feedback_events(type, seq);
+
+      CREATE TABLE proposal_reviews (
+        proposal_id     TEXT PRIMARY KEY REFERENCES clip_proposals(id) ON DELETE CASCADE,
+        status          TEXT NOT NULL CHECK (status IN ('pending','accepted','rejected')),
+        reasons_json    TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(reasons_json)),
+        comment         TEXT CHECK (comment IS NULL OR length(comment) <= 2000),
+        decided_at      TEXT,
+        last_event_id   TEXT NOT NULL REFERENCES feedback_events(id),
+        last_event_seq  INTEGER NOT NULL,
+        version         INTEGER NOT NULL CHECK (version >= 1),
+        updated_at      TEXT NOT NULL DEFAULT (${NOW}),
+        -- Une décision réinitialisée ne garde aucun motif, commentaire ni date de décision.
+        CHECK (status <> 'pending' OR (reasons_json = '[]' AND comment IS NULL AND decided_at IS NULL)),
+        CHECK (status <> 'accepted' OR reasons_json = '[]'),
+        CHECK (status <> 'rejected' OR json_array_length(reasons_json) >= 1),
+        CHECK (status = 'pending' OR decided_at IS NOT NULL)
+      );
+
+      CREATE TABLE review_requests (
+        request_id     TEXT PRIMARY KEY,
+        request_hash   TEXT NOT NULL,
+        proposal_id    TEXT NOT NULL,
+        action         TEXT NOT NULL CHECK (action IN ('decision','detach')),
+        outcome        TEXT NOT NULL CHECK (outcome IN ('applied','noop')),
+        event_id       TEXT,
+        response_json  TEXT NOT NULL CHECK (json_valid(response_json)),
+        created_at     TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK (outcome = 'applied' OR event_id IS NULL)
+      );
+
+      -- Journaux en ajout seul : ni modification ni suppression.
+      CREATE TRIGGER feedback_events_no_update BEFORE UPDATE ON feedback_events
+      BEGIN SELECT RAISE(ABORT, 'feedback_events : journal en ajout seul'); END;
+      CREATE TRIGGER feedback_events_no_delete BEFORE DELETE ON feedback_events
+      BEGIN SELECT RAISE(ABORT, 'feedback_events : journal en ajout seul'); END;
+      CREATE TRIGGER moment_changes_no_update BEFORE UPDATE ON moment_changes
+      BEGIN SELECT RAISE(ABORT, 'moment_changes : journal en ajout seul'); END;
+      CREATE TRIGGER moment_changes_no_delete BEFORE DELETE ON moment_changes
+      BEGIN SELECT RAISE(ABORT, 'moment_changes : journal en ajout seul'); END;
+      CREATE TRIGGER review_requests_no_update BEFORE UPDATE ON review_requests
+      BEGIN SELECT RAISE(ABORT, 'review_requests : journal en ajout seul'); END;
+      CREATE TRIGGER review_requests_no_delete BEFORE DELETE ON review_requests
+      BEGIN SELECT RAISE(ABORT, 'review_requests : journal en ajout seul'); END;
+    `,
+  },
 ];
 
 export function openDatabase(

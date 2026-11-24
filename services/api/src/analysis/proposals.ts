@@ -58,7 +58,6 @@ export interface NewProposal {
 
 export type ProposalDto = Omit<NewProposal, 'evidence'> & {
   mergedIntoId: string | null;
-  reviewStatus: string;
   createdAt: string;
   evidence: ProposalEvidence[];
 };
@@ -89,7 +88,6 @@ interface ProposalRow {
   editing_hint_json: string | null;
   uncertainty: string | null;
   merged_into_id: string | null;
-  review_status: string;
   created_at: string;
 }
 
@@ -196,8 +194,22 @@ export class ProposalRepository {
          ORDER BY tier = 'clip' DESC, relevance DESC, reliability DESC, src_start_ms`,
       )
       .all(runId) as ProposalRow[];
+    return rows.map((r) => this.toDto(r));
+  }
+
+  /**
+   * Une proposition par identifiant (fusionnée ou non). La décision du créateur n'en fait pas
+   * partie : elle vit dans proposal_reviews (étape 5) ; l'ancienne colonne de statut n'est jamais lue.
+   */
+  getProposal(id: string): ProposalDto | null {
+    const r = this.db.prepare('SELECT * FROM clip_proposals WHERE id = ?').get(id) as
+      ProposalRow | undefined;
+    return r ? this.toDto(r) : null;
+  }
+
+  private toDto(r: ProposalRow): ProposalDto {
     const ev = this.db.prepare('SELECT * FROM proposal_evidence WHERE proposal_id = ? ORDER BY id');
-    return rows.map((r) => ({
+    return {
       id: r.id,
       runId: r.run_id,
       recordingId: r.recording_id,
@@ -223,7 +235,6 @@ export class ProposalRepository {
       editingHint: r.editing_hint_json ? (JSON.parse(r.editing_hint_json) as unknown) : null,
       uncertainty: r.uncertainty,
       mergedIntoId: r.merged_into_id,
-      reviewStatus: r.review_status,
       createdAt: r.created_at,
       evidence: (ev.all(r.id) as Record<string, unknown>[]).map((e) => ({
         kind: e['kind'] as ProposalEvidence['kind'],
@@ -235,7 +246,7 @@ export class ProposalRepository {
         frameDerivativeId: e['frame_derivative_id'] as string | null,
         note: e['note'] as string | null,
       })),
-    }));
+    };
   }
 
   /** Applique la consolidation (une proposition fusionnée pointe vers celle qui la remplace). */
