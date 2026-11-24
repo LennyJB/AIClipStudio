@@ -78,7 +78,7 @@ import {
 } from './repository';
 
 /** Version de la chaîne de préparation (fait partie de la clé d'entrée). */
-export const ANALYSIS_PIPELINE_VERSION = 1;
+export const ANALYSIS_PIPELINE_VERSION = 2; // 2 : requêtes exactes (prompts) dans la préparation
 
 const SPEAKER_BY_ROLE: Partial<Record<TrackRole, Speaker>> = {
   mic: 'creator',
@@ -479,6 +479,9 @@ export class AnalysisService {
       frameWidth: this.cfg.frameWidth,
       clipDuration: effectiveClipDuration(creator, game),
       payloadVersion: PAYLOAD_VERSION,
+      // Les requêtes préparées dépendent des prompts : un prompt modifié = nouvelle préparation.
+      promptVersions: [TRIAGE_PROMPT_VERSION, DEEP_PROMPT_VERSION],
+      triageEffort: this.cfg.triageEffort,
       signalProviders: DEFAULT_SIGNAL_PROVIDERS.map((p) => `${p.id}@${p.version}`),
     };
     const privacy = {

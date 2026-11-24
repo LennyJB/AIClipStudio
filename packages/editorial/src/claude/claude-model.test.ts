@@ -227,4 +227,27 @@ describe('ClaudeModel (faux transport, aucun réseau)', () => {
     expect(sent[0]!.url).toMatch(/count_tokens/);
     expect(sent[0]!.body).not.toHaveProperty('max_tokens');
   });
+
+  it('vérifie un modèle sans génération (Models API)', async () => {
+    const { f, sent } = fakeFetch((r) =>
+      r.url.endsWith('/claude-opus-5-5')
+        ? new Response(
+            JSON.stringify({
+              id: 'claude-opus-5-5',
+              display_name: 'Claude Opus 5.5',
+              type: 'model',
+              created_at: '2026-01-01T00:00:00Z',
+            }),
+            { headers: { 'content-type': 'application/json' } },
+          )
+        : httpError(404, 'not_found_error'),
+    );
+    const m = new ClaudeModel({ apiKey: 'k', fetch: f });
+    expect(await m.checkModel('claude-opus-5-5')).toEqual({
+      ok: true,
+      displayName: 'Claude Opus 5.5',
+    });
+    expect((await m.checkModel('claude-inconnu')).ok).toBe(false);
+    expect(sent.every((x) => !x.url.endsWith('/messages'))).toBe(true);
+  });
 });

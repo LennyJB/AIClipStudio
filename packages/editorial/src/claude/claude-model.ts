@@ -56,6 +56,19 @@ export class ClaudeModel implements EditorialModel {
     }
   }
 
+  /** Le modèle existe-t-il pour cette clé ? (Models API : aucune génération, aucun coût.) */
+  async checkModel(
+    id: string,
+  ): Promise<{ ok: true; displayName: string } | { ok: false; error: string }> {
+    try {
+      const m = await this.client.models.retrieve(id, {}, { timeout: 30_000 });
+      return { ok: true, displayName: m.display_name };
+    } catch (err) {
+      const e = classifyError(err, false);
+      return { ok: false, error: `${e.code} : ${e.message}` };
+    }
+  }
+
   async countTokens(req: ModelRequest, opts: CallOptions): Promise<number> {
     const b = await this.body(req, opts);
     try {

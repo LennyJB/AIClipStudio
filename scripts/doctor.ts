@@ -18,6 +18,8 @@ const { values: cli } = parseArgs({
     /** Test d'inférence réel sur GPU (télécharge le modèle si nécessaire). */
     gpu: { type: 'boolean', default: false },
     'gpu-model': { type: 'string', default: 'tiny' },
+    /** Vérifie la clé et les modèles Claude (Models API : aucune génération, aucun coût). */
+    claude: { type: 'boolean', default: false },
   },
 });
 
@@ -182,12 +184,23 @@ async function main() {
 
   add(
     'Clé Claude API',
-    config.claude.apiKey ? 'ok' : 'warn',
+    config.claude.apiKey ? 'ok' : cli.claude ? 'fail' : 'warn',
     config.claude.apiKey
-      ? `configurée (modèle ${config.claude.model})`
-      : 'absente (requise à l’étape 4)',
-    false,
+      ? `configurée (analyse ${config.claude.model}, repérage ${config.claude.triageModel})`
+      : 'absente : seule la préparation locale (--dry-run) est possible',
+    cli.claude,
   );
+  if (cli.claude && config.claude.apiKey) await claudeCheck(config);
+}
+
+/** Clé valide et modèles accessibles (aucune génération : rien n'est facturé). */
+async function claudeCheck(config: ReturnType<typeof loadConfig>) {
+  const { ClaudeModel } = await import('@acs/editorial');
+  const model = new ClaudeModel({ apiKey: config.claude.apiKey! });
+  for (const id of [config.claude.model, config.claude.triageModel]) {
+    const r = await model.checkModel(id);
+    add(`Modèle ${id}`, r.ok ? 'ok' : 'fail', r.ok ? `accessible (${r.displayName})` : r.error);
+  }
 }
 
 /**
