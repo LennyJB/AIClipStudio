@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { FakeModel, type FakeReply, type ModelRequest } from '@acs/editorial';
+import { FakeModel, requestHash, type FakeReply, type ModelRequest } from '@acs/editorial';
 import {
   createTalkVideo,
   FFMPEG,
@@ -334,6 +334,96 @@ describe.skipIf(!enabled)('Analyse avec Claude (faux modèle, aucun appel réel)
       )
     ).body;
     expect(req.body['output_config']).toMatchObject({ effort: 'high' });
+  });
+
+  it('requêtes Opus nées du repérage : toutes écrites dans requetes/ AVANT le premier envoi, identiques à ce qui part', async () => {
+    /** Fichiers de requêtes Opus de l'analyse avec Claude (le résumé réel y figure). */
+    const deepFiles = () => {
+      const out = new Map<string, { requestHash: string; body: unknown }>();
+      const root = path.join(config.paths.storage, 'analysis');
+      for (const rec of existsSync(root) ? readdirSync(root) : [])
+        for (const run of readdirSync(path.join(root, rec))) {
+          const dir = path.join(root, rec, run, 'requetes');
+          if (!existsSync(dir)) continue;
+          for (const n of readdirSync(dir).filter((x) => x.startsWith('fenetre-'))) {
+            const raw = readFileSync(path.join(dir, n), 'utf8');
+            if (raw.includes('Partie de Valorant')) out.set(path.join(dir, n), JSON.parse(raw));
+          }
+        }
+      return out;
+    };
+    let atFirstDeep: Map<string, { requestHash: string }> | null = null;
+    const spy: Script = (req, i) => {
+      if (req.stage === 'deep' && !atFirstDeep) atFirstDeep = deepFiles();
+      return smart(req, i);
+    };
+    await setup(spy);
+    const rec = await importAndTranscribe();
+    const a = await analyze(rec.id);
+    expect(a.run).toMatchObject({ status: 'completed' });
+    expect(a.windows.map((w) => w.origin).sort()).toEqual(['signals', 'triage']);
+
+    // Au moment du PREMIER appel Opus, les requêtes de TOUTES les fenêtres (dont celle née du
+    // repérage) étaient déjà sur disque, avec le résumé réel du repérage.
+    expect(atFirstDeep!.size).toBe(a.windows.length);
+    // Chaque requête Opus envoyée est exactement une requête enregistrée.
+    const recorded = new Set([...atFirstDeep!.values()].map((f) => f.requestHash));
+    const sentDeep = model.calls.filter((c) => c.stage === 'deep');
+    expect(sentDeep).toHaveLength(2);
+    for (const r of sentDeep) expect(recorded.has(requestHash(r))).toBe(true);
+
+    // Consultables par l'API : repérage + fenêtres, avec ce qui est réellement parti.
+    const list = (
+      await call<{
+        requests: { name: string; stage: string; requestHash: string; sentToClaude: boolean }[];
+      }>('GET', `/api/analyses/${a.run!.id}/requests`)
+    ).body.requests;
+    expect(list.filter((r) => r.stage === 'triage').length).toBeGreaterThan(0);
+    expect(list.filter((r) => r.stage === 'deep')).toHaveLength(2);
+    expect(list.every((r) => r.sentToClaude)).toBe(true);
+    const triageRank = a.windows.find((w) => w.origin === 'triage')!.rank;
+    const name = `fenetre-${String(triageRank).padStart(3, '0')}.json`;
+    const file = (
+      await call<{ requestHash: string; body: { messages: unknown } }>(
+        'GET',
+        `/api/analyses/${a.run!.id}/requests/${name}`,
+      )
+    ).body;
+    expect(JSON.stringify(file.body)).toContain('Partie de Valorant');
+    expect(JSON.stringify(file.body)).not.toMatch(/Théo|SECRET/); // pseudonymes, Discord non transmis
+    // Aucun chemin arbitraire.
+    expect(
+      (await call('GET', `/api/analyses/${a.run!.id}/requests/..%2Fmanifeste.json`)).status,
+    ).toBe(400);
+  });
+
+  it('requête modifiée sur disque entre son écriture et son envoi : aucun appel pour cette fenêtre', async () => {
+    let tampered = false;
+    const tamper: Script = (req, i) => {
+      if (req.stage === 'deep' && !tampered) {
+        tampered = true;
+        // Pendant le premier appel Opus, on altère les AUTRES requêtes Opus enregistrées.
+        const root = path.join(config.paths.storage, 'analysis');
+        for (const recDir of readdirSync(root))
+          for (const run of readdirSync(path.join(root, recDir))) {
+            const dir = path.join(root, recDir, run, 'requetes');
+            if (!existsSync(dir)) continue;
+            for (const n of readdirSync(dir).filter((x) => x.startsWith('fenetre-'))) {
+              const f = path.join(dir, n);
+              const v = JSON.parse(readFileSync(f, 'utf8')) as { requestHash: string };
+              if (v.requestHash !== requestHash(req))
+                writeFileSync(f, JSON.stringify({ ...v, requestHash: 'altere' }));
+            }
+          }
+      }
+      return smart(req, i);
+    };
+    await setup(tamper);
+    const rec = await importAndTranscribe();
+    const a = await analyze(rec.id);
+    expect(model.calls.filter((c) => c.stage === 'deep')).toHaveLength(1);
+    expect(a.windows.filter((w) => w.status === 'failed')).toHaveLength(1);
+    expect(a.calls.filter((c) => c.stage === 'deep')).toHaveLength(1);
   });
 
   it('zéro clip est un résultat normal ; une nouvelle analyse réutilise toutes les réponses (0 $)', async () => {

@@ -5,6 +5,12 @@
  *  2. fenêtres = signaux locaux ∪ repérage ;
  *  3. analyse approfondie (Opus, effort high) par ordre de priorité, sous plafond de réservation ;
  *  4. vérification locale, bornes, fiabilité, niveaux, puis consolidation.
+ *
+ * Transparence : chaque requête réelle est écrite dans `requetes/` de l'analyse AVANT son envoi
+ * (repérage : vérifiée identique à celle du dry-run ; analyse approfondie : TOUTES les requêtes
+ * Opus, y compris celles nées du repérage, sont écrites avant le premier appel Opus). Juste avant
+ * l'envoi, l'empreinte de la requête est comparée à celle du fichier : ce qui part est ce qui est
+ * écrit, sinon la fenêtre échoue sans appel.
  * Aucun outil n'est fourni au modèle ; aucune commande n'est jamais exécutée.
  */
 import { randomUUID } from 'node:crypto';
@@ -22,11 +28,13 @@ import {
   formatClock,
   mergeTriageZones,
   parseModelJson,
+  requestHash,
   TriageResultSchema,
   verifyMoment,
   type AnalysisSegment,
   type CandidateWindow,
   type EditorialModel,
+  type ModelRequest,
   type PreparedFrame,
   type RenderStats,
   type TransmissionPolicy,
@@ -40,6 +48,12 @@ import type { DerivativeService } from '../derivatives/service';
 import type { JobHandlerContext } from '../jobs/runner';
 import { toAbs } from '../storage/paths';
 import { CallExecutor } from './executor';
+import {
+  deepRequestName,
+  recordedHash,
+  triageRequestName,
+  writeRequestFile,
+} from './request-files';
 import { ProposalRepository, type NewProposal } from './proposals';
 import type { AnalysisRunDto, AnalysisWindowDto, NewWindow } from './repository';
 import type { AnalysisService, Inputs } from './service';
@@ -47,6 +61,13 @@ import type { AnalysisService, Inputs } from './service';
 type Context = Awaited<ReturnType<AnalysisService['buildContext']>>;
 
 const pad = (n: number, w: number) => String(n).padStart(w, '0');
+
+/** Requête Opus d'une fenêtre, construite et enregistrée avant tout envoi. */
+interface DeepRequest {
+  frames: PreparedFrame[];
+  payload: ReturnType<typeof buildWindowPayload>;
+  req: ModelRequest;
+}
 
 /** Ce qui est transmis dans un appel (enregistré avec l'appel pour la traçabilité). */
 function sentManifest(
@@ -97,6 +118,7 @@ export class ClaudeRunner {
     const proposals = new ProposalRepository(this.ctx.db);
     const relDir = `analysis/${run.recordingId}/${run.id}`;
     await mkdir(toAbs(this.ctx.config.paths.storage, `${relDir}/fenetres`), { recursive: true });
+    await mkdir(toAbs(this.ctx.config.paths.storage, `${relDir}/requetes`), { recursive: true });
 
     // 0. Préparation liée : le contenu envoyé est celui que le dry-run a montré.
     s.repo.setStage(run.id, 'prepare');
@@ -123,6 +145,7 @@ export class ClaudeRunner {
       const summaries: string[] = [];
       for (const [i, chunk] of chunks.entries()) {
         const req = s.triageRequestFor(inp, chunk.text);
+        await this.recordTriageRequest(prepared, relDir, chunk.index, req);
         const res = await executor.execute({
           runId: run.id,
           windowId: null,
@@ -162,6 +185,9 @@ export class ClaudeRunner {
       if (!windows.length) {
         windows = await this.createWindows(run, inp, c, zones, relDir, signal);
       }
+      // Toutes les requêtes Opus (fenêtres à signaux ET fenêtres nées du repérage, avec le
+      // résumé réel) sont écrites AVANT le premier appel Opus.
+      const deepReqs = await this.recordDeepRequests(inp, c, windows, streamSummary, relDir);
       reportProgress(0.35);
 
       // 3. Analyse approfondie, par ordre de priorité, sous plafond de réservation.
@@ -181,7 +207,8 @@ export class ClaudeRunner {
               inp,
               c,
               w,
-              streamSummary,
+              deepReqs.get(w.id)!,
+              relDir,
               executor,
               proposals,
               segmentsById,
@@ -357,33 +384,95 @@ export class ClaudeRunner {
     return this.service.repo.listWindows(run.id);
   }
 
+  /**
+   * Requête de repérage écrite dans requetes/ de l'analyse avant l'envoi, et vérifiée identique
+   * à celle que le dry-run a montrée (même empreinte).
+   */
+  private async recordTriageRequest(
+    prepared: AnalysisRunDto,
+    relDir: string,
+    index: number,
+    req: ModelRequest,
+  ) {
+    const name = triageRequestName(index);
+    const storage = this.ctx.config.paths.storage;
+    const hash = await writeRequestFile(toAbs(storage, `${relDir}/requetes/${name}`), req);
+    if (prepared.outputRelDir) {
+      const reviewed = await recordedHash(
+        toAbs(storage, `${prepared.outputRelDir}/requetes/${name}`),
+      );
+      if (reviewed !== hash) {
+        throw new AppError(
+          'CONFLICT',
+          'La requête de repérage ne correspond plus à celle de la préparation relue : relancez la préparation',
+        );
+      }
+    }
+  }
+
+  /**
+   * Construit et ÉCRIT toutes les requêtes Opus de l'analyse (une par fenêtre, résumé réel du
+   * repérage compris) avant le premier envoi. Une reprise les réécrit à l'identique.
+   */
+  private async recordDeepRequests(
+    inp: Inputs,
+    c: Context,
+    windows: readonly AnalysisWindowDto[],
+    streamSummary: string | null,
+    relDir: string,
+  ): Promise<Map<string, DeepRequest>> {
+    const out = new Map<string, DeepRequest>();
+    for (const w of windows) {
+      const frames = w.frames as PreparedFrame[];
+      const payload = buildWindowPayload({
+        rank: w.rank,
+        window: this.candidate(w, c),
+        segments: c.segments,
+        policy: c.policy,
+        pseudonymizer: c.pseudonymizer,
+        frames,
+        noFramesReason: this.service.noFramesReason(inp),
+      });
+      const req = this.service.deepRequestFor(
+        inp,
+        payload.text,
+        await this.service.requestImages(frames),
+        streamSummary,
+      );
+      await writeRequestFile(
+        toAbs(this.ctx.config.paths.storage, `${relDir}/requetes/${deepRequestName(w.rank)}`),
+        req,
+      );
+      out.set(w.id, { frames, payload, req });
+    }
+    return out;
+  }
+
   private async analyzeWindow(
     run: AnalysisRunDto,
     inp: Inputs,
     c: Context,
     w: AnalysisWindowDto,
-    streamSummary: string | null,
+    prebuilt: DeepRequest,
+    relDir: string,
     executor: CallExecutor,
     proposals: ProposalRepository,
     byId: ReadonlyMap<number, AnalysisSegment>,
     signal: AbortSignal,
   ) {
-    const frames = w.frames as PreparedFrame[];
-    const payload = buildWindowPayload({
-      rank: w.rank,
-      window: this.candidate(w, c),
-      segments: c.segments,
-      policy: c.policy,
-      pseudonymizer: c.pseudonymizer,
-      frames,
-      noFramesReason: this.service.noFramesReason(inp),
-    });
-    const req = this.service.deepRequestFor(
-      inp,
-      payload.text,
-      await this.service.requestImages(frames),
-      streamSummary,
+    const { frames, payload, req } = prebuilt;
+    // Ce qui part est exactement ce qui est écrit dans requetes/ (sinon aucun appel).
+    const file = toAbs(
+      this.ctx.config.paths.storage,
+      `${relDir}/requetes/${deepRequestName(w.rank)}`,
     );
+    if ((await recordedHash(file)) !== requestHash(req)) {
+      this.ctx.log.error(
+        { runId: run.id, window: w.rank },
+        'Requête Opus différente de celle enregistrée : aucun envoi',
+      );
+      return proposals.saveWindowResult(w.id, 'failed', []);
+    }
     const res = await executor.execute({
       runId: run.id,
       windowId: w.id,

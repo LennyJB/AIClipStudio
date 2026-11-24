@@ -125,6 +125,20 @@ export function registerAnalysisRoutes(app: FastifyInstance, services: Services)
     return analysis.calls(runId);
   });
 
+  /** Requêtes exactes de l'analyse (requetes/), écrites avant tout envoi. */
+  app.get('/api/analyses/:runId/requests', async (req) => {
+    const { runId } = parse(RunParams, req.params);
+    return analysis.runRequests(runId);
+  });
+
+  app.get('/api/analyses/:runId/requests/:name', async (req) => {
+    const { runId, name } = parse(
+      RunParams.extend({ name: z.string().regex(/^(reperage-\d{2}|fenetre-\d{3})\.json$/) }),
+      req.params,
+    );
+    return analysis.runRequest(runId, name);
+  });
+
   /** Requête ou réponse enregistrée d'un appel (sans la clé API). */
   app.get('/api/analyses/:runId/calls/:callId/:kind', async (req) => {
     const { runId, callId, kind } = parse(

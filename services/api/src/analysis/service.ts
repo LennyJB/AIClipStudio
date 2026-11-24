@@ -6,7 +6,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -29,10 +29,8 @@ import {
   pricingFor,
   profileHash,
   rankWindows,
-  requestHash,
   stableHash,
   SUMMARY_PLACEHOLDER,
-  toReviewBody,
   triageRequest,
   type AnalysisSegment,
   DEEP_PROMPT_VERSION,
@@ -76,6 +74,13 @@ import {
   type AnalysisWindowDto,
   type NewWindow,
 } from './repository';
+import {
+  deepRequestName,
+  recordedHash,
+  REQUEST_FILE_RE,
+  triageRequestName,
+  writeRequestFile,
+} from './request-files';
 
 /** Version de la chaîne de préparation (fait partie de la clé d'entrée). */
 export const ANALYSIS_PIPELINE_VERSION = 2; // 2 : requêtes exactes (prompts) dans la préparation
@@ -724,6 +729,43 @@ export class AnalysisService {
     return { calls: repo.listForRun(runId), costs: repo.costs(runId) };
   }
 
+  /**
+   * Requêtes EXACTES d'une analyse (dossier requetes/) : pour le dry-run, ce qui serait envoyé ;
+   * pour une analyse avec Claude, ce qui est ou sera réellement envoyé (écrit avant l'envoi),
+   * avec les appels qui l'ont effectivement envoyée.
+   */
+  async runRequests(runId: string) {
+    const { run } = this.getRun(runId);
+    if (!run.outputRelDir) return { requests: [] };
+    const dir = toAbs(this.ctx.config.paths.storage, `${run.outputRelDir}/requetes`);
+    if (!existsSync(dir)) return { requests: [] };
+    const calls = new LlmCallRepository(this.ctx.db).listForRun(runId);
+    const names = (await readdir(dir)).filter((n) => REQUEST_FILE_RE.test(n)).sort();
+    const requests = [];
+    for (const name of names) {
+      const hash = await recordedHash(path.join(dir, name));
+      const sent = calls.filter((c) => c.requestHash === hash);
+      requests.push({
+        name,
+        stage: name.startsWith('reperage') ? 'triage' : 'deep',
+        requestHash: hash,
+        calls: sent.map((c) => ({ id: c.id, status: c.status, attempt: c.attempt })),
+        sentToClaude: sent.some((c) => c.status !== 'reused' && c.status !== 'reserved'),
+      });
+    }
+    return { requests };
+  }
+
+  /** Contenu d'un fichier de requête (nom validé : aucun chemin arbitraire). */
+  async runRequest(runId: string, name: string) {
+    const { run } = this.getRun(runId);
+    if (!REQUEST_FILE_RE.test(name) || !run.outputRelDir)
+      throw new AppError('NOT_FOUND', 'Requête introuvable');
+    const abs = toAbs(this.ctx.config.paths.storage, `${run.outputRelDir}/requetes/${name}`);
+    if (!existsSync(abs)) throw new AppError('NOT_FOUND', 'Requête introuvable');
+    return JSON.parse(await readFile(abs, 'utf8')) as unknown;
+  }
+
   /** Requête ou réponse enregistrée d'un appel (JSON, sans la clé API). */
   async callFile(runId: string, callId: string, kind: 'request' | 'response') {
     const call = new LlmCallRepository(this.ctx.db).get(callId);
@@ -1107,20 +1149,7 @@ export class AnalysisService {
     await mkdir(path.join(absDir, 'reperage'), { recursive: true });
     await mkdir(path.join(absDir, 'requetes'), { recursive: true });
     const writeRequest = (name: string, req: ModelRequest) =>
-      writeFile(
-        path.join(absDir, 'requetes', name),
-        JSON.stringify(
-          {
-            stage: req.stage,
-            model: req.model,
-            promptVersion: req.promptVersion,
-            requestHash: requestHash(req),
-            body: toReviewBody(req),
-          },
-          null,
-          2,
-        ),
-      );
+      writeRequestFile(path.join(absDir, 'requetes', name), req);
 
     const chunks = buildTriageChunks({
       segments,
@@ -1135,7 +1164,7 @@ export class AnalysisService {
     for (const c of chunks) {
       await writeFile(path.join(absDir, 'reperage', `tranche-${pad(c.index, 2)}.txt`), c.text);
       const req = this.triageRequestFor(inp, c.text);
-      await writeRequest(`reperage-${pad(c.index, 2)}.json`, req);
+      await writeRequest(triageRequestName(c.index), req);
       triageTokens.push(estimateTextTokens(req.userText));
     }
     // Le résumé du repérage n'existe qu'après les appels : il est remplacé par un repère.
@@ -1162,7 +1191,7 @@ export class AnalysisService {
         await this.requestImages(frames),
         summaryForReview,
       );
-      await writeRequest(`fenetre-${pad(w.rank, 3)}.json`, deepReq);
+      await writeRequest(deepRequestName(w.rank), deepReq);
       const reqTokens = estimateTextTokens(deepReq.userText);
       const manifest = {
         rank: w.rank,

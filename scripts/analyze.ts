@@ -14,6 +14,8 @@
  *
  * Résultats :
  *   npm run analyze -- <id> --proposals | --calls | --costs | --list
+ *   npm run analyze -- <id> --requests [--window N]   requêtes RÉELLES de la dernière analyse avec
+ *                                                     Claude (écrites avant envoi, Opus compris)
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -45,6 +47,7 @@ const { values, positionals } = parseArgs({
     proposals: { type: 'boolean', default: false },
     calls: { type: 'boolean', default: false },
     costs: { type: 'boolean', default: false },
+    requests: { type: 'boolean', default: false },
   },
 });
 
@@ -159,6 +162,31 @@ async function printPreparation(ctx: Ctx, run: AnalysisRunDto, fileName: string)
   }
 }
 
+/** Requêtes réelles d'une analyse avec Claude : chaque fichier, et s'il est parti chez Claude. */
+async function printRunRequests(ctx: Ctx, run: AnalysisRunDto) {
+  const a = ctx.services.analysis;
+  if (values.window) {
+    const name = `fenetre-${values.window.padStart(3, '0')}.json`;
+    console.log(JSON.stringify(await a.runRequest(run.id, name), null, 2));
+    return;
+  }
+  const { requests } = await a.runRequests(run.id);
+  const dir = run.outputRelDir
+    ? path.join(ctx.config.paths.storage, run.outputRelDir, 'requetes')
+    : '—';
+  console.log(`Requêtes réelles de l’analyse ${run.id} (${dir}) :`);
+  if (!requests.length) console.log('  aucune (analyse pas encore démarrée).');
+  for (const r of requests) {
+    const state = r.sentToClaude
+      ? `envoyée (${r.calls.length} appel(s))`
+      : r.calls.length
+        ? 'réponse réutilisée, non renvoyée'
+        : 'pas envoyée';
+    console.log(`  ${r.name.padEnd(18)} ${r.stage.padEnd(7)} ${state}`);
+  }
+  console.log('Contenu exact : --requests --window N (ou ouvrir le fichier).');
+}
+
 function latestClaudeRun(ctx: Ctx, recId: string): AnalysisRunDto | null {
   return ctx.services.analysis.listRuns(recId).find((r) => r.mode === 'claude') ?? null;
 }
@@ -220,12 +248,13 @@ async function confirm(question: string): Promise<boolean> {
 
 async function main(): Promise<number> {
   const id = positionals[0];
-  const modes = ['dry-run', 'run', 'list', 'proposals', 'calls', 'costs'] as const;
+  const modes = ['dry-run', 'run', 'list', 'proposals', 'calls', 'costs', 'requests'] as const;
   if (!id || !modes.some((m) => values[m])) {
     console.error(
       'Usage : npm run analyze -- <id> --dry-run [--show-payload | --window N] [--force]\n' +
         '        npm run analyze -- <id> --run [--yes] [--force] [--force-recall]\n' +
-        '        npm run analyze -- <id> --proposals | --calls | --costs | --list',
+        '        npm run analyze -- <id> --proposals | --calls | --costs | --list\n' +
+        '        npm run analyze -- <id> --requests [--window N]',
     );
     return 2;
   }
@@ -253,6 +282,15 @@ async function main(): Promise<number> {
         console.log(
           `DÉPASSEMENT : ${c.runsOverBudget} analyse(s) ont dépassé leur plafond, de ${usd(c.overrunUsd)} au total.`,
         );
+      return 0;
+    }
+    if (values.requests) {
+      const run = latestClaudeRun(ctx, rec.id);
+      if (!run) {
+        console.log('Aucune analyse avec Claude pour cet enregistrement (voir --run).');
+        return 0;
+      }
+      await printRunRequests(ctx, run);
       return 0;
     }
     if (values.proposals || values.calls) {
