@@ -67,6 +67,10 @@ export interface AnalysisRunDto {
   reservedUsd: number;
   outputRelDir: string | null;
   windowCount: number;
+  preparedFromRunId: string | null;
+  streamSummary: string | null;
+  forceRecall: boolean;
+  overrunUsd: number;
   error: { code: string; message: string } | null;
   createdAt: string;
   startedAt: string | null;
@@ -94,6 +98,10 @@ interface RunRow {
   reserved_usd: number;
   output_rel_dir: string | null;
   window_count: number;
+  prepared_from_run_id: string | null;
+  stream_summary: string | null;
+  force_recall: number;
+  overrun_usd: number;
   error_code: string | null;
   error_message: string | null;
   created_at: string;
@@ -122,6 +130,10 @@ const toRun = (r: RunRow): AnalysisRunDto => ({
   reservedUsd: r.reserved_usd,
   outputRelDir: r.output_rel_dir,
   windowCount: r.window_count,
+  preparedFromRunId: r.prepared_from_run_id,
+  streamSummary: r.stream_summary,
+  forceRecall: r.force_recall === 1,
+  overrunUsd: r.overrun_usd,
   error: r.error_code ? { code: r.error_code, message: r.error_message ?? '' } : null,
   createdAt: r.created_at,
   startedAt: r.started_at,
@@ -140,6 +152,8 @@ export interface NewRun {
   privacy: Record<string, unknown>;
   profiles: Record<string, unknown>;
   budgetUsd: number;
+  promptVersion?: string | null;
+  forceRecall?: boolean;
 }
 
 /* ------------------------------ Fenêtres ------------------------------ */
@@ -260,12 +274,15 @@ export class AnalysisRepository {
     this.db
       .prepare(
         `INSERT INTO analysis_runs (id, recording_id, mode, status, pipeline_version, pricing_version, input_key,
-           transcription_ids_json, config_json, privacy_json, profiles_json, budget_usd)
+           transcription_ids_json, config_json, privacy_json, profiles_json, budget_usd, prompt_version,
+           force_recall)
          VALUES (@id, @recordingId, @mode, 'pending', @pipelineVersion, @pricingVersion, @inputKey,
-           @transcriptionIds, @config, @privacy, @profiles, @budgetUsd)`,
+           @transcriptionIds, @config, @privacy, @profiles, @budgetUsd, @promptVersion, @forceRecall)`,
       )
       .run({
         ...r,
+        promptVersion: r.promptVersion ?? null,
+        forceRecall: r.forceRecall ? 1 : 0,
         transcriptionIds: JSON.stringify(r.transcriptionIds),
         config: JSON.stringify(r.config),
         privacy: JSON.stringify(r.privacy),
@@ -299,6 +316,80 @@ export class AnalysisRepository {
       )
       .get(inputKey, mode) as RunRow | undefined;
     return r ? toRun(r) : null;
+  }
+
+  /** Analyse interrompue ou en échec avec les mêmes entrées : reprise (même budget). */
+  findResumable(inputKey: string, mode: 'dry_run' | 'claude'): AnalysisRunDto | null {
+    const r = this.db
+      .prepare(
+        `SELECT * FROM analysis_runs WHERE input_key = ? AND mode = ?
+           AND status IN ('interrupted','failed','cancelled') ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(inputKey, mode) as RunRow | undefined;
+    return r ? toRun(r) : null;
+  }
+
+  setPreparedFrom(id: string, preparedRunId: string, outputRelDir: string) {
+    this.db
+      .prepare(
+        `UPDATE analysis_runs SET prepared_from_run_id = ?, output_rel_dir = ?, updated_at = ${NOW} WHERE id = ?`,
+      )
+      .run(preparedRunId, outputRelDir, id);
+  }
+
+  setStreamSummary(id: string, summary: string | null) {
+    this.db
+      .prepare(`UPDATE analysis_runs SET stream_summary = ?, updated_at = ${NOW} WHERE id = ?`)
+      .run(summary, id);
+  }
+
+  /** Fenêtres d'une analyse avec Claude (remplacées en bloc, statut « pending »). */
+  insertWindows(runId: string, windows: readonly NewWindow[]) {
+    const ins = this.db.prepare(
+      `INSERT INTO analysis_windows (id, run_id, rank, origin, far_start_ms, src_start_ms, core_start_ms,
+         core_end_ms, src_end_ms, local_score, signals_json, frames_json, payload_rel_path, estimate_json,
+         status, cache_key)
+       VALUES (@id, @runId, @rank, @origin, @farStartMs, @startMs, @coreStartMs, @coreEndMs, @endMs,
+         @localScore, @signals, @frames, @payloadRelPath, @estimate, @status, @cacheKey)`,
+    );
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM analysis_windows WHERE run_id = ?').run(runId);
+      for (const w of windows) {
+        ins.run({
+          ...w,
+          runId,
+          signals: JSON.stringify(w.signals),
+          frames: JSON.stringify(w.frames),
+          estimate: w.estimate === null ? null : JSON.stringify(w.estimate),
+        });
+      }
+      this.db
+        .prepare(`UPDATE analysis_runs SET window_count = ?, updated_at = ${NOW} WHERE id = ?`)
+        .run(windows.length, runId);
+    })();
+  }
+
+  /** Fenêtres non encore traitées sont marquées « sautées » (plafond atteint). */
+  skipPendingWindows(runId: string) {
+    this.db
+      .prepare(
+        `UPDATE analysis_windows SET status = 'skipped', updated_at = ${NOW}
+         WHERE run_id = ? AND status IN ('pending','prepared')`,
+      )
+      .run(runId);
+  }
+
+  completeClaudeRun(
+    id: string,
+    status: 'completed' | 'budget_exhausted',
+    error?: { code: string; message: string },
+  ) {
+    this.db
+      .prepare(
+        `UPDATE analysis_runs SET status = ?, stage = 'done', error_code = ?, error_message = ?,
+           completed_at = ${NOW}, updated_at = ${NOW} WHERE id = ?`,
+      )
+      .run(status, error?.code ?? null, error?.message ?? null, id);
   }
 
   markRunning(id: string) {

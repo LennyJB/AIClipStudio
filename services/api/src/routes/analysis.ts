@@ -66,7 +66,10 @@ export function registerAnalysisRoutes(app: FastifyInstance, services: Services)
     return { settings: await analysis.validateFraming(id, profileId) };
   });
 
-  /** Prépare l'analyse localement. 200 si une préparation identique existe, 202 sinon. */
+  /**
+   * Prépare l'analyse localement (mode dry_run, défaut) ou lance l'analyse payante avec Claude
+   * (mode claude : `acceptBudgetUsd` obligatoire). 200 si le résultat existe déjà, 202 sinon.
+   */
   app.post('/api/recordings/:id/analyses', async (req, reply) => {
     const { id } = parse(IdParams, req.params);
     const body = parse(AnalysisRequestSchema, req.body ?? {});
@@ -103,6 +106,38 @@ export function registerAnalysisRoutes(app: FastifyInstance, services: Services)
       req.params,
     );
     return analysis.triageChunk(runId, index);
+  });
+
+  app.get('/api/analyses/:runId/proposals', async (req) => {
+    const { runId } = parse(RunParams, req.params);
+    const q = parse(z.object({ includeMerged: z.enum(['0', '1']).optional() }).strict(), req.query);
+    return { proposals: analysis.proposals(runId, q.includeMerged === '1') };
+  });
+
+  app.get('/api/analyses/:runId/triage-moments', async (req) => {
+    const { runId } = parse(RunParams, req.params);
+    return { moments: analysis.triageMoments(runId) };
+  });
+
+  /** Appels à Claude : statut, jetons, coût réel ; coûts par étape et par fenêtre. */
+  app.get('/api/analyses/:runId/calls', async (req) => {
+    const { runId } = parse(RunParams, req.params);
+    return analysis.calls(runId);
+  });
+
+  /** Requête ou réponse enregistrée d'un appel (sans la clé API). */
+  app.get('/api/analyses/:runId/calls/:callId/:kind', async (req) => {
+    const { runId, callId, kind } = parse(
+      RunParams.extend({ callId: z.uuid(), kind: z.enum(['request', 'response']) }),
+      req.params,
+    );
+    return analysis.callFile(runId, callId, kind);
+  });
+
+  /** Coût réel cumulé d'un enregistrement (toutes analyses). */
+  app.get('/api/recordings/:id/analysis-costs', async (req) => {
+    const { id } = parse(IdParams, req.params);
+    return analysis.recordingCosts(id);
   });
 
   /** Image préparée (dérivé « frame » uniquement). */

@@ -35,6 +35,9 @@ import {
   toReviewBody,
   triageRequest,
   type AnalysisSegment,
+  DEEP_PROMPT_VERSION,
+  TRIAGE_PROMPT_VERSION,
+  type EditorialModel,
   type EnergyTrack,
   type ModelRequest,
   type PreparedFrame,
@@ -63,6 +66,9 @@ import type { JobHandler, JobHandlerContext, JobRunner } from '../jobs/runner';
 import { RecordingRepository, type JobDto, type RecordingDto } from '../recordings/repository';
 import { toAbs } from '../storage/paths';
 import { TranscriptionRepository, type TranscriptionDto } from '../transcriptions/repository';
+import { LlmCallRepository } from './calls';
+import { ClaudeRunner } from './claude-run';
+import { ProposalRepository } from './proposals';
 import {
   AnalysisRepository,
   type AnalysisRunDto,
@@ -104,10 +110,16 @@ export type SettingsUpdate = z.infer<typeof SettingsUpdateSchema>;
 
 export const AnalysisRequestSchema = z
   .object({
-    /** Préparation locale uniquement (seul mode disponible à l'étape 4a). */
-    dryRun: z.literal(true).default(true),
-    /** Refaire la préparation même si une préparation identique existe. */
+    /** `dry_run` : préparation locale, AUCUN appel. `claude` : analyse payante (confirmation requise). */
+    mode: z.enum(['dry_run', 'claude']).default('dry_run'),
+    /** Ancien paramètre de l'étape 4a (équivaut à mode = dry_run). */
+    dryRun: z.literal(true).optional(),
+    /** Refaire même si une analyse identique existe. */
     force: z.boolean().default(false),
+    /** Mode claude : redemander à Claude même les requêtes déjà obtenues (payant). */
+    forceRecall: z.boolean().default(false),
+    /** Mode claude : plafond accepté par le créateur (doit être égal au plafond configuré). */
+    acceptBudgetUsd: z.number().positive().optional(),
   })
   .strict();
 
@@ -117,7 +129,7 @@ export interface SettingsView extends AnalysisSettingsDto {
   framingStatus: FramingStatus;
 }
 
-interface Inputs {
+export interface Inputs {
   rec: RecordingDto;
   settings: AnalysisSettingsDto;
   framing: FramingProfile | null;
@@ -145,6 +157,8 @@ export class AnalysisService {
     private readonly ctx: AppContext,
     private readonly runnerRef: () => JobRunner,
     private readonly derivatives: DerivativeService,
+    /** Modèle éditorial (Claude API, ou faux modèle en test) ; null si aucune clé configurée. */
+    private readonly modelProvider: () => EditorialModel | null = () => null,
   ) {
     this.repo = new AnalysisRepository(ctx.db);
     this.recordings = new RecordingRepository(ctx.db);
@@ -155,7 +169,14 @@ export class AnalysisService {
     return this.ctx.config.analysis;
   }
 
+  /** Au démarrage : analyses « en cours » interrompues ; appels « réservés » comptés au pire cas. */
   recover(): number {
+    const calls = new LlmCallRepository(this.ctx.db).recoverStale();
+    if (calls)
+      this.ctx.log.warn(
+        { calls },
+        'Appels interrompus : facturation inconnue, réservation comptée',
+      );
     return this.repo.markStaleAsInterrupted();
   }
 
@@ -168,9 +189,13 @@ export class AnalysisService {
   /** Configuration exposée (aucun secret). */
   publicConfig() {
     return {
-      mode: 'dry_run_only' as const,
+      mode: 'dry_run_and_claude' as const,
+      claudeConfigured: Boolean(this.ctx.config.claude.apiKey),
       models: { triage: this.ctx.config.claude.triageModel, deep: this.ctx.config.claude.model },
       effort: this.cfg.effort,
+      triageEffort: this.cfg.triageEffort,
+      minRelevance: this.cfg.minRelevance,
+      minReliability: this.cfg.minReliability,
       budgetUsd: this.cfg.maxCostUsd,
       triageScope: this.cfg.triageScope,
       framesPerWindow: this.cfg.framesPerWindow,
@@ -421,7 +446,7 @@ export class AnalysisService {
     return [...latest.values()].sort((a, b) => a.audioIndex - b.audioIndex);
   }
 
-  private async inputs(recordingId: string): Promise<Inputs> {
+  async inputs(recordingId: string): Promise<Inputs> {
     const rec = this.recording(recordingId);
     const settings = this.repo.getSettings(recordingId);
     const { framing, status: framingStatus } = await this.framingState(settings);
@@ -508,6 +533,18 @@ export class AnalysisService {
 
   /* ------------------------------ Demande ------------------------------ */
 
+  /** Clé d'une analyse avec Claude : entrées de la préparation + prompts + seuils. */
+  claudeInputKey(inp: Inputs): string {
+    return stableHash({
+      base: inp.inputKey,
+      mode: 'claude',
+      prompts: [TRIAGE_PROMPT_VERSION, DEEP_PROMPT_VERSION],
+      triageEffort: this.cfg.triageEffort,
+      minRelevance: this.cfg.minRelevance,
+      minReliability: this.cfg.minReliability,
+    });
+  }
+
   async request(
     recordingId: string,
     body: z.input<typeof AnalysisRequestSchema> = {},
@@ -519,6 +556,7 @@ export class AnalysisService {
   }> {
     const opts = AnalysisRequestSchema.parse(body);
     const inp = await this.inputs(recordingId);
+    if (opts.mode === 'claude') return this.requestClaude(recordingId, inp, opts);
     const existing = this.repo.findReusable(inp.inputKey, 'dry_run');
     if (existing && (!opts.force || existing.status !== 'completed')) {
       if (existing.status === 'completed')
@@ -541,6 +579,150 @@ export class AnalysisService {
     });
     const { job } = this.enqueue(run);
     return { status: 'pending', run, job, reused: false };
+  }
+
+  /**
+   * Analyse PAYANTE : exige une clé et l'accord explicite au plafond. Une analyse identique
+   * interrompue est reprise (même budget) ; terminée, elle est renvoyée sauf `force`.
+   */
+  private requestClaude(
+    recordingId: string,
+    inp: Inputs,
+    opts: z.output<typeof AnalysisRequestSchema>,
+  ) {
+    if (!this.modelProvider()) {
+      throw new AppError(
+        'CLAUDE_NOT_CONFIGURED',
+        'ANTHROPIC_API_KEY absente : seule la préparation locale (--dry-run) est possible',
+      );
+    }
+    if (
+      opts.acceptBudgetUsd === undefined ||
+      Math.abs(opts.acceptBudgetUsd - this.cfg.maxCostUsd) > 1e-9
+    ) {
+      throw new AppError(
+        'BUDGET_NOT_CONFIRMED',
+        `Confirmez le plafond de ${this.cfg.maxCostUsd} $ avant toute analyse payante (acceptBudgetUsd)`,
+      );
+    }
+    const key = this.claudeInputKey(inp);
+    const active = this.repo.findReusable(key, 'claude');
+    if (active && (active.status !== 'completed' || !opts.force)) {
+      if (active.status === 'completed')
+        return { status: 'ready' as const, run: active, job: null, reused: true };
+      return {
+        status: 'pending' as const,
+        run: active,
+        job: this.enqueueClaude(active).job,
+        reused: true,
+      };
+    }
+    const resumable = opts.force ? null : this.repo.findResumable(key, 'claude');
+    if (resumable) {
+      return {
+        status: 'pending' as const,
+        run: resumable,
+        job: this.enqueueClaude(resumable).job,
+        reused: true,
+      };
+    }
+    const run = this.repo.createRun({
+      id: randomUUID(),
+      recordingId,
+      mode: 'claude',
+      pipelineVersion: ANALYSIS_PIPELINE_VERSION,
+      pricingVersion: PRICING_VERSION,
+      inputKey: key,
+      transcriptionIds: inp.transcriptions.map((t) => t.id),
+      config: {
+        ...inp.config,
+        minRelevance: this.cfg.minRelevance,
+        minReliability: this.cfg.minReliability,
+        triageEffort: this.cfg.triageEffort,
+      },
+      privacy: inp.privacy,
+      profiles: inp.profiles,
+      budgetUsd: this.cfg.maxCostUsd,
+      promptVersion: `${TRIAGE_PROMPT_VERSION}+${DEEP_PROMPT_VERSION}`,
+      forceRecall: opts.forceRecall,
+    });
+    this.ctx.log.info(
+      { runId: run.id, recordingId, budgetUsd: run.budgetUsd },
+      'Analyse avec Claude demandée (plafond accepté)',
+    );
+    return { status: 'pending' as const, run, job: this.enqueueClaude(run).job, reused: false };
+  }
+
+  private enqueueClaude(run: AnalysisRunDto) {
+    return this.runnerRef().enqueue({
+      type: 'run_analysis',
+      lane: 'analysis',
+      targetKey: `run_analysis:${run.id}`,
+      recordingId: run.recordingId,
+      params: { runId: run.id },
+    });
+  }
+
+  /** Préparation à blanc identique (terminée, fichiers présents), refaite si besoin. */
+  async ensurePrepared(inp: Inputs, hctx: JobHandlerContext): Promise<AnalysisRunDto> {
+    const existing = this.repo.findReusable(inp.inputKey, 'dry_run');
+    if (
+      existing?.status === 'completed' &&
+      existing.outputRelDir &&
+      existsSync(toAbs(this.ctx.config.paths.storage, `${existing.outputRelDir}/manifeste.json`))
+    ) {
+      return existing;
+    }
+    const run = this.repo.createRun({
+      id: randomUUID(),
+      recordingId: inp.rec.id,
+      mode: 'dry_run',
+      pipelineVersion: ANALYSIS_PIPELINE_VERSION,
+      pricingVersion: PRICING_VERSION,
+      inputKey: inp.inputKey,
+      transcriptionIds: inp.transcriptions.map((t) => t.id),
+      config: inp.config,
+      privacy: inp.privacy,
+      profiles: inp.profiles,
+      budgetUsd: this.cfg.maxCostUsd,
+    });
+    this.repo.markRunning(run.id);
+    await this.prepareRun(run, hctx);
+    return this.repo.getRun(run.id)!;
+  }
+
+  /** Propositions d'une analyse (consolidées : les fusionnées sont masquées par défaut). */
+  proposals(runId: string, includeMerged = false) {
+    this.getRun(runId);
+    return new ProposalRepository(this.ctx.db).listProposals(runId, { includeMerged });
+  }
+
+  triageMoments(runId: string) {
+    this.getRun(runId);
+    return new ProposalRepository(this.ctx.db).listTriageMoments(runId);
+  }
+
+  calls(runId: string) {
+    this.getRun(runId);
+    const repo = new LlmCallRepository(this.ctx.db);
+    return { calls: repo.listForRun(runId), costs: repo.costs(runId) };
+  }
+
+  /** Requête ou réponse enregistrée d'un appel (JSON, sans la clé API). */
+  async callFile(runId: string, callId: string, kind: 'request' | 'response') {
+    const call = new LlmCallRepository(this.ctx.db).get(callId);
+    if (!call || call.runId !== runId) throw new AppError('NOT_FOUND', 'Appel introuvable');
+    const rel = kind === 'request' ? call.requestRelPath : call.responseRelPath;
+    if (!rel) throw new AppError('NOT_FOUND', 'Fichier indisponible pour cet appel');
+    const abs = toAbs(this.ctx.config.paths.storage, rel);
+    if (!existsSync(abs)) throw new AppError('NOT_FOUND', 'Fichier supprimé');
+    return JSON.parse(await readFile(abs, 'utf8')) as unknown;
+  }
+
+  /** Coût réel cumulé d'un enregistrement (toutes analyses). */
+  recordingCosts(recordingId: string) {
+    this.recording(recordingId);
+    return new LlmCallRepository(this.ctx.db).recordingCost(recordingId);
   }
 
   private enqueue(run: AnalysisRunDto) {
@@ -595,8 +777,41 @@ export class AnalysisService {
 
   /* ---------------------------- Préparation ---------------------------- */
 
-  handlers(): { prepare_analysis: JobHandler } {
-    return { prepare_analysis: (job, hctx) => this.runJob(job, hctx) };
+  handlers(): { prepare_analysis: JobHandler; run_analysis: JobHandler } {
+    return {
+      prepare_analysis: (job, hctx) => this.runJob(job, hctx),
+      run_analysis: (job, hctx) => this.runClaudeJob(job, hctx),
+    };
+  }
+
+  private async runClaudeJob(job: JobDto, hctx: JobHandlerContext) {
+    const { runId } = RunJobParams.parse(job.params);
+    const run = this.repo.getRun(runId);
+    if (!run || run.mode !== 'claude') throw new AppError('NOT_FOUND', 'Analyse introuvable');
+    const model = this.modelProvider();
+    if (!model) throw new AppError('CLAUDE_NOT_CONFIGURED', 'ANTHROPIC_API_KEY absente');
+    this.repo.markRunning(runId);
+    try {
+      return await new ClaudeRunner(this.ctx, this, this.derivatives, model).run(run, hctx);
+    } catch (err) {
+      this.failRun(runId, err, hctx.signal);
+      throw err;
+    }
+  }
+
+  private failRun(runId: string, err: unknown, signal: AbortSignal) {
+    const aborted = signal.aborted || (err instanceof AppError && err.code === 'CANCELLED');
+    const shutdown = aborted && signal.reason === 'shutdown';
+    this.repo.finish(runId, shutdown ? 'interrupted' : aborted ? 'cancelled' : 'failed', {
+      code: aborted
+        ? shutdown
+          ? 'INTERRUPTED'
+          : 'CANCELLED'
+        : err instanceof AppError
+          ? err.code
+          : 'INTERNAL',
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
 
   private async runJob(job: JobDto, hctx: JobHandlerContext) {
@@ -605,7 +820,7 @@ export class AnalysisService {
     if (!run) throw new AppError('NOT_FOUND', 'Analyse introuvable');
     this.repo.markRunning(runId);
     try {
-      const res = await this.prepare(run, hctx);
+      const res = await this.prepareRun(run, hctx);
       return res;
     } catch (err) {
       const aborted = hctx.signal.aborted;
@@ -839,7 +1054,7 @@ export class AnalysisService {
     });
   }
 
-  private async prepare(run: AnalysisRunDto, { signal, reportProgress }: JobHandlerContext) {
+  async prepareRun(run: AnalysisRunDto, { signal, reportProgress }: JobHandlerContext) {
     const started = Date.now();
     const inp = await this.inputs(run.recordingId);
     if (inp.inputKey !== run.inputKey) {
