@@ -263,6 +263,10 @@ export function ClaudeAnalysis({ recordingId, pollMs = 1000 }: Props) {
             {windows.filter((w) => w.origin !== 'signals').length} trouvée(s) par le repérage
             global).
           </p>
+          <p className="muted">
+            Pour accepter ou refuser ces propositions : panneau{' '}
+            <a href="#revue">« Revue des propositions »</a>.
+          </p>
           <ProposalList title={`Clips (${clips.length})`} items={clips} />
           <ProposalList
             title={`Moments secondaires (${secondary.length}) — limites ou peu fiables, à vérifier`}

@@ -82,11 +82,30 @@ export interface TranscriptionConfig {
   language: string;
 }
 
+/** Erreur renvoyée par l'API : code stable et détails éventuels (conflits de la revue…). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null,
+    readonly details: unknown,
+  ) {
+    super(message);
+  }
+}
+
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const body = (await res.json().catch(() => null)) as
-    (T & { error?: { message?: string } }) | null;
-  if (!res.ok) throw new Error(body?.error?.message ?? `Erreur HTTP ${res.status}`);
+    (T & { error?: { message?: string; code?: string; details?: unknown } }) | null;
+  if (!res.ok) {
+    throw new ApiError(
+      body?.error?.message ?? `Erreur HTTP ${res.status}`,
+      res.status,
+      body?.error?.code ?? null,
+      body?.error?.details,
+    );
+  }
   return body as T;
 }
 
@@ -361,4 +380,171 @@ export const claudeApi = {
       `/api/analyses/${runId}/approve-review`,
       send('POST', { acceptBudgetUsd }),
     ),
+};
+
+/* -------------------------------------------------------------------------- */
+/* Revue des propositions (étape 5)                                            */
+/* -------------------------------------------------------------------------- */
+
+/** Motifs de refus (identiques à @acs/memory, vérifié par un test). */
+export const REJECT_REASONS = [
+  'pas_drole',
+  'manque_de_contexte',
+  'chute_coupee',
+  'trop_long',
+  'trop_court',
+  'deja_vu',
+  'gameplay_sans_interet',
+  'audio_inaudible',
+  'contenu_a_eviter',
+  'autre',
+] as const;
+export type RejectReason = (typeof REJECT_REASONS)[number];
+
+export const REJECT_REASON_LABELS: Record<RejectReason, string> = {
+  pas_drole: 'Pas drôle',
+  manque_de_contexte: 'Manque de contexte',
+  chute_coupee: 'Chute coupée',
+  trop_long: 'Trop long',
+  trop_court: 'Trop court',
+  deja_vu: 'Déjà vu',
+  gameplay_sans_interet: 'Gameplay sans intérêt',
+  audio_inaudible: 'Audio inaudible',
+  contenu_a_eviter: 'Contenu à éviter',
+  autre: 'Autre',
+};
+
+export type ReviewStatus = 'pending' | 'accepted' | 'rejected';
+export type ReviewState = 'to_review' | 'accepted' | 'rejected' | 'already_reviewed' | 'merged';
+
+export interface ReviewDecision {
+  status: ReviewStatus;
+  reasons: RejectReason[];
+  comment: string | null;
+  decidedAt?: string | null;
+  version?: number;
+}
+
+export interface EffectiveDecision {
+  status: ReviewStatus;
+  reasons: RejectReason[];
+  comment: string | null;
+  sourceProposalId: string | null;
+  eventId: string | null;
+  inherited: boolean;
+  source: { proposalId: string; runId: string; title: string; decidedAt: string | null } | null;
+}
+
+export interface ReviewProposal extends Proposal {
+  runId: string;
+  recordingId: string;
+  punchlineMs: number;
+  mergedIntoId: string | null;
+  explanation: string;
+  editingHint: { mode?: string; ideas?: string[] } | null;
+}
+
+export interface ReviewItem {
+  proposal: ReviewProposal;
+  momentId: string | null;
+  review: ReviewDecision | null;
+  supersededReview: ReviewDecision | null;
+  effective: EffectiveDecision;
+  state: ReviewState;
+  version: number;
+}
+
+export interface ReviewList {
+  run: { id: string; status: string; createdAt: string } | null;
+  runs: { id: string; status: string; createdAt: string }[];
+  items: ReviewItem[];
+  counts: Record<ReviewState | 'all', number>;
+}
+
+export interface ReviewDetail extends ReviewItem {
+  moment: {
+    id: string;
+    members: { proposalId: string; runId: string; title: string; isSource: boolean }[];
+  } | null;
+  run: {
+    id: string;
+    createdAt: string;
+    promptVersion: string | null;
+    models: { triage: string | null; deep: string | null };
+  } | null;
+}
+
+export interface ContextSegment {
+  id: number;
+  role: string | null;
+  srcStartMs: number;
+  srcEndMs: number;
+  text: string;
+  inClip: boolean;
+  marker: 'setup' | 'punchline' | 'reaction_end' | null;
+  sentToClaude: boolean;
+}
+
+export interface FeedbackEventView {
+  seq: number;
+  id: string;
+  type: 'proposal_accepted' | 'proposal_rejected' | 'proposal_reset';
+  occurredAt: string;
+  proposalId: string;
+  runId: string;
+  newStatus: ReviewStatus;
+  reasons: RejectReason[];
+  comment: string | null;
+  reevaluatesEventId: string | null;
+  current: boolean;
+}
+
+export interface DecisionRequest {
+  requestId: string;
+  decision: ReviewStatus;
+  reasons?: RejectReason[];
+  comment?: string;
+  expectedVersion?: number;
+  reevaluate?: boolean;
+}
+
+export type AudioPreparation =
+  | {
+      status: 'ready';
+      derivativeId: string;
+      durationMs: number | null;
+      windowStartMs: number;
+      windowEndMs: number;
+    }
+  | { status: 'pending'; job: Job | null; windowStartMs: number; windowEndMs: number };
+
+export const reviewApi = {
+  list: (
+    recordingId: string,
+    q: { runId?: string; tier?: 'clip' | 'secondary'; status?: string } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (q.runId) params.set('runId', q.runId);
+    if (q.tier) params.set('tier', q.tier);
+    if (q.status) params.set('status', q.status);
+    const qs = params.toString();
+    return getJson<ReviewList>(`/api/recordings/${recordingId}/proposals${qs ? `?${qs}` : ''}`);
+  },
+  detail: (id: string) => getJson<ReviewDetail>(`/api/proposals/${id}`),
+  context: (id: string) =>
+    getJson<{ segments: ContextSegment[]; clip: { srcStartMs: number; srcEndMs: number } }>(
+      `/api/proposals/${id}/context`,
+    ),
+  history: (id: string) => getJson<{ events: FeedbackEventView[] }>(`/api/proposals/${id}/events`),
+  decide: (id: string, body: DecisionRequest) =>
+    getJson<ReviewItem & { outcome: 'applied' | 'noop'; replayed: boolean }>(
+      `/api/proposals/${id}/decision`,
+      send('POST', body),
+    ),
+  detach: (id: string, body: { requestId: string; comment?: string }) =>
+    getJson<{ outcome: string }>(`/api/proposals/${id}/detach`, send('POST', body)),
+  prepareAudio: (id: string) =>
+    getJson<AudioPreparation>(`/api/proposals/${id}/audio`, send('POST', {})),
+  audioUrl: (id: string, derivativeId: string) =>
+    `/api/proposals/${id}/audio?v=${encodeURIComponent(derivativeId)}`,
 };
