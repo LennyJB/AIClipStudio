@@ -138,32 +138,34 @@ npm run dev
 
 ## Commandes
 
-| Commande                               | Rôle                                                          |
-| -------------------------------------- | ------------------------------------------------------------- |
-| `npm run dev`                          | API (rechargement auto) + interface Vite en parallèle         |
-| `npm run dev:api`                      | API seule                                                     |
-| `npm run dev:web`                      | Interface seule                                               |
-| `npm run start:api`                    | API sans rechargement                                         |
-| `npm run build:web`                    | Build de production de l'interface                            |
-| `npm run doctor`                       | Diagnostic de l'environnement                                 |
-| `npm run import -- <f>`                | Importe un enregistrement et extrait ses pistes audio         |
-| `npm run storage`                      | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes` |
-| `npm run transcribe -- <id \| chemin>` | Transcrit ; `--model`, `--force`, `--compare`                 |
-| `npm run analyze -- <id> --dry-run`    | Prépare l'analyse localement (aucun appel à Claude)           |
-| `npm run analysis-settings -- <id>`    | Confidentialité : accord Discord, facecam                     |
-| `npm run framing -- <commande>`        | Cadrage des images : `list`, `preview`, `validate`, `clear`   |
-| `npm run doctor -- --gpu`              | Vraie inférence sur le GPU (CUDA, cuBLAS, cuDNN)              |
-| `npm test`                             | Tous les tests (unitaires + intégration)                      |
-| `npm run test:watch`                   | Tests en mode surveillance                                    |
-| `npm run test:coverage`                | Tests avec couverture                                         |
-| `npm run typecheck`                    | Vérification TypeScript de tous les workspaces                |
-| `npm run lint`                         | ESLint                                                        |
-| `npm run format`                       | Formatage Prettier                                            |
-| `npm run test:unit`                    | Tests unitaires (sans outil externe)                          |
-| `npm run test:integration`             | Tests d'intégration (FFmpeg réel)                             |
-| `npm run test:migrations`              | Migrations de base de données                                 |
-| `npm run smoke`                        | Démarrage réel de l'API sur un stockage temporaire            |
-| `npm run check`                        | typecheck + lint + format + tests (à lancer avant un commit)  |
+| Commande                               | Rôle                                                           |
+| -------------------------------------- | -------------------------------------------------------------- |
+| `npm run dev`                          | API (rechargement auto) + interface Vite en parallèle          |
+| `npm run dev:api`                      | API seule                                                      |
+| `npm run dev:web`                      | Interface seule                                                |
+| `npm run start:api`                    | API sans rechargement                                          |
+| `npm run build:web`                    | Build de production de l'interface                             |
+| `npm run doctor`                       | Diagnostic de l'environnement                                  |
+| `npm run import -- <f>`                | Importe un enregistrement et extrait ses pistes audio          |
+| `npm run storage`                      | Espace occupé ; `-- --clean` (simulation), `-- --clean --yes`  |
+| `npm run transcribe -- <id \| chemin>` | Transcrit ; `--model`, `--force`, `--compare`                  |
+| `npm run analyze -- <id> --dry-run`    | Prépare l'analyse localement (aucun appel à Claude)            |
+| `npm run analyze -- <id> --run`        | Analyse avec Claude : estimation, confirmation, plafond strict |
+| `npm run doctor -- --claude`           | Clé et modèles Claude accessibles (aucune génération)          |
+| `npm run analysis-settings -- <id>`    | Confidentialité : accord Discord, facecam                      |
+| `npm run framing -- <commande>`        | Cadrage des images : `list`, `preview`, `validate`, `clear`    |
+| `npm run doctor -- --gpu`              | Vraie inférence sur le GPU (CUDA, cuBLAS, cuDNN)               |
+| `npm test`                             | Tous les tests (unitaires + intégration)                       |
+| `npm run test:watch`                   | Tests en mode surveillance                                     |
+| `npm run test:coverage`                | Tests avec couverture                                          |
+| `npm run typecheck`                    | Vérification TypeScript de tous les workspaces                 |
+| `npm run lint`                         | ESLint                                                         |
+| `npm run format`                       | Formatage Prettier                                             |
+| `npm run test:unit`                    | Tests unitaires (sans outil externe)                           |
+| `npm run test:integration`             | Tests d'intégration (FFmpeg réel)                              |
+| `npm run test:migrations`              | Migrations de base de données                                  |
+| `npm run smoke`                        | Démarrage réel de l'API sur un stockage temporaire             |
+| `npm run check`                        | typecheck + lint + format + tests (à lancer avant un commit)   |
 
 ---
 
@@ -320,16 +322,19 @@ Interface : `npm run dev`, puis « Enregistrements », choisir le fichier, « Tr
 
 ---
 
-## Analyse éditoriale (étape 4a : préparation locale)
+## Analyse éditoriale (étape 4)
 
 Repère les moments candidats à partir de **signaux locaux factuels** (échanges micro ↔ Discord,
 questions, rires et interjections **transcrits**, niveau sonore), prépare **exactement** le
 contenu qui serait transmis à Claude et estime son coût sous un plafond strict de 5 $.
-**Aucun appel à Claude API à cette étape.** Guide complet : [`docs/analyse-editoriale.md`](docs/analyse-editoriale.md).
+La préparation ne fait **aucun appel** ; l'analyse avec Claude (repérage Haiku 5.5, analyse Opus 5.5)
+exige une confirmation explicite du plafond. Guide complet : [`docs/analyse-editoriale.md`](docs/analyse-editoriale.md).
 
 ```bash
 npm run analyze -- <id> --dry-run              # préparer, résumer, estimer
-npm run analyze -- <id> --dry-run --window 1   # relire le contenu qui serait transmis
+npm run analyze -- <id> --dry-run --window 1   # relire la requête exacte qui serait envoyée
+npm run analyze -- <id> --run                  # analyse payante (confirmation « oui »)
+npm run analyze -- <id> --proposals            # clips puis moments secondaires
 ```
 
 Par défaut, seul le texte du **micro** serait transmis (pseudonymisé) ; Discord et la piste
@@ -354,7 +359,7 @@ AIClipStudio/
 │   ├── timeline/              Modèle du montage : SourceMs / EditMs, segments, conversions
 │   ├── transcription/         Blocs, reprise, déduplication ; worker Python Faster-Whisper
 │   │   └── python/            Worker Python + requirements.txt (étape 3)
-│   └── editorial/             Profils, signaux, fenêtres candidates, confidentialité, coûts (étape 4)
+│   └── editorial/             Profils, signaux, fenêtres, confidentialité, coûts, prompts, client Claude
 ├── profiles/
 │   ├── creator.json           Identité éditoriale du créateur (indépendante du jeu)
 │   ├── games/                 valorant, fortnite, minecraft, generic
@@ -414,7 +419,7 @@ unitaires et d'intégration, build et démarrage de l'API.
 | 2     | Import OBS, extraction audio, dérivés et cache, file, espace disque, modèle temporel | ✅ Terminée   |
 | 3     | Transcription Faster-Whisper horodatée, reprise, repli CPU, comparaison des modèles  | ✅ Terminée   |
 | 4a    | Signaux locaux, fenêtres, confidentialité, cadrage, contenu préparé, coûts estimés   | En revue (PR) |
-| 4b    | Appels Claude (repérage + analyse), vérifications, pertinence et fiabilité           | À faire       |
+| 4b    | Appels Claude (repérage + analyse), vérifications, pertinence et fiabilité           | En revue (PR) |
 | 5     | Interface de validation (liste, timestamps, lecture, accepter/refuser)               | À faire       |
 | 6     | Évaluation sur de vrais enregistrements, ajustement des prompts                      | À faire       |
 
