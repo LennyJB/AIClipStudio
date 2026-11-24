@@ -19,6 +19,7 @@ import {
   ROLE_LABELS,
   SIGNAL_LABELS,
 } from '../format';
+import { ClaudeAnalysis } from './ClaudeAnalysis';
 
 interface Props {
   recording: Recording;
@@ -152,10 +153,11 @@ export function AnalysisPanel({ recording, pollMs = 1000 }: Props) {
 
   return (
     <section className="card" aria-label="Analyse éditoriale">
-      <h2>Analyse éditoriale — préparation locale</h2>
+      <h2>Analyse éditoriale</h2>
       <p className="muted">
-        Étape 4a : aucun appel à Claude API. La préparation repère les moments candidats et montre
-        exactement ce qui serait transmis, avec le coût estimé.
+        La préparation est locale et gratuite : elle repère les moments candidats et montre
+        exactement ce qui serait transmis, avec le coût estimé. L’analyse avec Claude, payante,
+        demande une confirmation explicite du plafond.
       </p>
       {error && <p className="error">{error}</p>}
 
@@ -414,6 +416,7 @@ export function AnalysisPanel({ recording, pollMs = 1000 }: Props) {
           )}
         </>
       )}
+      <ClaudeAnalysis recordingId={id} pollMs={pollMs} />
     </section>
   );
 }

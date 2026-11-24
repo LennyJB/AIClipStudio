@@ -24,6 +24,12 @@ export type AppErrorCode =
   | 'ANALYSIS_NOT_READY'
   | 'PRICING_UNKNOWN'
   | 'PRIVACY_CONFIG_INVALID'
+  | 'CLAUDE_NOT_CONFIGURED'
+  | 'CLAUDE_AUTH_FAILED'
+  | 'CLAUDE_API_ERROR'
+  | 'BUDGET_EXHAUSTED'
+  | 'BUDGET_OVERRUN'
+  | 'BUDGET_NOT_CONFIRMED'
   | 'INTERNAL';
 
 export class AppError extends Error {

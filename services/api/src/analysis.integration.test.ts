@@ -234,6 +234,19 @@ describe.skipIf(!enabled)('Analyse éditoriale — préparation locale (4a)', ()
     ]) {
       expect(existsSync(path.join(dir, f)), f).toBe(true);
     }
+    // Requêtes EXACTES consultables avant tout appel (4b) : prompts, données, schéma.
+    for (const f of ['requetes/reperage-01.json', 'requetes/fenetre-001.json']) {
+      const r = JSON.parse(readFileSync(path.join(dir, f), 'utf8')) as {
+        requestHash: string;
+        body: Record<string, unknown>;
+      };
+      expect(r.requestHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(r.body).not.toHaveProperty('tools');
+      expect(r.body).not.toHaveProperty('fallbacks');
+      const raw = JSON.stringify(r.body);
+      expect(raw).not.toMatch(/SECRETDISCORD|SECRETBIS|Théo/);
+      expect(raw).toContain('transcription_non_fiable');
+    }
     expect((await fingerprintFile(video)).hash).toBe(fpBefore);
   });
 

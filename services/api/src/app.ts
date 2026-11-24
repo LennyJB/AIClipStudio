@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { EditorialModel } from '@acs/editorial';
 import { isAppError, type AppErrorCode } from '@acs/shared';
 import type { AppConfig } from './config';
 import type { Db } from './db';
@@ -12,6 +13,8 @@ import { registerTranscriptionRoutes } from './routes/transcriptions';
 export interface AppDeps {
   config: AppConfig;
   db: Db;
+  /** Modèle éditorial injecté (tests : faux modèle). Absent : Claude API si une clé existe. */
+  model?: EditorialModel | null;
 }
 
 const APP_VERSION = '0.4.0';
@@ -19,6 +22,8 @@ const APP_VERSION = '0.4.0';
 const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   NOT_FOUND: 404,
   ANALYSIS_NOT_READY: 409,
+  CLAUDE_NOT_CONFIGURED: 409,
+  BUDGET_NOT_CONFIRMED: 400,
   MEDIA_NOT_FOUND: 404,
   PROFILE_NOT_FOUND: 404,
   CONFLICT: 409,
@@ -26,10 +31,13 @@ const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   INTERNAL: 500,
 };
 
-export function buildApp({ config, db }: AppDeps): { app: FastifyInstance; services: Services } {
+export function buildApp({ config, db, model }: AppDeps): {
+  app: FastifyInstance;
+  services: Services;
+} {
   const app = Fastify({ logger: loggerOptions(config), bodyLimit: 64 * 1024 });
   const ctx = { config, db, log: app.log };
-  const services = createServices(ctx);
+  const services = createServices(ctx, model === undefined ? {} : { model });
   recoverServices(services);
 
   app.setErrorHandler((error, request, reply) => {

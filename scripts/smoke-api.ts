@@ -45,11 +45,11 @@ async function main() {
           throw new Error(`Réponse inattendue : ${JSON.stringify(body)}`);
         const storageRes = await fetch(`http://127.0.0.1:${PORT}/api/storage`);
         if (!storageRes.ok) throw new Error(`/api/storage a répondu ${storageRes.status}`);
-        // Analyse (4a) : configuration et profils de cadrage lisibles, préparation locale seulement.
+        // Analyse : configuration et profils de cadrage lisibles (aucun appel à Claude ici).
         const an = (await (await fetch(`http://127.0.0.1:${PORT}/api/analysis/config`)).json()) as {
           mode?: string;
         };
-        if (an.mode !== 'dry_run_only')
+        if (an.mode !== 'dry_run_and_claude')
           throw new Error(`Réponse inattendue : /api/analysis/config ${JSON.stringify(an)}`);
         const fr = await fetch(`http://127.0.0.1:${PORT}/api/framing-profiles`);
         if (!fr.ok) throw new Error(`/api/framing-profiles a répondu ${fr.status}`);
