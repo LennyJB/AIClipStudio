@@ -472,6 +472,10 @@ export const MIGRATIONS: readonly Migration[] = [
       -- 1 : l'utilisateur a demandé de refaire les appels malgré des réponses réutilisables.
       ALTER TABLE analysis_runs ADD COLUMN force_recall INTEGER NOT NULL DEFAULT 0
         CHECK (force_recall IN (0,1));
+      -- Coût réel au-delà de la réservation (ne devrait jamais arriver : la réservation est un
+      -- pire cas). Le coût réel reste dans llm_calls ; l'analyse s'arrête dès qu'il est > 0.
+      ALTER TABLE analysis_runs ADD COLUMN overrun_usd REAL NOT NULL DEFAULT 0
+        CHECK (overrun_usd >= 0);
 
       -- Un appel (une tentative) à Claude API. La ligne est créée AVANT l'envoi, avec la
       -- réservation budgétaire du pire cas ; le coût réel la remplace à la réponse.
