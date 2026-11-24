@@ -32,9 +32,13 @@ import { AnalysisRepository, type AnalysisRunDto } from '../analysis/repository'
 import { RecordingRepository } from '../recordings/repository';
 import { parse } from '../routes/validation';
 import type { TranscriptionService } from '../transcriptions/service';
+import type { DerivativeService } from '../derivatives/service';
+import { openServableFile, type OpenedFile } from './servable-file';
 import { ReviewRepository, type MembershipDto, type ReviewDto, type Source } from './repository';
 
 const FINAL_STATUSES = new Set(['completed', 'budget_exhausted']);
+/** Marge d'écoute autour du passage. */
+export const AUDIO_MARGIN_MS = 1500;
 
 export const DecisionBodySchema = z
   .object({
@@ -121,6 +125,7 @@ export class ReviewService {
   constructor(
     private readonly ctx: AppContext,
     private readonly transcriptions: TranscriptionService,
+    private readonly derivatives: DerivativeService,
   ) {
     this.repo = new ReviewRepository(ctx.db);
     this.proposals = new ProposalRepository(ctx.db);
@@ -629,6 +634,52 @@ export class ReviewService {
       );
     }
     return p;
+  }
+
+  /* -------------------------------- Écoute -------------------------------- */
+
+  /** Fenêtre d'écoute : le passage ± 1,5 s, bornée à la durée de l'enregistrement. */
+  audioWindow(p: ProposalDto) {
+    const rec = this.recording(p.recordingId);
+    const durationMs = rec.durationSec === null ? null : Math.round(rec.durationSec * 1000);
+    const startMs = Math.max(0, p.srcStartMs - AUDIO_MARGIN_MS);
+    const endMs = Math.min(durationMs ?? Number.MAX_SAFE_INTEGER, p.srcEndMs + AUDIO_MARGIN_MS);
+    return { startMs, endMs };
+  }
+
+  /** Prépare l'extrait d'écoute (piste « tout ») : prêt, ou traitement en cours. Rien n'est envoyé. */
+  prepareAudio(proposalId: string) {
+    const p = this.proposal(proposalId);
+    const window = this.audioWindow(p);
+    const res = this.derivatives.requestPreviewAudio(p.recordingId, window);
+    const d = res.audio[0];
+    if (res.status === 'ready' && d) {
+      return {
+        status: 'ready' as const,
+        derivativeId: d.id,
+        durationMs: d.durationMs,
+        windowStartMs: window.startMs,
+        windowEndMs: window.endMs,
+      };
+    }
+    return {
+      status: 'pending' as const,
+      job: res.jobs[0] ?? null,
+      windowStartMs: window.startMs,
+      windowEndMs: window.endMs,
+    };
+  }
+
+  /** Ouvre l'extrait prêt pour la lecture (chemin lu en base, vérifié, jamais fourni par le client). */
+  async openAudio(proposalId: string): Promise<OpenedFile> {
+    const p = this.proposal(proposalId);
+    const d = this.derivatives.findPreviewAudio(p.recordingId, this.audioWindow(p));
+    if (!d) throw new AppError('NOT_READY', 'Extrait d’écoute pas encore prêt : préparez-le');
+    return openServableFile(
+      this.derivatives.abs(d.relPath),
+      this.ctx.config.paths.processing,
+      '.wav',
+    );
   }
 
   /* ------------------------------ Historique ------------------------------ */

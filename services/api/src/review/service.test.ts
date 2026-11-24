@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { effectiveDecisions } from '@acs/memory';
 import { loadConfig, ROOT_DIR } from '../config';
 import { openDatabase, type Db } from '../db';
+import type { DerivativeService } from '../derivatives/service';
 import type { TranscriptionService } from '../transcriptions/service';
 import { ReviewService } from './service';
 
@@ -31,7 +32,11 @@ function setup() {
        'fp', 'mkv', 'valorant', '{}')`,
   ).run();
   const config = loadConfig({ NODE_ENV: 'test', STORAGE_DIR: '/tmp/acs-review-unit' }, ROOT_DIR);
-  svc = new ReviewService({ config, db, log: silent }, {} as TranscriptionService);
+  svc = new ReviewService(
+    { config, db, log: silent },
+    {} as TranscriptionService,
+    {} as DerivativeService,
+  );
 }
 const REC = '11111111-1111-4111-8111-111111111111';
 

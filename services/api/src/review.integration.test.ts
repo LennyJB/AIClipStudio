@@ -2,7 +2,8 @@
  * Revue des propositions (étape 5), de bout en bout par l'API : FFmpeg réel, transcription
  * simulée, faux modèle (aucun appel réel à Claude).
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -281,6 +282,176 @@ describe.skipIf(!enabled)('Revue des propositions (API, faux modèle)', () => {
     expect(after.items.find((i) => i.proposal.id === clip.proposal.id)).toMatchObject({
       state: 'rejected',
       review: { reasons: ['chute_coupee'] },
+    });
+  });
+
+  describe('écoute du passage (piste « tout »)', () => {
+    let mixVideo: string;
+    beforeAll(() => {
+      mixVideo = createTalkVideo(mkdtempSync(path.join(tmpdir(), 'acs-review-mix-')), 180, {
+        withMix: true,
+      });
+    }, 120_000);
+
+    async function mixRecording() {
+      const rec = (
+        await call<{ recording: RecordingDto }>('POST', '/api/recordings', { path: mixVideo })
+      ).body.recording;
+      await call('POST', `/api/recordings/${rec.id}/transcriptions`, {});
+      await services.runner.idle();
+      await analyze(rec.id);
+      const clip = (await list(rec.id)).items.find((i) => i.proposal.tier === 'clip')!;
+      return { rec, clip };
+    }
+    const sha = (f: string) => createHash('sha256').update(readFileSync(f)).digest('hex');
+    const raw = (
+      url: string,
+      headers: Record<string, string> = {},
+      method: 'GET' | 'HEAD' = 'GET',
+    ) => app.inject({ method, url, headers });
+
+    it('préparation mise en cache, lecture 200/206/416, HEAD, WAV mono 48 kHz, original intact, aucun appel au modèle', async () => {
+      await setup();
+      const before = sha(mixVideo);
+      const { clip } = await mixRecording();
+      const calls = model.calls.length;
+      const url = `/api/proposals/${clip.proposal.id}/audio`;
+
+      expect((await raw(url)).statusCode).toBe(409); // pas encore préparé
+      const [p1, p2] = await Promise.all([
+        call<{ status: string; job: { id: string } }>('POST', url, {}),
+        call<{ status: string; job: { id: string } }>('POST', url, {}),
+      ]);
+      expect(p1.status).toBe(202);
+      expect(p2.body.job.id).toBe(p1.body.job.id); // un seul traitement
+      await services.runner.idle();
+      const ready = await call<{ status: string; durationMs: number; windowStartMs: number }>(
+        'POST',
+        url,
+        {},
+      );
+      expect(ready.status).toBe(200);
+      expect(ready.body.windowStartMs).toBe(
+        Math.max(0, (clip.proposal as unknown as { srcStartMs: number }).srcStartMs - 1500),
+      );
+      const jobsAfter = (
+        db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE type = 'extract_audio_stems'`).get() as {
+          n: number;
+        }
+      ).n;
+      await call('POST', url, {});
+      expect(
+        (
+          db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE type = 'extract_audio_stems'`).get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(jobsAfter);
+
+      const full = await raw(url);
+      expect(full.statusCode).toBe(200);
+      const size = full.rawPayload.length;
+      expect(full.headers).toMatchObject({
+        'content-type': 'audio/wav',
+        'accept-ranges': 'bytes',
+        'content-length': String(size),
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      });
+      const body = full.rawPayload;
+      expect(body.subarray(0, 4).toString()).toBe('RIFF');
+      expect(body.readUInt16LE(22)).toBe(1); // mono
+      expect(body.readUInt32LE(24)).toBe(48_000);
+
+      const part = await raw(url, { range: 'bytes=0-99' });
+      expect(part.statusCode).toBe(206);
+      expect(part.headers['content-range']).toBe(`bytes 0-99/${size}`);
+      expect(part.headers['content-length']).toBe('100');
+      expect(Buffer.compare(part.rawPayload, body.subarray(0, 100))).toBe(0);
+      const open = await raw(url, { range: `bytes=${size - 10}-` });
+      expect(open.statusCode).toBe(206);
+      expect(Buffer.compare(open.rawPayload, body.subarray(size - 10))).toBe(0);
+      const suffix = await raw(url, { range: 'bytes=-20' });
+      expect(suffix.headers['content-range']).toBe(`bytes ${size - 20}-${size - 1}/${size}`);
+      const bad = await raw(url, { range: `bytes=${size}-` });
+      expect(bad.statusCode).toBe(416);
+      expect(bad.headers['content-range']).toBe(`bytes */${size}`);
+      expect((await raw(url, { range: 'bytes=0-1,5-9' })).statusCode).toBe(200);
+      const head = await raw(url, {}, 'HEAD');
+      expect(head.statusCode).toBe(200);
+      expect(head.headers['content-length']).toBe(String(size));
+      expect(head.rawPayload.length).toBe(0);
+
+      expect(sha(mixVideo)).toBe(before); // original intact
+      expect(model.calls.length).toBe(calls); // rien envoyé à Claude
+    });
+
+    it('fichier du cache supprimé → NOT_READY puis régénération ; chemin falsifié ou lien symbolique refusé', async () => {
+      await setup();
+      const { clip } = await mixRecording();
+      const url = `/api/proposals/${clip.proposal.id}/audio`;
+      await call('POST', url, {});
+      await services.runner.idle();
+      const row = db
+        .prepare(`SELECT id, rel_path FROM media_derivatives WHERE params_json LIKE '%"preview"%'`)
+        .get() as { id: string; rel_path: string };
+      const abs = path.join(config.paths.storage, ...row.rel_path.split('/'));
+
+      // Chemin hors de processing/ (mais dans le stockage) : refusé sans rien servir.
+      const outside = path.join(config.paths.storage, 'config', 'faux.wav');
+      writeFileSync(outside, readFileSync(abs));
+      db.prepare('UPDATE media_derivatives SET rel_path = ? WHERE id = ?').run(
+        'config/faux.wav',
+        row.id,
+      );
+      const r1 = await raw(url);
+      expect(r1.statusCode).toBe(409);
+      expect(r1.json<{ error: { code: string; message: string } }>().error).toMatchObject({
+        code: 'NOT_READY',
+      });
+      expect(r1.body).not.toContain('faux.wav');
+
+      // Lien symbolique dans processing/ vers un fichier extérieur : refusé.
+      const link = abs.replace(/\.wav$/, '-lien.wav');
+      let linked = true;
+      try {
+        symlinkSync(outside, link);
+      } catch {
+        linked = false; // Windows sans privilège : création de liens impossible, cas ignoré
+      }
+      if (linked) {
+        db.prepare('UPDATE media_derivatives SET rel_path = ? WHERE id = ?').run(
+          row.rel_path.replace(/\.wav$/, '-lien.wav'),
+          row.id,
+        );
+        expect((await raw(url)).statusCode).toBe(409);
+      }
+
+      // Fichier supprimé : le dérivé est retiré, NOT_READY, puis une nouvelle préparation le recrée.
+      db.prepare('UPDATE media_derivatives SET rel_path = ? WHERE id = ?').run(
+        row.rel_path,
+        row.id,
+      );
+      rmSync(abs);
+      expect((await raw(url)).statusCode).toBe(409);
+      expect((await call('POST', url, {})).status).toBe(202);
+      await services.runner.idle();
+      expect((await raw(url)).statusCode).toBe(200);
+    });
+
+    it('enregistrement sans piste « tout » : AUDIO_TRACK_MISSING', async () => {
+      await setup();
+      const rec = await importAndTranscribe(); // vidéo Micro + Discord seulement
+      await analyze(rec.id);
+      const clip = (await list(rec.id)).items[0]!;
+      const r = await call<{ error: { code: string; message: string } }>(
+        'POST',
+        `/api/proposals/${clip.proposal.id}/audio`,
+        {},
+      );
+      expect(r.status).toBe(409);
+      expect(r.body.error.code).toBe('AUDIO_TRACK_MISSING');
+      expect(r.body.error.message).toMatch(/piste « tout »/);
     });
   });
 });

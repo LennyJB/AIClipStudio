@@ -49,7 +49,7 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
       },
     },
   );
-  const review = new ReviewService(ctx, transcriptions);
+  const review = new ReviewService(ctx, transcriptions, derivatives);
   return { runner, derivatives, storage, transcriptions, analysis, review };
 }
 

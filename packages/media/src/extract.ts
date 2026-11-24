@@ -11,6 +11,8 @@ export const AUDIO_PROFILES = {
   transcription: { sampleRate: 16_000, channels: 1, codec: 'pcm_s16le' },
   /** Pistes de montage pleine qualité (fenêtre de clip). */
   editor: { sampleRate: 48_000, channels: 2, codec: 'pcm_s16le' },
+  /** Écoute d'un passage dans l'interface de revue (piste « tout », fenêtre courte). */
+  preview: { sampleRate: 48_000, channels: 1, codec: 'pcm_s16le' },
 } as const;
 export type AudioProfileId = keyof typeof AUDIO_PROFILES;
 export type AudioProfile = (typeof AUDIO_PROFILES)[AudioProfileId];

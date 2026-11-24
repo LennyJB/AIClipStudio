@@ -65,10 +65,20 @@ const KIND_DIRS: Record<DerivativeKind, string> = {
 
 const PROFILE_BY_KIND = { audio_transcription: 'transcription', audio_stem: 'editor' } as const;
 
+/** Profils autorisés pour un type de dérivé audio. */
+const PROFILES_FOR_KIND: Record<'audio_transcription' | 'audio_stem', readonly AudioProfileId[]> = {
+  audio_transcription: ['transcription'],
+  audio_stem: ['editor', 'preview'],
+};
+
+/** Durée maximale d'un extrait d'écoute (garde-fou ; un clip dure au plus 80 s). */
+export const PREVIEW_MAX_MS = 180_000;
+
 const AudioJobParams = z
   .object({
     recordingId: z.uuid(),
     audioIndexes: z.array(z.number().int().nonnegative()).min(1),
+    profile: z.enum(['transcription', 'editor', 'preview']).optional(),
     range: z
       .object({ startMs: z.number().int().nonnegative(), endMs: z.number().int().positive() })
       .nullable(),
@@ -119,8 +129,16 @@ export class DerivativeService {
     kind: 'audio_transcription' | 'audio_stem',
     audioIndex: number,
     range: Range,
+    profile: AudioProfileId = PROFILE_BY_KIND[kind],
   ): Spec {
-    const params = { ...AUDIO_PROFILES[PROFILE_BY_KIND[kind] as AudioProfileId] };
+    if (!PROFILES_FOR_KIND[kind].includes(profile)) {
+      throw new AppError('VALIDATION_FAILED', `Profil ${profile} incompatible avec ${kind}`);
+    }
+    // Le profil par défaut garde exactement ses anciens paramètres (clés de cache inchangées).
+    const params =
+      profile === PROFILE_BY_KIND[kind]
+        ? { ...AUDIO_PROFILES[profile] }
+        : { ...AUDIO_PROFILES[profile], profile };
     const key = derivativeCacheKey({
       sourceFingerprint: fp,
       kind,
@@ -268,6 +286,49 @@ export class DerivativeService {
     };
   }
 
+  /**
+   * Extrait d'écoute d'un passage (revue, étape 5) : piste « tout » (rôle mix) uniquement, WAV mono
+   * 48 kHz, sur la plage demandée. Aucune forme d'onde. Original en lecture seule, cache commun.
+   */
+  requestPreviewAudio(recordingId: string, range: { startMs: number; endMs: number }) {
+    const { audioIndex } = this.previewTrack(recordingId, range);
+    return this.requestAudio(recordingId, 'audio_stem', [audioIndex], range, 'interactive', range, {
+      profile: 'preview',
+      waveforms: false,
+    });
+  }
+
+  /** Extrait d'écoute déjà disponible (fichier présent), sans rien produire. */
+  findPreviewAudio(recordingId: string, range: { startMs: number; endMs: number }) {
+    const { audioIndex, fp } = this.previewTrack(recordingId, range);
+    return this.findUsable(
+      recordingId,
+      fp,
+      this.audioSpec(fp, recordingId, 'audio_stem', audioIndex, range, 'preview'),
+    );
+  }
+
+  private previewTrack(recordingId: string, range: { startMs: number; endMs: number }) {
+    const { rec, fp } = this.loadRecording(recordingId);
+    if (
+      !Number.isInteger(range.startMs) ||
+      !Number.isInteger(range.endMs) ||
+      range.startMs < 0 ||
+      range.endMs <= range.startMs ||
+      range.endMs - range.startMs > PREVIEW_MAX_MS
+    ) {
+      throw new AppError('VALIDATION_FAILED', 'Plage d’écoute invalide ou trop longue');
+    }
+    const mix = rec.audioTracks.find((t) => t.role === 'mix');
+    if (!mix) {
+      throw new AppError(
+        'AUDIO_TRACK_MISSING',
+        'Écoute indisponible : cet enregistrement n’a pas de piste « tout »',
+      );
+    }
+    return { audioIndex: mix.audioIndex, fp };
+  }
+
   private requestAudio(
     recordingId: string,
     kind: 'audio_transcription' | 'audio_stem',
@@ -275,8 +336,11 @@ export class DerivativeService {
     produceRange: Range,
     lane: 'heavy' | 'interactive',
     lookupRange: Range = produceRange,
+    opts: { profile?: AudioProfileId; waveforms?: boolean } = {},
   ): DerivativeRequestResult {
     const { fp } = this.loadRecording(recordingId);
+    const profile = opts.profile ?? PROFILE_BY_KIND[kind];
+    const withWaveforms = opts.waveforms ?? true;
     const audio: DerivativeDto[] = [];
     const waveforms: DerivativeDto[] = [];
     const jobs: JobDto[] = [];
@@ -286,29 +350,37 @@ export class DerivativeService {
       const found = this.findUsable(
         recordingId,
         fp,
-        this.audioSpec(fp, recordingId, kind, idx, lookupRange),
+        this.audioSpec(fp, recordingId, kind, idx, lookupRange, profile),
       );
       if (!found) {
         missing.push(idx);
         continue;
       }
       audio.push(found);
+      if (!withWaveforms) continue;
       const wf = this.ensureWaveform(found);
       if ('derivative' in wf) waveforms.push(wf.derivative);
       else jobs.push(wf.job);
     }
 
     if (missing.length) {
-      const specs = missing.map((i) => this.audioSpec(fp, recordingId, kind, i, produceRange));
+      const specs = missing.map((i) =>
+        this.audioSpec(fp, recordingId, kind, i, produceRange, profile),
+      );
       const files: JobFile[] = specs.flatMap((s) => outputFiles(s.relPath));
       const type: JobType =
         kind === 'audio_transcription' ? 'extract_transcription_audio' : 'extract_audio_stems';
       const { job } = this.runnerRef().enqueue({
         type,
         lane,
-        targetKey: `${type}:${sha256(canonicalJson({ fp, range: produceRange, idx: missing, v: AUDIO_GENERATOR_VERSION }))}`,
+        targetKey: `${type}:${sha256(canonicalJson({ fp, range: produceRange, idx: missing, v: AUDIO_GENERATOR_VERSION, profile }))}`,
         recordingId,
-        params: { recordingId, audioIndexes: missing, range: produceRange },
+        params: {
+          recordingId,
+          audioIndexes: missing,
+          range: produceRange,
+          ...(profile !== PROFILE_BY_KIND[kind] ? { profile } : {}),
+        },
         files,
       });
       jobs.push(job);
@@ -475,6 +547,7 @@ export class DerivativeService {
       signal,
       reportProgress,
       logContext: { jobId: job.id },
+      ...(p.profile ? { profile: p.profile, waveforms: p.profile !== 'preview' } : {}),
     });
     return { derivativeIds: ready.map((d) => d.id) };
   }
@@ -495,9 +568,16 @@ export class DerivativeService {
     kind: 'audio_transcription' | 'audio_stem',
     audioIndexes: readonly number[],
     range: Range,
-    opts: { signal: AbortSignal; reportProgress: (ratio: number) => void; logContext?: object },
+    opts: {
+      signal: AbortSignal;
+      reportProgress: (ratio: number) => void;
+      logContext?: object;
+      profile?: AudioProfileId;
+      waveforms?: boolean;
+    },
   ): Promise<DerivativeDto[]> {
     const { signal, reportProgress } = opts;
+    const profile = opts.profile ?? PROFILE_BY_KIND[kind];
     const p = { audioIndexes, range };
     const { rec, fp, sourcePath } = this.loadRecording(recordingId);
 
@@ -511,7 +591,7 @@ export class DerivativeService {
       );
     }
 
-    const specs = p.audioIndexes.map((i) => this.audioSpec(fp, rec.id, kind, i, p.range));
+    const specs = p.audioIndexes.map((i) => this.audioSpec(fp, rec.id, kind, i, p.range, profile));
     const ready: DerivativeDto[] = [];
     const todo: typeof specs = [];
     for (const s of specs) {
@@ -527,7 +607,7 @@ export class DerivativeService {
         inputPath: sourcePath,
         targets: todo.map((s) => ({ audioIndex: s.audioIndex!, outputPath: this.abs(s.relPath) })),
         allowedDir: this.ctx.config.paths.processing,
-        profile: PROFILE_BY_KIND[kind],
+        profile,
         range: p.range,
         expectedDurationSec: rec.durationSec,
         signal,
@@ -569,7 +649,7 @@ export class DerivativeService {
     }
 
     // Formes d'onde : calculées dans la foulée, à partir des WAV (pas de relecture de l'original).
-    for (const [i, audio] of ready.entries()) {
+    for (const [i, audio] of (opts.waveforms === false ? [] : ready).entries()) {
       await this.produceWaveform(audio, signal);
       reportProgress(0.85 + (0.15 * (i + 1)) / ready.length);
     }
