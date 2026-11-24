@@ -96,12 +96,18 @@ export function estimateAnalysis(input: {
   triageMaxOutputTokens: number;
   triageChunkTokens: readonly number[];
   windows: readonly { rank: number; textTokens: number; imageTokens: number }[];
+  /** Taille estimée des prompts système (et schémas), quand ils sont connus (étape 4b). */
+  systemTokens?: { triage: number; deep: number };
 }): AnalysisEstimate {
   const A = ESTIMATE_ASSUMPTIONS;
+  const sys = input.systemTokens ?? {
+    triage: A.triageSystemPromptTokens,
+    deep: A.deepSystemPromptTokens,
+  };
   const chunks = input.triageChunkTokens.map((t, i) =>
     estimateCall({
       model: input.triageModel,
-      systemTokens: A.triageSystemPromptTokens,
+      systemTokens: sys.triage,
       dataTokens: t,
       imageTokens: 0,
       typicalOutputTokens: A.triageTypicalOutputTokens,
@@ -115,7 +121,7 @@ export function estimateAnalysis(input: {
       rank: w.rank,
       ...estimateCall({
         model: input.deepModel,
-        systemTokens: A.deepSystemPromptTokens,
+        systemTokens: sys.deep,
         dataTokens: w.textTokens,
         imageTokens: w.imageTokens,
         typicalOutputTokens: A.deepTypicalOutputTokens[input.effort],
@@ -149,7 +155,9 @@ export function estimateAnalysis(input: {
     budgetUsd: input.budgetUsd,
     assumptions: [
       'Jetons de texte estimés localement (1 jeton pour 3 octets) ; les comptes réels seront mesurés à l’étape 4b.',
-      `Prompt système supposé : ${A.deepSystemPromptTokens} jetons (analyse), ${A.triageSystemPromptTokens} (repérage) — les prompts seront écrits à l’étape 4b.`,
+      input.systemTokens
+        ? `Prompt système et schéma de réponse : ${sys.deep} jetons estimés (analyse), ${sys.triage} (repérage).`
+        : `Prompt système supposé : ${sys.deep} jetons (analyse), ${sys.triage} (repérage).`,
       `Sortie typique (réflexion comprise) : ${A.deepTypicalOutputTokens[input.effort]} jetons par fenêtre (effort ${input.effort}), ${A.triageTypicalOutputTokens} par tranche de repérage.`,
       `Pire cas : entrée +${Math.round((A.inputMargin - 1) * 100)} %, prompt système réécrit en cache à chaque appel, sortie = limite (${input.maxOutputTokens} / ${input.triageMaxOutputTokens} jetons).`,
       'Images : ⌈largeur/28⌉ × ⌈hauteur/28⌉ jetons chacune.',

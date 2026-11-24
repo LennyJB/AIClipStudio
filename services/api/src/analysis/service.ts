@@ -4,7 +4,7 @@
  * prépare le contenu exact qui serait transmis, on l'écrit sur disque pour relecture, et
  * on estime les coûts sous le plafond. Les appels arriveront à l'étape 4b.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -15,6 +15,8 @@ import {
   buildWindowPayload,
   computeSignals,
   createPseudonymizer,
+  deepRequest,
+  estimateTextTokens,
   DEFAULT_SIGNAL_PROVIDERS,
   estimateAnalysis,
   imageTokens,
@@ -27,10 +29,16 @@ import {
   pricingFor,
   profileHash,
   rankWindows,
+  requestHash,
   stableHash,
+  SUMMARY_PLACEHOLDER,
+  toReviewBody,
+  triageRequest,
   type AnalysisSegment,
   type EnergyTrack,
+  type ModelRequest,
   type PreparedFrame,
+  type RequestImage,
   type RenderStats,
   type Speaker,
 } from '@acs/editorial';
@@ -644,21 +652,25 @@ export class AnalysisService {
     return { energy, missing };
   }
 
-  private async prepare(run: AnalysisRunDto, { signal, reportProgress }: JobHandlerContext) {
-    const started = Date.now();
-    const inp = await this.inputs(run.recordingId);
-    if (inp.inputKey !== run.inputKey) {
-      throw new AppError(
-        'CONFLICT',
-        'Les réglages, profils ou transcriptions ont changé depuis la demande : relancez la préparation',
-      );
-    }
+  /* ------------------------------ Contexte ------------------------------ */
+
+  /** Jetons estimés des prompts système et schémas (repérage, analyse). */
+  systemTokens(inp: Inputs): { triage: number; deep: number } {
+    const t = this.triageRequestFor(inp, '');
+    const d = this.deepRequestFor(inp, '', [], null);
+    const size = (r: ModelRequest) =>
+      estimateTextTokens(r.system) + estimateTextTokens(JSON.stringify(r.schema));
+    return { triage: size(t), deep: size(d) };
+  }
+
+  /**
+   * Contexte d'analyse d'un enregistrement (déterministe) : segments transcrits, énergie,
+   * signaux et fenêtres à signaux. Partagé par la préparation et par les appels (4b).
+   */
+  async buildContext(inp: Inputs) {
     const { rec, settings } = inp;
     const policy = { discordTextAllowed: settings.discordTextAllowed };
     const pseudonymizer = createPseudonymizer(inp.privacyFile);
-
-    // 1. Transcription et énergie.
-    this.repo.setStage(run.id, 'signals');
     const speakers = new Map<number, Speaker>();
     for (const t of rec.audioTracks) {
       const sp = SPEAKER_BY_ROLE[t.role];
@@ -703,58 +715,156 @@ export class AnalysisService {
         maxCoreMs: clip.maxSeconds * 1000,
       }),
     );
+    return {
+      policy,
+      pseudonymizer,
+      speakers,
+      segments,
+      energy,
+      energyMissing,
+      durationMs,
+      signals,
+      clip,
+      windows,
+    };
+  }
+
+  /** Raison de l'absence d'images, ou null si des images peuvent être préparées. */
+  noFramesReason(inp: Inputs): string | null {
+    if (this.cfg.framesPerWindow === 0) return 'réglage ANALYSIS_FRAMES_PER_WINDOW=0';
+    if (!inp.rec.video?.width) return 'aucune piste vidéo';
+    if (inp.framingStatus === 'none') return 'aucun profil de cadrage choisi';
+    if (inp.framingStatus === 'not_validated') return 'le profil de cadrage n’a pas été validé';
+    if (inp.framingStatus === 'changed')
+      return 'le profil de cadrage a été modifié depuis sa validation : revalidez-le';
+    if (inp.framingStatus === 'missing') return 'le profil de cadrage est introuvable';
+    return null;
+  }
+
+  /** Images des fenêtres (profil de cadrage validé uniquement), mises en cache comme dérivés. */
+  async prepareFrames(
+    inp: Inputs,
+    windows: readonly { rank: number; coreStartMs: number; coreEndMs: number }[],
+    signal: AbortSignal,
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<Map<number, PreparedFrame[]>> {
+    const out = new Map<number, PreparedFrame[]>();
+    if (this.noFramesReason(inp) || !inp.framing) return out;
+    const { rec, settings } = inp;
+    const framing = inp.framing;
+    const perWindow = windows.map((w) => {
+      const n = this.cfg.framesPerWindow;
+      const len = w.coreEndMs - w.coreStartMs;
+      const times = Array.from({ length: n }, (_, k) =>
+        Math.round(w.coreStartMs + ((k + 0.5) * len) / n),
+      );
+      return { w, reqs: times.flatMap((t) => this.frameRequests(framing, settings, t)) };
+    });
+    const total = perWindow.reduce((a, x) => a + x.reqs.length, 0);
+    let done = 0;
+    for (const { w, reqs } of perWindow) {
+      const ders = await this.derivatives.ensureFrames(rec.id, reqs, {
+        signal,
+        onProgress: () => onProgress?.(++done, total),
+      });
+      out.set(
+        w.rank,
+        ders.map((d, i) => {
+          const r = reqs[i]!;
+          const size = outputSize(
+            toPixelRect(r.crop, rec.video!.width!, rec.video!.height!),
+            r.maxWidth,
+          );
+          return {
+            label: `F${i + 1}`,
+            derivativeId: d.id,
+            atMs: r.atMs,
+            region: r.region,
+            ...size,
+          };
+        }),
+      );
+    }
+    return out;
+  }
+
+  /** Images d'une requête : empreinte et taille des fichiers RÉELLEMENT présents. */
+  async requestImages(frames: readonly PreparedFrame[]): Promise<RequestImage[]> {
+    const out: RequestImage[] = [];
+    for (const f of frames) {
+      const d = this.derivatives.repo.get(f.derivativeId);
+      if (!d)
+        throw new AppError('NOT_FOUND', `Image ${f.label} introuvable : relancez la préparation`);
+      const bytes = await readFile(this.derivatives.abs(d.relPath));
+      out.push({
+        label: f.label,
+        derivativeId: f.derivativeId,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        sizeBytes: bytes.length,
+        mediaType: 'image/jpeg',
+      });
+    }
+    return out;
+  }
+
+  /** Requête de repérage d'une tranche. */
+  triageRequestFor(inp: Inputs, chunkText: string): ModelRequest {
+    return triageRequest({
+      model: this.ctx.config.claude.triageModel,
+      effort: this.cfg.triageEffort,
+      maxTokens: this.cfg.triageMaxOutputTokens,
+      creator: inp.creator,
+      game: inp.game,
+      chunkText,
+    });
+  }
+
+  /** Requête d'analyse approfondie d'une fenêtre. */
+  deepRequestFor(
+    inp: Inputs,
+    payloadText: string,
+    images: readonly RequestImage[],
+    streamSummary: string | null,
+  ): ModelRequest {
+    return deepRequest({
+      model: this.ctx.config.claude.model,
+      effort: this.cfg.effort,
+      maxTokens: this.cfg.maxOutputTokens,
+      creator: inp.creator,
+      game: inp.game,
+      clip: effectiveClipDuration(inp.creator, inp.game),
+      payloadText,
+      images,
+      streamSummary,
+    });
+  }
+
+  private async prepare(run: AnalysisRunDto, { signal, reportProgress }: JobHandlerContext) {
+    const started = Date.now();
+    const inp = await this.inputs(run.recordingId);
+    if (inp.inputKey !== run.inputKey) {
+      throw new AppError(
+        'CONFLICT',
+        'Les réglages, profils ou transcriptions ont changé depuis la demande : relancez la préparation',
+      );
+    }
+    const { rec, settings } = inp;
+
+    // 1. Transcription, énergie, signaux et fenêtres à signaux.
+    this.repo.setStage(run.id, 'signals');
+    const { policy, pseudonymizer, segments, energy, energyMissing, durationMs, signals, windows } =
+      await this.buildContext(inp);
     reportProgress(0.15);
     if (signal.aborted) throw new AppError('CANCELLED', 'Préparation annulée');
 
     // 2. Images (seulement avec un profil de cadrage VALIDÉ et inchangé).
     this.repo.setStage(run.id, 'frames');
-    let noFramesReason: string | null = null;
-    if (this.cfg.framesPerWindow === 0) noFramesReason = 'réglage ANALYSIS_FRAMES_PER_WINDOW=0';
-    else if (!rec.video?.width) noFramesReason = 'aucune piste vidéo';
-    else if (inp.framingStatus === 'none') noFramesReason = 'aucun profil de cadrage choisi';
-    else if (inp.framingStatus === 'not_validated')
-      noFramesReason = 'le profil de cadrage n’a pas été validé';
-    else if (inp.framingStatus === 'changed')
-      noFramesReason = 'le profil de cadrage a été modifié depuis sa validation : revalidez-le';
-    else if (inp.framingStatus === 'missing')
-      noFramesReason = 'le profil de cadrage est introuvable';
-    const framesByRank = new Map<number, PreparedFrame[]>();
-    if (!noFramesReason && inp.framing) {
-      const framing = inp.framing;
-      const perWindow = windows.map((w) => {
-        const n = this.cfg.framesPerWindow;
-        const len = w.coreEndMs - w.coreStartMs;
-        const times = Array.from({ length: n }, (_, k) =>
-          Math.round(w.coreStartMs + ((k + 0.5) * len) / n),
+    const noFramesReason = this.noFramesReason(inp);
+    const framesByRank = noFramesReason
+      ? new Map<number, PreparedFrame[]>()
+      : await this.prepareFrames(inp, windows, signal, (done, total) =>
+          reportProgress(0.15 + (0.7 * done) / Math.max(1, total)),
         );
-        return { w, reqs: times.flatMap((t) => this.frameRequests(framing, settings, t)) };
-      });
-      const total = perWindow.reduce((a, x) => a + x.reqs.length, 0);
-      let done = 0;
-      for (const { w, reqs } of perWindow) {
-        const ders = await this.derivatives.ensureFrames(rec.id, reqs, {
-          signal,
-          onProgress: () => reportProgress(0.15 + (0.7 * ++done) / Math.max(1, total)),
-        });
-        framesByRank.set(
-          w.rank,
-          ders.map((d, i) => {
-            const r = reqs[i]!;
-            const size = outputSize(
-              toPixelRect(r.crop, rec.video!.width!, rec.video!.height!),
-              r.maxWidth,
-            );
-            return {
-              label: `F${i + 1}`,
-              derivativeId: d.id,
-              atMs: r.atMs,
-              region: r.region,
-              ...size,
-            };
-          }),
-        );
-      }
-    }
     reportProgress(0.85);
 
     // 3. Contenu préparé (exactement ce qui serait transmis) et estimation.
@@ -764,6 +874,22 @@ export class AnalysisService {
     await rm(absDir, { recursive: true, force: true });
     await mkdir(path.join(absDir, 'fenetres'), { recursive: true });
     await mkdir(path.join(absDir, 'reperage'), { recursive: true });
+    await mkdir(path.join(absDir, 'requetes'), { recursive: true });
+    const writeRequest = (name: string, req: ModelRequest) =>
+      writeFile(
+        path.join(absDir, 'requetes', name),
+        JSON.stringify(
+          {
+            stage: req.stage,
+            model: req.model,
+            promptVersion: req.promptVersion,
+            requestHash: requestHash(req),
+            body: toReviewBody(req),
+          },
+          null,
+          2,
+        ),
+      );
 
     const chunks = buildTriageChunks({
       segments,
@@ -774,8 +900,15 @@ export class AnalysisService {
       policy,
       pseudonymizer,
     });
-    for (const c of chunks)
+    const triageTokens: number[] = [];
+    for (const c of chunks) {
       await writeFile(path.join(absDir, 'reperage', `tranche-${pad(c.index, 2)}.txt`), c.text);
+      const req = this.triageRequestFor(inp, c.text);
+      await writeRequest(`reperage-${pad(c.index, 2)}.json`, req);
+      triageTokens.push(estimateTextTokens(req.userText));
+    }
+    // Le résumé du repérage n'existe qu'après les appels : il est remplacé par un repère.
+    const summaryForReview = this.cfg.triageScope === 'off' ? null : SUMMARY_PLACEHOLDER;
 
     const newWindows: NewWindow[] = [];
     const windowStats: RenderStats[] = [];
@@ -792,6 +925,14 @@ export class AnalysisService {
       });
       const imgTokens = frames.reduce((a, f) => a + imageTokens(f.width, f.height), 0);
       const base = `fenetres/fenetre-${pad(w.rank, 3)}`;
+      const deepReq = this.deepRequestFor(
+        inp,
+        payload.text,
+        await this.requestImages(frames),
+        summaryForReview,
+      );
+      await writeRequest(`fenetre-${pad(w.rank, 3)}.json`, deepReq);
+      const reqTokens = estimateTextTokens(deepReq.userText);
       const manifest = {
         rank: w.rank,
         times: {
@@ -804,7 +945,7 @@ export class AnalysisService {
         localScore: w.score,
         transmitted: payload.stats,
         frames,
-        estimatedTokens: { text: payload.estimatedTextTokens, images: imgTokens },
+        estimatedTokens: { text: reqTokens, images: imgTokens },
       };
       await writeFile(path.join(absDir, `${base}.txt`), payload.text);
       await writeFile(path.join(absDir, `${base}.json`), JSON.stringify(manifest, null, 2));
@@ -822,7 +963,7 @@ export class AnalysisService {
         signals: w.signals,
         frames,
         payloadRelPath: `${relDir}/${base}.txt`,
-        estimate: { textTokens: payload.estimatedTextTokens, imageTokens: imgTokens },
+        estimate: { textTokens: reqTokens, imageTokens: imgTokens },
         status: 'prepared',
         cacheKey: stableHash({
           v: PAYLOAD_VERSION,
@@ -839,7 +980,8 @@ export class AnalysisService {
       budgetUsd: run.budgetUsd,
       maxOutputTokens: this.cfg.maxOutputTokens,
       triageMaxOutputTokens: this.cfg.triageMaxOutputTokens,
-      triageChunkTokens: chunks.map((c) => c.estimatedTokens),
+      triageChunkTokens: triageTokens,
+      systemTokens: this.systemTokens(inp),
       windows: newWindows.map((w) => {
         const e = w.estimate as { textTokens: number; imageTokens: number };
         return { rank: w.rank, textTokens: e.textTokens, imageTokens: e.imageTokens };
@@ -876,7 +1018,7 @@ export class AnalysisService {
     const manifest = {
       mode: 'dry_run',
       nothingSent: true,
-      note: 'Préparation locale : AUCUN appel à Claude API n’a été effectué. Ces fichiers montrent exactement les données qui seraient transmises ; les consignes du prompt s’y ajouteront à l’étape 4b.',
+      note: 'Préparation locale : AUCUN appel à Claude API n’a été effectué. Le dossier requetes/ contient les requêtes EXACTES qui seraient envoyées (prompts, données, schéma, paramètres) ; seules les images y sont remplacées par leur empreinte, et le résumé du repérage par un repère (il n’existe qu’après les appels de repérage).',
       runId: run.id,
       recordingId: rec.id,
       createdAt: new Date().toISOString(),
@@ -966,6 +1108,7 @@ function readme(note: string): string {
     'estimation.json : coût estimé (typique et pire cas) et fenêtres analysables sous le plafond',
     'reperage/       : tranches de transcription condensée pour le repérage global',
     'fenetres/       : une fenêtre candidate par fichier (.txt = texte transmis, .json = détail)',
+    'requetes/       : requêtes exactes (prompt système, message, schéma de réponse, paramètres)',
     '',
   ].join('\n');
 }
