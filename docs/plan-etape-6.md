@@ -1,7 +1,7 @@
 # Plan d'implémentation — Étape 6 : moteur de rendu des clips
 
-> Statut : **version finale soumise à validation** (v3 : intègre les réponses du créateur au
-> §14 et les deux relectures). Aucune branche créée, aucun code modifié.
+> Statut : **validé par le créateur le 24/11/2026** (v3). PR 6a : projet de clip et
+> persistance (voir « Écarts de mise en œuvre » en fin de document).
 > Base analysée : `main` à `895a8d6` (étape 5 fusionnée).
 
 ### Changements depuis la v2
@@ -1026,3 +1026,26 @@ suivante. Aucune PR n'est fusionnée par moi.
 - `docs/architecture.md` (§12), `docs/proposition-editeur-memoire.md` (feuille de route)
 - `.github/workflows/*.yml` uniquement si une vérification explicite de libass sous Windows
   s'avère utile
+
+---
+
+## 17. Écarts de mise en œuvre (PR 6a)
+
+Précisions apportées pendant l'implémentation de la PR 6a, sans changer les décisions du § 14 :
+
+- **Effets** : le document prévoit la liste `effects`, mais le catalogue (`defineEffect`, indices
+  techniques) est livré avec le moteur de rendu en 6b ; un projet créé en 6a a `effects: []`.
+- **Sous-titres** : le regroupement des mots en lignes et le texte affiché (corrections puis
+  pseudonymisation, temps montage) sont dans `@acs/timeline` (`captions.ts`), car la création du
+  projet en a besoin et `@acs/timeline` ne peut pas dépendre de `@acs/render`. La génération
+  ASS / SRT reste dans `@acs/render` (6b).
+- **Pseudonymisation** : la fonction existante de l'étape 4 est réutilisée telle quelle ; un nom
+  protégé s'affiche donc entre crochets (« [Coéquipier 1] »), ce qui rend le remplacement visible.
+- **Enregistrement à piste unique** : ses sous-titres ont le rôle `mix` et suivent exactement la
+  règle de la piste « tout » (déclaration + accords).
+- **Export muet** : champ `audio.silent` du document, uniquement par choix explicite (jamais un
+  repli) ; utilisé au rendu (6b).
+- **Zone de détection** : 5 Mo par défaut (constante) ; la variable `RENDER_PROBE_BYTES` arrive en
+  6b avec les autres variables de rendu, la valeur utilisée étant de toute façon enregistrée dans
+  chaque manifeste.
+- **Annulation des rendus depuis la revue** et `doctor --render` : en 6b, avec les rendus.
