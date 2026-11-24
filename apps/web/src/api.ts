@@ -252,7 +252,7 @@ export const analysisApi = {
 };
 
 /* ------------------------------------------------------------------ */
-/* Analyse avec Claude (étape 4b) : payante, plafond strict            */
+/* Analyse avec Claude (étape 4b) : payante, plafond de réservation    */
 /* ------------------------------------------------------------------ */
 
 export interface AnalysisPublicConfig {
@@ -269,9 +269,14 @@ export interface ClaudeRun {
   id: string;
   status: string;
   stage: string | null;
+  /** Plafond de réservation (garanti avant chaque envoi). */
   budgetUsd: number;
   spentUsd: number;
   reservedUsd: number;
+  /** Coût réel calculé au-delà du plafond (0 normalement). */
+  overrunUsd: number;
+  /** Coût réel calculé total ; peut dépasser `budgetUsd` si `overrunUsd` > 0. */
+  totalCostUsd: number;
   windowCount: number;
   error: { code: string; message: string } | null;
   createdAt: string;
@@ -303,7 +308,17 @@ export interface CallsSummary {
     windowId: string | null;
     refusalCategory: string | null;
   }[];
-  costs: { realCostUsd: number; calls: number; reusedCalls: number; unknownCostCalls: number };
+  costs: {
+    realCostUsd: number;
+    budgetUsd: number;
+    overrunUsd: number;
+    budgetExceeded: boolean;
+    aboveReservationCalls: number;
+    aboveReservationUsd: number;
+    calls: number;
+    reusedCalls: number;
+    unknownCostCalls: number;
+  };
 }
 
 export const claudeApi = {

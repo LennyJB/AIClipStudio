@@ -4,6 +4,8 @@ import { ClaudeAnalysis } from './ClaudeAnalysis';
 
 let posted: unknown[];
 let configured: boolean;
+/** Dépassement simulé du plafond (0 = aucun). */
+let overrun: number;
 
 const proposal = (over: Record<string, unknown>) => ({
   id: 'p',
@@ -59,11 +61,13 @@ function mockApi() {
           run: {
             id: 'run-1',
             mode: 'claude',
-            status: 'completed',
+            status: overrun ? 'budget_exhausted' : 'completed',
             stage: 'done',
             budgetUsd: 5,
-            spentUsd: 0.42,
+            spentUsd: overrun ? 5 : 0.42,
             reservedUsd: 0,
+            overrunUsd: overrun,
+            totalCostUsd: overrun ? 5 + overrun : 0.42,
             windowCount: 3,
             error: null,
             createdAt: '',
@@ -92,7 +96,17 @@ function mockApi() {
       if (url === '/api/analyses/run-1/calls') {
         return json({
           calls: [],
-          costs: { realCostUsd: 0.42, calls: 4, reusedCalls: 1, unknownCostCalls: 0 },
+          costs: {
+            realCostUsd: overrun ? 5 + overrun : 0.42,
+            budgetUsd: 5,
+            overrunUsd: overrun,
+            budgetExceeded: overrun > 0,
+            aboveReservationCalls: overrun ? 1 : 0,
+            aboveReservationUsd: overrun,
+            calls: 4,
+            reusedCalls: 1,
+            unknownCostCalls: 0,
+          },
         });
       }
       return json({ error: { message: `inattendu : ${url}` } }, 404);
@@ -104,6 +118,7 @@ describe('ClaudeAnalysis', () => {
   beforeEach(() => {
     posted = [];
     configured = true;
+    overrun = 0;
     mockApi();
   });
   afterEach(() => {
@@ -132,5 +147,19 @@ describe('ClaudeAnalysis', () => {
     expect(screen.getByText(/1 refusée\(s\)/)).toBeTruthy();
     expect(screen.getByText(/1 trouvée\(s\) par le repérage global/)).toBeTruthy();
     expect(screen.getByText('0.420 $')).toBeTruthy();
+    expect(screen.getByText(/plafond de réservation de/)).toBeTruthy();
+    expect(screen.getByText(/pas une garantie absolue sur la facture/)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('dépassement : coût réel complet affiché (au-delà du plafond) et alerte visible', async () => {
+    overrun = 0.31;
+    render(<ClaudeAnalysis recordingId="rec-1" pollMs={10} />);
+    fireEvent.click(await screen.findByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: 'Lancer l’analyse avec Claude' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/Dépassement du plafond/);
+    expect(alert.textContent).toMatch(/0\.310 \$/);
+    expect(screen.getByText('5.31 $')).toBeTruthy(); // coût réel complet, pas le plafond
   });
 });

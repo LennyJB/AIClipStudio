@@ -28,6 +28,7 @@ export type AppErrorCode =
   | 'CLAUDE_AUTH_FAILED'
   | 'CLAUDE_API_ERROR'
   | 'BUDGET_EXHAUSTED'
+  | 'BUDGET_OVERRUN'
   | 'BUDGET_NOT_CONFIRMED'
   | 'INTERNAL';
 

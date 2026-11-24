@@ -240,8 +240,9 @@ Tarifs vérifiés le 23/11/2026 sur la [page officielle](https://platform.claude
   - _pire cas_ : entrée +20 %, prompt système réécrit en cache à chaque appel (tarif d'écriture),
     sortie = limite `ANALYSIS_MAX_OUTPUT_TOKENS` (12 000, **réflexion comprise**). C'est ce
     montant que l'étape 4b **réservera avant chaque appel**.
-- **Plafond strict** (`ANALYSIS_MAX_COST_USD`, 5 $) : la base refuse toute écriture où
+- **Plafond de réservation** (`ANALYSIS_MAX_COST_USD`, 5 $) : la base refuse toute écriture où
   `dépensé + réservé > budget` (contrainte `CHECK`), en plus du contrôle applicatif de la 4b.
+  Ce qu'il garantit et ne garantit pas : § 11.3.
 - Les jetons de texte sont estimés localement (1 jeton pour 3 octets) ; la taille du prompt
   système est une hypothèse. Les comptes réels seront mesurés à l'étape 4b.
 
@@ -290,7 +291,9 @@ migrations 1 à 3 ne sont pas modifiées.
    une citation fausse est retirée ; sans citation vérifiée de la chute, le moment est rejeté.
 6. **Bornes** (`boundaries.ts`) : début sur la mise en place (avec l'amorce du profil), fin après
    la réaction, jamais au milieu d'un mot ; durée 20 à 80 s (ou celle du profil de jeu), sinon
-   alerte `trop_court` / `contexte_trop_long`.
+   alerte `trop_court` / `contexte_trop_long`. Si une limite de la plage tombe dans un mot qui la
+   déborde, le recalage passe de l'autre côté de ce mot ; s'il n'existe aucun instant hors d'un
+   mot dans la plage, alerte `mot_coupe` (jamais un clip). Le recalage se termine toujours.
 7. **Fiabilité** (`reliability.ts`, calcul local, 0 à 100) : qualité de transcription des preuves,
    citations vérifiées, mise en place, contexte (réponses Discord non transmises, parole
    simultanée). Preuve douteuse → plafond 55 ; pseudo-consigne → −30.
@@ -313,21 +316,50 @@ migrations 1 à 3 ne sont pas modifiées.
 
 ### 11.3 Budget, erreurs et reprise
 
-| Situation                                        | Traitement                                                                                                                                                  |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Avant chaque appel                               | Réservation du pire cas (entrée comptée par l'API +10 % ou estimée +20 %, schéma, `max_tokens` réflexion comprise) ; refusée si le plafond serait dépassé   |
-| Réponse reçue                                    | Coût réel (usage de l'API, cache compris) à la place de la réservation                                                                                      |
-| 429, 5xx, délai, connexion                       | Nouvelle tentative (au plus `ANALYSIS_MAX_ATTEMPTS`), `retry-after` respecté, chacune réservée à part ; le SDK ne refait jamais rien seul (`maxRetries: 0`) |
-| 400, 404, 413                                    | Fenêtre en échec                                                                                                                                            |
-| 401, 403, 402, plafond du compte                 | Toute l'analyse s'arrête                                                                                                                                    |
-| JSON invalide (réponse complète)                 | **Une** nouvelle tentative, réservée à part                                                                                                                 |
-| Sortie tronquée (`max_tokens`)                   | Fenêtre `truncated`, coût compté, pas de nouvelle tentative                                                                                                 |
-| Coupure après l'envoi, arrêt du serveur          | Appel `unknown_cost` : sa réservation entière est comptée (prudence)                                                                                        |
-| Coût réel > réservation (ne devrait pas arriver) | Consigné dans `overrun_usd`, plafond respecté en base, analyse arrêtée                                                                                      |
-| Plafond atteint                                  | Statut `budget_exhausted`, fenêtres restantes `skipped`, résultats conservés                                                                                |
+| Situation                                  | Traitement                                                                                                                                                  |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Avant chaque appel                         | Réservation du pire cas (entrée comptée par l'API +10 % ou estimée +20 %, schéma, `max_tokens` réflexion comprise) ; refusée si le plafond serait dépassé   |
+| Réponse reçue                              | Coût réel (usage de l'API, cache compris) à la place de la réservation                                                                                      |
+| 429, 5xx, délai, connexion                 | Nouvelle tentative (au plus `ANALYSIS_MAX_ATTEMPTS`), `retry-after` respecté, chacune réservée à part ; le SDK ne refait jamais rien seul (`maxRetries: 0`) |
+| 400, 404, 413                              | Fenêtre en échec                                                                                                                                            |
+| 401, 403, 402, plafond du compte           | Toute l'analyse s'arrête                                                                                                                                    |
+| JSON invalide (réponse complète)           | **Une** nouvelle tentative, réservée à part                                                                                                                 |
+| Sortie tronquée (`max_tokens`)             | Fenêtre `truncated`, coût compté, pas de nouvelle tentative                                                                                                 |
+| Coupure après l'envoi, arrêt du serveur    | Appel `unknown_cost` : sa réservation entière est comptée (prudence)                                                                                        |
+| Coût réel > marge restante sous le plafond | Excédent consigné dans `overrun_usd`, analyse arrêtée (`budget_exhausted`, code `BUDGET_OVERRUN`), coût réel affiché en entier                              |
+| Plafond atteint                            | Statut `budget_exhausted` (code `BUDGET_EXHAUSTED`), fenêtres restantes `skipped`, résultats conservés                                                      |
+
+#### Ce que le plafond garantit, et ce qu'il ne garantit pas
+
+|                                                                                                                                                                                                               | Garanti par l'application ?       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| **Plafond de réservation** : aucun appel n'est envoyé si son pire cas estimé ne tient pas sous le plafond ; `dépensé + réservé ≤ plafond`, même avec des appels simultanés (transaction + contrainte `CHECK`) | **Oui**                           |
+| Plus aucun appel après un dépassement réel, ni pour cette analyse ni à sa reprise                                                                                                                             | **Oui**                           |
+| **Facture réelle ≤ plafond**                                                                                                                                                                                  | **Non** : risque faible mais réel |
+
+Pourquoi la facture peut dépasser le plafond :
+
+- le pire cas réservé repose sur un **comptage estimé** de l'entrée (`count_tokens` +10 %, ou
+  estimation locale +20 % s'il est indisponible) ; l'API peut facturer davantage ;
+- la **table de tarifs** est versionnée dans le code : un changement de prix chez Anthropic n'est
+  pas détecté automatiquement ;
+- un appel coupé (`unknown_cost`) est compté au pire cas, mais sa facturation réelle est inconnue.
+
+La sortie, elle, ne peut pas dépasser `max_tokens` (réflexion comprise), qui est entièrement réservé.
+Ce qu'on voit en cas de dépassement : `overrun_usd` > 0 sur l'analyse, coût réel calculé complet
+(`totalCostUsd`, `--calls`, `--costs`, `--list`, interface) avec un avertissement explicite, et
+les appels dont le coût a dépassé leur réservation. Les coûts affichés sont **calculés** (jetons
+renvoyés par l'API × tarifs versionnés) : **la facture d'Anthropic fait foi**.
+
+Une analyse arrêtée par le budget compte comme terminée : la relancer sans `--force` ne dépense
+rien. `--force` lance une **nouvelle** analyse, avec un nouveau plafond (après une nouvelle
+confirmation) ; les réponses déjà obtenues y sont relues pour 0 $. Le plafond est donc **par
+analyse** ; le coût cumulé d'un enregistrement est visible avec `--costs`.
 
 - **Réutilisation** : une requête identique (même empreinte) déjà aboutie — réussie, refusée ou
-  tronquée — n'est jamais rappelée : sa réponse est relue pour 0 $ (`--force-recall` pour forcer).
+  tronquée — n'est jamais rappelée : sa réponse est relue pour 0 $. `--force-recall` crée une
+  **nouvelle analyse** qui redemande tout à Claude (payant) ; à sa reprise, seuls ses propres
+  appels réussis sont relus.
 - **Reprise** : relancer la même analyse après une interruption reprend **la même analyse et son
   budget** ; les appels réussis sont réutilisés, seuls les manquants sont payés. Un appel coupé
   en cours a pu être facturé : il est compté au pire cas et pourra être payé une seconde fois.

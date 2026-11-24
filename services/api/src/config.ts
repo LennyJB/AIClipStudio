@@ -120,7 +120,11 @@ export const EnvSchema = z.object({
   /** Tentatives par appel en cas d'erreur passagère (429, 5xx, délai), chacune réservée à part. */
   ANALYSIS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
   ANALYSIS_REQUEST_TIMEOUT_SEC: z.coerce.number().int().min(30).max(3_600).default(600),
-  /** Plafond STRICT de dépense par analyse, en dollars (jetons de réflexion et cache compris). */
+  /**
+   * Plafond de RÉSERVATION par analyse, en dollars (réflexion et cache compris) : aucun appel
+   * n'est envoyé si son pire cas estimé ne tient pas dessous. Le coût réel peut exceptionnellement
+   * le dépasser (comptage d'entrée ou tarifs inexacts) : l'analyse s'arrête alors (BUDGET_OVERRUN).
+   */
   ANALYSIS_MAX_COST_USD: z.coerce.number().positive().max(1000).default(5),
   /** Jetons de sortie maximum par appel d'analyse approfondie (réflexion comprise). */
   ANALYSIS_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(1000).max(128_000).default(12_000),

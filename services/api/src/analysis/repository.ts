@@ -61,8 +61,10 @@ export interface AnalysisRunDto {
   config: Record<string, unknown>;
   privacy: Record<string, unknown>;
   profiles: Record<string, unknown>;
+  /** Plafond de RÉSERVATION : dépensé (compté) + réservé ne le dépasse jamais (contrainte en base). */
   budgetUsd: number;
   estimate: unknown;
+  /** Part du coût comptée dans le plafond (≤ budget). */
   spentUsd: number;
   reservedUsd: number;
   outputRelDir: string | null;
@@ -70,7 +72,10 @@ export interface AnalysisRunDto {
   preparedFromRunId: string | null;
   streamSummary: string | null;
   forceRecall: boolean;
+  /** Coût réel calculé au-delà du plafond (0 normalement). */
   overrunUsd: number;
+  /** Coût réel calculé total = dépensé + dépassement ; peut excéder `budgetUsd` si overrunUsd > 0. */
+  totalCostUsd: number;
   error: { code: string; message: string } | null;
   createdAt: string;
   startedAt: string | null;
@@ -134,6 +139,7 @@ const toRun = (r: RunRow): AnalysisRunDto => ({
   streamSummary: r.stream_summary,
   forceRecall: r.force_recall === 1,
   overrunUsd: r.overrun_usd,
+  totalCostUsd: Math.round((r.spent_usd + r.overrun_usd) * 1e9) / 1e9,
   error: r.error_code ? { code: r.error_code, message: r.error_message ?? '' } : null,
   createdAt: r.created_at,
   startedAt: r.started_at,
@@ -307,12 +313,16 @@ export class AnalysisRepository {
     ).map(toRun);
   }
 
-  /** Analyse identique (mêmes entrées) déjà terminée ou en cours. */
+  /**
+   * Analyse identique (mêmes entrées) déjà terminée ou en cours. Une analyse arrêtée par le
+   * budget compte comme terminée : la relancer sans `force` ne dépense rien de plus.
+   */
   findReusable(inputKey: string, mode: 'dry_run' | 'claude'): AnalysisRunDto | null {
     const r = this.db
       .prepare(
         `SELECT * FROM analysis_runs WHERE input_key = ? AND mode = ?
-           AND status IN ('pending','running','completed') ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+           AND status IN ('pending','running','completed','budget_exhausted')
+           ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(inputKey, mode) as RunRow | undefined;
     return r ? toRun(r) : null;

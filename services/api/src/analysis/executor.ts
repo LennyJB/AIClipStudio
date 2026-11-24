@@ -1,7 +1,7 @@
 /**
  * Exécution d'un appel à Claude, avec :
  *  - réutilisation d'une réponse déjà obtenue pour une requête identique (0 $) ;
- *  - réservation du pire cas AVANT l'envoi (plafond strict), coût réel après ;
+ *  - réservation du pire cas AVANT l'envoi (plafond de réservation), coût réel après ;
  *  - tentatives limitées pour les erreurs passagères, chacune réservée à part ;
  *  - UNE nouvelle tentative si la réponse complète n'est pas un JSON valide ;
  *  - aucune nouvelle tentative après un refus ou une sortie tronquée ;
@@ -160,8 +160,8 @@ export class CallExecutor {
     for (;;) {
       if (this.calls.overrun(p.runId) > 0) {
         throw new AppError(
-          'BUDGET_EXHAUSTED',
-          'Le coût réel d’un appel a dépassé sa réservation : analyse arrêtée par prudence',
+          'BUDGET_OVERRUN',
+          `Le coût réel calculé a dépassé le plafond de réservation de ${this.calls.overrun(p.runId).toFixed(4)} $ : analyse arrêtée, aucun nouvel appel`,
         );
       }
       attempt += 1;

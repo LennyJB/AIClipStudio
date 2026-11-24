@@ -615,7 +615,8 @@ export class AnalysisService {
     // l'interdiction de relire une réponse obtenue par une autre analyse (payant).
     const fresh = opts.force || opts.forceRecall;
     const active = this.repo.findReusable(key, 'claude');
-    if (active && active.status !== 'completed') {
+    const finished = active?.status === 'completed' || active?.status === 'budget_exhausted';
+    if (active && !finished) {
       if (opts.forceRecall && !active.forceRecall) {
         throw new AppError(
           'CONFLICT',

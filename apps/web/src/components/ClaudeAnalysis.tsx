@@ -143,8 +143,14 @@ export function ClaudeAnalysis({ recordingId, pollMs = 1000 }: Props) {
               checked={accepted}
               onChange={(e) => setAccepted(e.target.checked)}
             />{' '}
-            J’accepte un plafond STRICT de {formatUsd(config.budgetUsd)} pour cette analyse
+            J’accepte un plafond de réservation de {formatUsd(config.budgetUsd)} pour cette analyse
           </label>{' '}
+          <p className="muted">
+            Aucun appel n’est envoyé si son pire cas estimé ne tient pas sous ce plafond. Ce n’est
+            pas une garantie absolue sur la facture : si le comptage des jetons ou les tarifs sont
+            inexacts, le coût réel peut le dépasser légèrement ; l’analyse s’arrête alors et le
+            dépassement est affiché.
+          </p>
           <button type="button" disabled={!accepted || busy} onClick={() => void start()}>
             {busy ? 'Analyse en cours…' : 'Lancer l’analyse avec Claude'}
           </button>
@@ -162,13 +168,29 @@ export function ClaudeAnalysis({ recordingId, pollMs = 1000 }: Props) {
         <>
           <p>
             Analyse {RUN_STATUS[run.status] ?? run.status}
-            {run.error && run.status !== 'completed' ? ` — ${run.error.message}` : ''}. Coût réel :{' '}
-            <strong>{formatUsd(calls?.costs.realCostUsd ?? run.spentUsd)}</strong> sur un plafond de{' '}
-            {formatUsd(run.budgetUsd)}
+            {run.error && run.status !== 'completed' ? ` — ${run.error.message}` : ''}. Coût réel
+            calculé : <strong>{formatUsd(calls?.costs.realCostUsd ?? run.totalCostUsd)}</strong>{' '}
+            (plafond de réservation {formatUsd(run.budgetUsd)})
             {calls
-              ? ` (${calls.costs.calls} appel(s), ${calls.costs.reusedCalls} réutilisé(s) sans frais)`
+              ? ` — ${calls.costs.calls} appel(s), ${calls.costs.reusedCalls} réutilisé(s) sans frais`
               : ''}
             .
+          </p>
+          {(calls?.costs.budgetExceeded ?? run.overrunUsd > 0) && (
+            <p className="error" role="alert">
+              Dépassement du plafond : le coût réel calculé le dépasse de{' '}
+              {formatUsd(calls?.costs.overrunUsd ?? run.overrunUsd)}. L’analyse a été arrêtée.
+            </p>
+          )}
+          {calls && calls.costs.aboveReservationCalls > 0 && !calls.costs.budgetExceeded && (
+            <p className="muted">
+              {calls.costs.aboveReservationCalls} appel(s) ont coûté plus que leur réservation (+
+              {formatUsd(calls.costs.aboveReservationUsd)}), sans dépasser le plafond.
+            </p>
+          )}
+          <p className="muted">
+            Coûts calculés à partir des jetons et des tarifs versionnés ; la facture d’Anthropic
+            fait foi.
           </p>
           <p className="muted">
             Fenêtres : {windows.length} ({count('analyzed')} analysée(s), {count('refused')}{' '}

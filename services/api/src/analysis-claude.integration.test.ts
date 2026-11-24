@@ -392,6 +392,55 @@ describe.skipIf(!enabled)('Analyse avec Claude (faux modèle, aucun appel réel)
     expect(a.run!.spentUsd + a.run!.reservedUsd).toBeLessThanOrEqual(0.05 + 1e-9);
     expect(a.windows.every((w) => w.status === 'skipped')).toBe(true);
     expect(model.calls.filter((r) => r.stage === 'deep')).toHaveLength(0);
+    // Relancer sans --force renvoie l'analyse arrêtée : rien de plus n'est dépensé.
+    const n = model.calls.length;
+    const again = await analyze(rec.id, { acceptBudgetUsd: 0.05 });
+    expect(again.run!.id).toBe(a.run!.id);
+    expect(model.calls).toHaveLength(n);
+  });
+
+  it('dépassement réel du plafond : analyse arrêtée, coût réel complet visible partout', async () => {
+    // Le repérage coûte bien plus que son pire cas réservé (comptage d'entrée sous-estimé).
+    const costly: Script = (req, i) => {
+      const r = smart(req, i);
+      return req.stage === 'triage' && r.kind === 'json'
+        ? { ...r, usage: { inputTokens: 2_000_000, outputTokens: 1000 } }
+        : r;
+    };
+    await setup(costly, { ANALYSIS_MAX_COST_USD: '0.05' });
+    const rec = await importAndTranscribe();
+    const a = await analyze(rec.id, { acceptBudgetUsd: 0.05 });
+    expect(a.run).toMatchObject({ status: 'budget_exhausted' });
+    expect(a.run!.error?.code).toBe('BUDGET_OVERRUN');
+    // Plafond de réservation respecté en base…
+    expect(a.run!.spentUsd + a.run!.reservedUsd).toBeLessThanOrEqual(0.05 + 1e-9);
+    // …mais le coût réel calculé le dépasse, et il est affiché en entier.
+    expect(a.run!.overrunUsd).toBeGreaterThan(0);
+    expect(a.run!.totalCostUsd).toBeGreaterThan(0.05);
+    expect(a.run!.totalCostUsd).toBeCloseTo(a.run!.spentUsd + a.run!.overrunUsd, 9);
+    expect(model.calls.filter((r) => r.stage === 'deep')).toHaveLength(0); // plus aucun appel
+    const { costs } = (
+      await call<{ costs: Record<string, number | boolean> }>(
+        'GET',
+        `/api/analyses/${a.run!.id}/calls`,
+      )
+    ).body;
+    expect(costs).toMatchObject({
+      budgetExceeded: true,
+      budgetUsd: 0.05,
+      aboveReservationCalls: 1,
+    });
+    expect(costs['realCostUsd']).toBeCloseTo(a.run!.totalCostUsd, 9);
+    const rc = (
+      await call<Record<string, number>>('GET', `/api/recordings/${rec.id}/analysis-costs`)
+    ).body;
+    expect(rc['realCostUsd']).toBeCloseTo(a.run!.totalCostUsd, 9);
+    expect(rc['runsOverBudget']).toBe(1);
+    // Relancer la même analyse ne repaie rien et ne contourne pas l'arrêt.
+    const n = model.calls.length;
+    const again = await analyze(rec.id, { acceptBudgetUsd: 0.05 });
+    expect(again.run!.id).toBe(a.run!.id);
+    expect(model.calls).toHaveLength(n);
   });
 
   it('refus : enregistré tel quel, aucune nouvelle tentative, aucun autre modèle', async () => {

@@ -15,6 +15,7 @@ import { loadConfig, ROOT_DIR } from '../config';
 import { openDatabase, type Db } from '../db';
 import type { DerivativeService } from '../derivatives/service';
 import { CallExecutor } from './executor';
+import { LlmCallRepository } from './calls';
 
 fc.configureGlobal({ numRuns: Number(process.env.FC_RUNS ?? 60) });
 
@@ -252,7 +253,16 @@ describe('CallExecutor', () => {
     const r = run();
     expect(r.overrun).toBeGreaterThan(0);
     expect(r.spent + r.reserved).toBeLessThanOrEqual(r.budget + 1e-6);
-    await expect(exec(ex, req('autre'))).rejects.toMatchObject({ code: 'BUDGET_EXHAUSTED' });
+    // Le coût réel de l'appel reste exact, au-delà du plafond, et visible dans les coûts.
+    const calls = new LlmCallRepository(db);
+    const c = calls.costs('run');
+    const dbCost = (db.prepare('SELECT cost_usd FROM llm_calls').get() as { cost_usd: number })
+      .cost_usd;
+    expect(c.realCostUsd).toBeCloseTo(dbCost, 9);
+    expect(c.realCostUsd).toBeGreaterThan(r.budget);
+    expect(c).toMatchObject({ budgetExceeded: true, aboveReservationCalls: 1 });
+    expect(c.overrunUsd).toBeCloseTo(c.realCostUsd - r.spent, 9);
+    await expect(exec(ex, req('autre'))).rejects.toMatchObject({ code: 'BUDGET_OVERRUN' });
   });
 
   it('annulation pendant un appel : coût inconnu compté, erreur CANCELLED', async () => {

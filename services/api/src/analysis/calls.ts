@@ -1,7 +1,16 @@
 /**
  * Appels à Claude et budget, côté base. Toutes les opérations d'argent sont des
- * transactions SQLite (synchrones) : aucune réservation concurrente ne peut dépasser le
- * plafond, et la contrainte CHECK de la table analysis_runs le garantit en dernier recours.
+ * transactions SQLite (synchrones).
+ *
+ * Ce que l'application GARANTIT (plafond de réservation) : aucun appel n'est envoyé si son
+ * pire cas estimé ne tient pas dans le plafond ; « dépensé + réservé ≤ plafond », même avec
+ * des appels simultanés (contrainte CHECK de analysis_runs en dernier recours).
+ *
+ * Ce qu'elle NE PEUT PAS garantir (facture réelle) : le pire cas repose sur un comptage
+ * d'entrée estimé (count_tokens, ou estimation locale) et sur la table de tarifs versionnée.
+ * Si le coût réel calculé d'un appel dépasse ce qui restait sous le plafond, l'excédent est
+ * consigné dans `overrun_usd`, l'analyse s'arrête (BUDGET_OVERRUN) et le coût réel reste
+ * affiché en entier. La facture d'Anthropic fait foi.
  */
 import type { Db } from '../db';
 import { NOW } from '../recordings/repository';
@@ -319,15 +328,32 @@ export class LlmCallRepository {
     return r?.overrun_usd ?? 0;
   }
 
-  /** Coûts réels d'une analyse : total, par étape, par fenêtre. */
+  /**
+   * Coûts réels d'une analyse : total, par étape, par fenêtre, et écarts avec le plafond.
+   *  - `realCostUsd` : somme des coûts calculés des appels (jetons renvoyés par l'API × tarifs
+   *    versionnés ; appel coupé = pire cas réservé). Il PEUT dépasser le plafond (`overrunUsd`).
+   *  - `aboveReservationCalls` : appels dont le coût réel a dépassé leur propre réservation.
+   */
   costs(runId: string) {
     const total = this.db
       .prepare(
-        `SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS calls,
-           SUM(status = 'reused') AS reused, SUM(status = 'unknown_cost') AS unknown
-         FROM llm_calls WHERE run_id = ?`,
+        `SELECT COALESCE(SUM(c.cost_usd), 0) AS cost, COUNT(c.id) AS calls,
+           SUM(c.status = 'reused') AS reused, SUM(c.status = 'unknown_cost') AS unknown,
+           SUM(c.status <> 'reused' AND c.cost_usd > c.reserved_usd + 0.000000001) AS above,
+           COALESCE(SUM(MAX(0, c.cost_usd - c.reserved_usd)), 0) AS aboveUsd,
+           a.budget_usd AS budget, a.overrun_usd AS overrun
+         FROM analysis_runs a LEFT JOIN llm_calls c ON c.run_id = a.id WHERE a.id = ?`,
       )
-      .get(runId) as { cost: number; calls: number; reused: number | null; unknown: number | null };
+      .get(runId) as {
+      cost: number;
+      calls: number;
+      reused: number | null;
+      unknown: number | null;
+      above: number | null;
+      aboveUsd: number;
+      budget: number | null;
+      overrun: number | null;
+    };
     const byStage = this.db
       .prepare(
         `SELECT stage, COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS calls,
@@ -352,6 +378,11 @@ export class LlmCallRepository {
       .all(runId) as { windowId: string; cost: number; calls: number }[];
     return {
       realCostUsd: r6(total.cost),
+      budgetUsd: total.budget ?? 0,
+      overrunUsd: r6(total.overrun ?? 0),
+      budgetExceeded: (total.overrun ?? 0) > 0,
+      aboveReservationCalls: total.above ?? 0,
+      aboveReservationUsd: r6(total.aboveUsd),
       calls: total.calls,
       reusedCalls: total.reused ?? 0,
       unknownCostCalls: total.unknown ?? 0,
@@ -360,14 +391,32 @@ export class LlmCallRepository {
     };
   }
 
-  /** Coût réel cumulé d'un enregistrement (toutes analyses confondues). */
-  recordingCost(recordingId: string): { realCostUsd: number; calls: number; runs: number } {
+  /** Coût réel cumulé d'un enregistrement (toutes analyses confondues, dépassements compris). */
+  recordingCost(recordingId: string): {
+    realCostUsd: number;
+    calls: number;
+    runs: number;
+    overrunUsd: number;
+    runsOverBudget: number;
+  } {
     const r = this.db
       .prepare(
         `SELECT COALESCE(SUM(c.cost_usd), 0) AS cost, COUNT(c.id) AS calls, COUNT(DISTINCT c.run_id) AS runs
          FROM llm_calls c JOIN analysis_runs a ON a.id = c.run_id WHERE a.recording_id = ?`,
       )
       .get(recordingId) as { cost: number; calls: number; runs: number };
-    return { realCostUsd: r6(r.cost), calls: r.calls, runs: r.runs };
+    const o = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(overrun_usd), 0) AS overrun, SUM(overrun_usd > 0) AS n
+         FROM analysis_runs WHERE recording_id = ?`,
+      )
+      .get(recordingId) as { overrun: number; n: number | null };
+    return {
+      realCostUsd: r6(r.cost),
+      calls: r.calls,
+      runs: r.runs,
+      overrunUsd: r6(o.overrun),
+      runsOverBudget: o.n ?? 0,
+    };
   }
 }

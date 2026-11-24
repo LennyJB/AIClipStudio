@@ -6,7 +6,7 @@
  *   npm run analyze -- <id> --dry-run --window 3      requête/contenu de la fenêtre 3
  *   npm run analyze -- <id> --dry-run --show-payload  TOUT le contenu qui serait transmis
  *
- * Analyse avec Claude (PAYANTE, plafond strict, confirmation obligatoire) :
+ * Analyse avec Claude (PAYANTE, plafond de réservation, confirmation obligatoire) :
  *   npm run analyze -- <id> --run                     prépare, affiche l'estimation, demande « oui »
  *   npm run analyze -- <id> --run --yes               confirmation explicite sans question
  *   npm run analyze -- <id> --run --force             nouvelle analyse (réponses identiques réutilisées, 0 $)
@@ -27,6 +27,7 @@ import {
   type Signal,
 } from '@acs/editorial';
 import type { AnalysisRunDto } from '../services/api/src/analysis/repository';
+import { costSummaryLines } from '../services/api/src/analysis/cost-report';
 import { JobRepository } from '../services/api/src/recordings/repository';
 import { openCliContext, runMain } from './lib/context';
 
@@ -198,9 +199,7 @@ function printCalls(ctx: Ctx, run: AnalysisRunDto) {
       `  ${c.stage.padEnd(6)} ${c.model.padEnd(17)} ${c.status.padEnd(14)} réservé ${usd(c.reservedUsd)}  coût ${usd(c.costUsd)}  entrée ${c.inputTokens ?? '—'} (cache ${c.cacheReadTokens ?? 0}/${c.cacheWriteTokens ?? 0})  sortie ${c.outputTokens ?? '—'}${c.refusalCategory ? `  refus : ${c.refusalCategory}` : ''}${c.errorCode ? `  ${c.errorCode}` : ''}`,
     );
   }
-  console.log(
-    `Coût réel : ${usd(costs.realCostUsd)} (${costs.calls} appel(s), ${costs.reusedCalls} réutilisé(s), ${costs.unknownCostCalls} à coût inconnu compté au pire cas) — plafond ${usd(run.budgetUsd)}, dépensé ${usd(run.spentUsd)}`,
-  );
+  for (const line of costSummaryLines(costs)) console.log(line);
 }
 
 async function confirm(question: string): Promise<boolean> {
@@ -240,7 +239,7 @@ async function main(): Promise<number> {
       if (!runs.length) console.log('Aucune analyse.');
       for (const r of runs) {
         console.log(
-          `  ${r.id}  ${r.mode.padEnd(8)} ${r.status.padEnd(16)} ${String(r.windowCount).padStart(3)} fenêtre(s)  dépensé ${usd(r.spentUsd)}  ${r.createdAt}`,
+          `  ${r.id}  ${r.mode.padEnd(8)} ${r.status.padEnd(16)} ${String(r.windowCount).padStart(3)} fenêtre(s)  coût réel ${usd(r.totalCostUsd)} / plafond ${usd(r.budgetUsd)}${r.overrunUsd > 0 ? `  DÉPASSEMENT ${usd(r.overrunUsd)}` : ''}  ${r.createdAt}`,
         );
       }
       return 0;
@@ -248,8 +247,12 @@ async function main(): Promise<number> {
     if (values.costs) {
       const c = a.recordingCosts(rec.id);
       console.log(
-        `${rec.fileName} : coût réel cumulé ${usd(c.realCostUsd)} (${c.calls} appel(s), ${c.runs} analyse(s))`,
+        `${rec.fileName} : coût réel calculé cumulé ${usd(c.realCostUsd)} (${c.calls} appel(s), ${c.runs} analyse(s))`,
       );
+      if (c.runsOverBudget > 0)
+        console.log(
+          `DÉPASSEMENT : ${c.runsOverBudget} analyse(s) ont dépassé leur plafond, de ${usd(c.overrunUsd)} au total.`,
+        );
       return 0;
     }
     if (values.proposals || values.calls) {
@@ -284,7 +287,13 @@ async function main(): Promise<number> {
     }
     const est = prepared.estimate as AnalysisEstimate;
     console.log(
-      `\nAnalyse avec Claude : estimation ~${usd(est.totals.typicalUsd)} (pire cas ${usd(est.totals.maxUsd)}), PLAFOND STRICT ${usd(budget)}.`,
+      `\nAnalyse avec Claude : estimation ~${usd(est.totals.typicalUsd)} (pire cas estimé ${usd(est.totals.maxUsd)}).`,
+    );
+    console.log(
+      `Plafond de réservation : ${usd(budget)}. Aucun appel n’est envoyé si son pire cas estimé ne tient pas dessous.\n` +
+        'Ce n’est pas une garantie absolue sur la facture : si le comptage des jetons ou les tarifs\n' +
+        'sont inexacts, le coût réel peut légèrement dépasser le plafond ; l’analyse s’arrête alors\n' +
+        'aussitôt et le dépassement est affiché.',
     );
     if (values['force-recall'])
       console.log('--force-recall : les réponses déjà obtenues seront redemandées (payant).');
@@ -299,7 +308,12 @@ async function main(): Promise<number> {
       forceRecall: values['force-recall'],
     });
     if (res.reused && res.status === 'ready')
-      console.log('Analyse identique déjà terminée (--force pour en refaire une, sans repayer).');
+      console.log(
+        res.run.status === 'budget_exhausted'
+          ? 'Analyse identique déjà arrêtée par le budget : rien de plus n’est dépensé.\n' +
+              '--force lance une NOUVELLE analyse avec un nouveau plafond (réponses déjà obtenues réutilisées).'
+          : 'Analyse identique déjà terminée (--force pour en refaire une, sans repayer).',
+      );
     await waitJobs(ctx, res.job?.id, 'analyse avec Claude');
     const { run } = a.getRun(res.run.id);
     printProposals(ctx, run);

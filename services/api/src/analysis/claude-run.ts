@@ -3,7 +3,7 @@
  *  0. préparation liée (identique à celle que le créateur a pu relire en dry-run) ;
  *  1. repérage global (Haiku) : moments signalés + résumé NON VÉRIFIÉ ;
  *  2. fenêtres = signaux locaux ∪ repérage ;
- *  3. analyse approfondie (Opus, effort high) par ordre de priorité, sous plafond strict ;
+ *  3. analyse approfondie (Opus, effort high) par ordre de priorité, sous plafond de réservation ;
  *  4. vérification locale, bornes, fiabilité, niveaux, puis consolidation.
  * Aucun outil n'est fourni au modèle ; aucune commande n'est jamais exécutée.
  */
@@ -64,6 +64,11 @@ function sentManifest(
     images: frames.filter((f) => f.region === 'gameplay').length,
     facecamImages: frames.filter((f) => f.region === 'facecam').length,
   };
+}
+
+/** Arrêt budgétaire : plus aucune réservation possible, ou coût réel au-delà du plafond. */
+function isBudgetStop(err: unknown): err is AppError {
+  return isAppError(err) && (err.code === 'BUDGET_EXHAUSTED' || err.code === 'BUDGET_OVERRUN');
 }
 
 export class ClaudeRunner {
@@ -159,7 +164,7 @@ export class ClaudeRunner {
       }
       reportProgress(0.35);
 
-      // 3. Analyse approfondie, par ordre de priorité, sous plafond strict.
+      // 3. Analyse approfondie, par ordre de priorité, sous plafond de réservation.
       s.repo.setStage(run.id, 'deep');
       const todo = windows.filter((w) =>
         ['pending', 'failed', 'skipped', 'prepared'].includes(w.status),
@@ -183,7 +188,7 @@ export class ClaudeRunner {
               signal,
             );
           } catch (err) {
-            if (isAppError(err) && err.code === 'BUDGET_EXHAUSTED') {
+            if (isBudgetStop(err)) {
               budgetHit = err;
               return;
             }
@@ -196,7 +201,7 @@ export class ClaudeRunner {
       await Promise.all(Array.from({ length: this.cfg.concurrency }, worker));
       if (budgetHit) throw budgetHit;
     } catch (err) {
-      if (isAppError(err) && err.code === 'BUDGET_EXHAUSTED') {
+      if (isBudgetStop(err)) {
         s.repo.skipPendingWindows(run.id);
         this.consolidate(run.id, proposals);
         s.repo.completeClaudeRun(run.id, 'budget_exhausted', {
@@ -204,8 +209,10 @@ export class ClaudeRunner {
           message: err.message,
         });
         this.ctx.log.warn(
-          { runId: run.id },
-          'Analyse arrêtée : plafond budgétaire atteint (résultats conservés)',
+          { runId: run.id, code: err.code },
+          err.code === 'BUDGET_OVERRUN'
+            ? 'Analyse arrêtée : coût réel au-delà du plafond de réservation (résultats conservés)'
+            : 'Analyse arrêtée : plafond de réservation atteint (résultats conservés)',
         );
         return this.summary(run.id, proposals);
       }
