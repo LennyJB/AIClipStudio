@@ -153,6 +153,7 @@ npm run dev
 | `npm run analyze -- <id> --run`        | Analyse avec Claude : estimation, confirmation, plafond de réservation, pause de relecture avant Opus |
 | `npm run analyze -- <id> --continue`   | Requêtes Opus relues : lance l'analyse approfondie mise en pause                                      |
 | `npm run analyze -- <id> --requests`   | Requêtes réelles de la dernière analyse (`--window N` : contenu exact)                                |
+| `npm run review -- <id>`               | Revue des propositions : liste, `--accept`, `--reject --reason`, `--reset`, `--detach`, `--export`    |
 | `npm run doctor -- --claude`           | Clé et modèles Claude accessibles (aucune génération)                                                 |
 | `npm run analysis-settings -- <id>`    | Confidentialité : accord Discord, facecam                                                             |
 | `npm run framing -- <commande>`        | Cadrage des images : `list`, `preview`, `validate`, `clear`                                           |
@@ -348,6 +349,21 @@ Par défaut, seul le texte du **micro** serait transmis (pseudonymisé) ; Discor
 « tout » exigent un accord par enregistrement ; aucune image sans profil de cadrage validé ;
 la facecam est masquée.
 
+## Revue des propositions (étape 5)
+
+Le panneau « Revue des propositions » permet d'accepter ou de refuser chaque proposition, avec un
+ou plusieurs motifs, et d'écouter le passage sur la piste « tout ». Chaque décision est
+enregistrée dans un journal éditorial, sans doublon, pour les statistiques de l'étape 6. Une
+proposition déjà jugée dans une analyse précédente est signalée « Déjà examinée ». Rien n'est
+envoyé à Claude et aucune préférence n'est activée. Guide :
+[`docs/validation-propositions.md`](docs/validation-propositions.md).
+
+```bash
+npm run review -- <id>                                   # propositions à examiner
+npm run review -- --reject <propositionId> --reason chute_coupee --comment "…"
+npm run review -- --export > retours.jsonl               # journal pour l'étape 6
+```
+
 ---
 
 ## Architecture
@@ -366,7 +382,8 @@ AIClipStudio/
 │   ├── timeline/              Modèle du montage : SourceMs / EditMs, segments, conversions
 │   ├── transcription/         Blocs, reprise, déduplication ; worker Python Faster-Whisper
 │   │   └── python/            Worker Python + requirements.txt (étape 3)
-│   └── editorial/             Profils, signaux, fenêtres, confidentialité, coûts, prompts, client Claude
+│   ├── editorial/             Profils, signaux, fenêtres, confidentialité, coûts, prompts, client Claude
+│   └── memory/                Mémoire éditoriale : motifs, décisions, moments, décision effective
 ├── profiles/
 │   ├── creator.json           Identité éditoriale du créateur (indépendante du jeu)
 │   ├── games/                 valorant, fortnite, minecraft, generic
@@ -425,9 +442,9 @@ unitaires et d'intégration, build et démarrage de l'API.
 | 1     | Analyse, architecture, squelette, outillage, documentation                           | ✅ Terminée   |
 | 2     | Import OBS, extraction audio, dérivés et cache, file, espace disque, modèle temporel | ✅ Terminée   |
 | 3     | Transcription Faster-Whisper horodatée, reprise, repli CPU, comparaison des modèles  | ✅ Terminée   |
-| 4a    | Signaux locaux, fenêtres, confidentialité, cadrage, contenu préparé, coûts estimés   | En revue (PR) |
-| 4b    | Appels Claude (repérage + analyse), vérifications, pertinence et fiabilité           | En revue (PR) |
-| 5     | Interface de validation (liste, timestamps, lecture, accepter/refuser)               | À faire       |
+| 4a    | Signaux locaux, fenêtres, confidentialité, cadrage, contenu préparé, coûts estimés   | ✅ Terminée   |
+| 4b    | Appels Claude (repérage + analyse), vérifications, pertinence et fiabilité           | ✅ Terminée   |
+| 5     | Validation (liste, contexte, écoute, accepter/refuser, motifs), mémoire v1 (capture) | En revue (PR) |
 | 6     | Évaluation sur de vrais enregistrements, ajustement des prompts                      | À faire       |
 
 Le moteur de montage (FFmpeg + Remotion, 9:16, sous-titres, effets) viendra après validation

@@ -189,3 +189,57 @@ button.link {
 ul.proposals > li {
   margin-bottom: 0.75rem;
 }
+
+.badge {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border-radius: 4px;
+  background: #eef0f3;
+  font-size: 0.8rem;
+  font-weight: normal;
+}
+
+.state-accepted {
+  background: #dcfce7;
+}
+
+.state-rejected {
+  background: #fee2e2;
+}
+
+.state-already_reviewed {
+  background: #e0e7ff;
+}
+
+.review-list button {
+  text-align: left;
+  width: 100%;
+}
+
+.review-list button[aria-pressed='true'] {
+  outline: 2px solid #1d4ed8;
+}
+
+.context li.out-clip {
+  color: #6b7280;
+}
+
+.reject-dialog fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
+.reject-dialog textarea {
+  display: block;
+  width: 100%;
+}
+
+.inherited {
+  border-left: 3px solid #6366f1;
+  padding-left: 0.75rem;
+}
+
+.filter {
+  margin-right: 0.75rem;
+}

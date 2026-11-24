@@ -336,9 +336,16 @@ export function pixelAt(imagePath: string, x: number, y: number): [number, numbe
   return [raw[i]!, raw[i + 1]!, raw[i + 2]!];
 }
 
-/** Vidéo grise légère de `seconds` secondes (2 images/s), pistes Micro / Discord. */
-export function createTalkVideo(dir: string, seconds: number): string {
-  const out = path.join(dir, `parole-${seconds}s.mkv`);
+/**
+ * Vidéo grise légère de `seconds` secondes (2 images/s), pistes Micro / Discord.
+ * `withMix` ajoute une 3e piste « Tout » (index 2), sans changer l'index des deux premières.
+ */
+export function createTalkVideo(
+  dir: string,
+  seconds: number,
+  opts: { withMix?: boolean } = {},
+): string {
+  const out = path.join(dir, `parole-${seconds}s${opts.withMix ? '-tout' : ''}.mkv`);
   ff([
     '-f',
     'lavfi',
@@ -346,12 +353,14 @@ export function createTalkVideo(dir: string, seconds: number): string {
     `color=c=gray:s=160x90:r=2:d=${seconds}`,
     ...sine(440, seconds),
     ...sine(660, seconds),
+    ...(opts.withMix ? sine(330, seconds) : []),
     '-map',
     '0:v',
     '-map',
     '1:a',
     '-map',
     '2:a',
+    ...(opts.withMix ? ['-map', '3:a', '-metadata:s:a:2', 'title=Tout'] : []),
     '-metadata:s:a:0',
     'title=Micro',
     '-metadata:s:a:1',

@@ -5,6 +5,7 @@ import type { AppConfig } from './config';
 import type { Db } from './db';
 import { loggerOptions } from './logger';
 import { registerAnalysisRoutes } from './routes/analysis';
+import { registerReviewRoutes } from './routes/review';
 import { registerRecordingRoutes } from './routes/recordings';
 import { registerStorageRoutes } from './routes/storage';
 import { createServices, recoverServices, type Services } from './services';
@@ -19,6 +20,15 @@ export interface AppDeps {
 
 const APP_VERSION = '0.4.0';
 
+/** Codes dont les détails sont renvoyés au client (jamais de chemin ni de secret dedans). */
+const DETAILED_CODES = new Set<AppErrorCode>([
+  'VALIDATION_FAILED',
+  'ALREADY_REVIEWED',
+  'DECISION_ELSEWHERE',
+  'VERSION_CONFLICT',
+  'PROPOSAL_NOT_REVIEWABLE',
+]);
+
 const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   NOT_FOUND: 404,
   ANALYSIS_NOT_READY: 409,
@@ -27,6 +37,13 @@ const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   MEDIA_NOT_FOUND: 404,
   PROFILE_NOT_FOUND: 404,
   CONFLICT: 409,
+  ALREADY_REVIEWED: 409,
+  DECISION_ELSEWHERE: 409,
+  IDEMPOTENCY_MISMATCH: 409,
+  VERSION_CONFLICT: 409,
+  PROPOSAL_NOT_REVIEWABLE: 409,
+  AUDIO_TRACK_MISSING: 409,
+  NOT_READY: 409,
   TOOL_MISSING: 503,
   INTERNAL: 500,
 };
@@ -45,7 +62,7 @@ export function buildApp({ config, db, model }: AppDeps): {
       const status = STATUS_BY_CODE[error.code] ?? 400;
       const level = status >= 500 ? 'error' : 'warn';
       request.log[level]({ code: error.code, details: error.details }, error.message);
-      const details = error.code === 'VALIDATION_FAILED' ? error.details : undefined;
+      const details = DETAILED_CODES.has(error.code) ? error.details : undefined;
       return reply
         .status(status)
         .send({ error: { code: error.code, message: error.message, details } });
@@ -80,6 +97,7 @@ export function buildApp({ config, db, model }: AppDeps): {
   registerStorageRoutes(app, services);
   registerTranscriptionRoutes(app, ctx, services);
   registerAnalysisRoutes(app, services);
+  registerReviewRoutes(app, services);
   app.addHook('onClose', async () => {
     await services.runner.stop();
   });

@@ -13,7 +13,7 @@ describe('migration 5 (analyse avec Claude)', () => {
     const db = openDatabase(':memory:', MIGRATIONS.slice(0, 4));
     db.prepare(rec).run();
     db.prepare(run('a', 'dry_run')).run();
-    expect(migrate(db, MIGRATIONS)).toEqual([5]);
+    expect(migrate(db, MIGRATIONS.slice(0, 5))).toEqual([5]);
     expect(
       db.prepare('SELECT id, mode, prepared_from_run_id, force_recall FROM analysis_runs').get(),
     ).toEqual({

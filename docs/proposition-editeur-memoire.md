@@ -1,7 +1,9 @@
 # Proposition : éditeur vidéo manuel et mémoire éditoriale
 
 > **Statut : architecture validée.** Les fondations (§ 10 : dérivés, file de traitements, modèle
-> temporel) sont implémentées ; l'éditeur et la mémoire restent à faire (étapes 5 à 10).
+> temporel) sont implémentées ; la capture des retours (mémoire v1, couche 1) est implémentée à
+> l'étape 5 (`docs/validation-propositions.md`) ; l'éditeur et la suite de la mémoire restent à
+> faire (étapes 6 à 10).
 > Date : 23 novembre 2026. Base : cahier des charges v1.2, plan technique v1.0, code des étapes 1 et 2.
 
 ## 1. Résumé
