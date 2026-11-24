@@ -6,3 +6,5 @@
 export * from './profiles';
 export * from './analysis';
 export * from './hash';
+export * from './prompts';
+export * from './claude';

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@acs/shared": "*",
+    "@anthropic-ai/sdk": "1.6.0",
     "zod": "^4.6.7"
   }
 }

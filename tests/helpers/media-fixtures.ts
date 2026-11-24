@@ -335,3 +335,36 @@ export function pixelAt(imagePath: string, x: number, y: number): [number, numbe
   const i = (y * width + x) * 3;
   return [raw[i]!, raw[i + 1]!, raw[i + 2]!];
 }
+
+/** Vidéo grise légère de `seconds` secondes (2 images/s), pistes Micro / Discord. */
+export function createTalkVideo(dir: string, seconds: number): string {
+  const out = path.join(dir, `parole-${seconds}s.mkv`);
+  ff([
+    '-f',
+    'lavfi',
+    '-i',
+    `color=c=gray:s=160x90:r=2:d=${seconds}`,
+    ...sine(440, seconds),
+    ...sine(660, seconds),
+    '-map',
+    '0:v',
+    '-map',
+    '1:a',
+    '-map',
+    '2:a',
+    '-metadata:s:a:0',
+    'title=Micro',
+    '-metadata:s:a:1',
+    'title=Discord',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'ultrafast',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    out,
+  ]);
+  return out;
+}

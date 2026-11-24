@@ -20,7 +20,8 @@ export type JobType =
   | 'extract_audio_stems'
   | 'compute_waveform'
   | 'transcribe_recording'
-  | 'prepare_analysis';
+  | 'prepare_analysis'
+  | 'run_analysis';
 
 /**
  * File d'exécution :

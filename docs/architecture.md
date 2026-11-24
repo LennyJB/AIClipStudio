@@ -62,7 +62,7 @@ charges (v1.2) et le plan technique du MVP (v1.0).
 | Paquet                                          | Étape     | Utilité                                                       |
 | ----------------------------------------------- | --------- | ------------------------------------------------------------- |
 | `faster-whisper` (Python)                       | 3         | Transcription locale horodatée (déjà dans `requirements.txt`) |
-| `@anthropic-ai/sdk`                             | 4         | Appels Claude API (sorties structurées validées par Zod)      |
+| `@anthropic-ai/sdk` (installé : 1.6.0, épinglé) | 4b        | Appels Claude API (sorties structurées validées par Zod)      |
 | `@fastify/multipart` ou import par chemin local | 2         | À décider : voir questions ouvertes                           |
 | `remotion`, `@remotion/*`                       | Après MVP | Rendu des montages 9:16                                       |
 
@@ -300,5 +300,21 @@ Détails, utilisation et limites : `docs/analyse-editoriale.md`.
 | Images seulement avec un **profil de cadrage validé** (empreinte), zones et facecam en **aplat opaque**     | La facecam est souvent incrustée dans l'image de jeu ; un flou peut laisser lire un pseudo                                   |
 | Contenu préparé **écrit sur disque** (`storage/analysis/`), hors `processing/`                              | Consultable avant tout envoi ; jamais supprimé par le nettoyage du cache                                                     |
 | Transcriptions encadrées comme **données non fiables**, neutralisées ; pseudo-consignes marquées            | Une phrase prononcée en stream ne doit jamais devenir une instruction                                                        |
-| Tarifs versionnés ; modèle sans tarif = préparation bloquée ; pire cas = sortie maximale réflexion comprise | Le plafond (5 $) doit être garanti avant chaque appel (4b) ; la base refuse `dépensé + réservé > budget`                     |
+| Tarifs versionnés ; modèle sans tarif = préparation bloquée ; pire cas = sortie maximale réflexion comprise | Le plafond de réservation (5 $) est vérifié avant chaque appel (4b) ; la base refuse `dépensé + réservé > budget`            |
 | Nouvelle file de traitements `analysis`                                                                     | L'analyse ne doit pas attendre la transcription GPU d'un autre enregistrement (et inversement)                               |
+
+## 10. Analyse avec Claude, étape 4b
+
+Détails : `docs/analyse-editoriale.md` § 11.
+
+| Décision                                                                                                                                                | Raison                                                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| SDK officiel épinglé (version publiée depuis plus de deux semaines), `maxRetries: 0`                                                                    | Chaque tentative doit être réservée au budget ; une tentative automatique du SDK pourrait être facturée sans réservation        |
+| Interface `EditorialModel` (vrai Claude / faux modèle) ; le vrai client refuse `NODE_ENV=test`                                                          | La CI ne peut jamais appeler l'API ; toute la chaîne est testable                                                               |
+| Réservation du pire cas en transaction, contrainte CHECK en base, `overrun_usd` en dernier recours                                                      | Plafond de réservation tenu même avec plusieurs appels simultanés ; le coût réel au-delà est isolé, affiché et arrête l'analyse |
+| Requêtes réelles écrites dans `requetes/` avant envoi ; **pause de relecture** après le repérage (défaut) ; empreinte comparée juste avant chaque envoi | Les requêtes Opus dépendent de la réponse de Haiku : seule une pause permet de les relire avant leur envoi                      |
+| Empreinte de requête → réutilisation des réponses (réussies, refusées, tronquées) entre analyses                                                        | Reprise et relance sans double paiement ; un refus n'est jamais contourné                                                       |
+| Identifiants de segments au lieu d'instants ; citations vérifiées mot à mot ; bornes recalculées localement                                             | Claude ne peut ni inventer une parole ni un instant                                                                             |
+| Pertinence (Claude) et fiabilité (calcul local) séparées                                                                                                | Un moment drôle mais mal transcrit n'est jamais présenté comme un clip fiable                                                   |
+| Requêtes exactes écrites par le dry-run, vérifiées identiques au lancement                                                                              | Tout ce qui part est consultable avant tout appel                                                                               |
+| Branche empilée sur la 4a (écart ponctuel validé par le créateur)                                                                                       | La 4b dépend du code de la 4a, pas encore fusionné                                                                              |

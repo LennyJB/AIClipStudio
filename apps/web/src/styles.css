@@ -185,3 +185,7 @@ button.link {
   cursor: pointer;
   padding: 0 0.2rem;
 }
+
+ul.proposals > li {
+  margin-bottom: 0.75rem;
+}

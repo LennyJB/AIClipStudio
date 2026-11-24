@@ -250,3 +250,115 @@ export const analysisApi = {
   triageChunk: (runId: string, index: number) =>
     getJson<{ text: string }>(`/api/analyses/${runId}/triage/${index}`),
 };
+
+/* ------------------------------------------------------------------ */
+/* Analyse avec Claude (étape 4b) : payante, plafond de réservation    */
+/* ------------------------------------------------------------------ */
+
+export interface AnalysisPublicConfig {
+  mode: string;
+  claudeConfigured: boolean;
+  models: { triage: string; deep: string };
+  effort: string;
+  budgetUsd: number;
+  minRelevance: number;
+  minReliability: number;
+}
+
+export interface ClaudeRun {
+  id: string;
+  status: string;
+  stage: string | null;
+  /** Plafond de réservation (garanti avant chaque envoi). */
+  budgetUsd: number;
+  spentUsd: number;
+  reservedUsd: number;
+  /** Coût réel calculé au-delà du plafond (0 normalement). */
+  overrunUsd: number;
+  /** Coût réel calculé total ; peut dépasser `budgetUsd` si `overrunUsd` > 0. */
+  totalCostUsd: number;
+  windowCount: number;
+  error: { code: string; message: string } | null;
+  createdAt: string;
+  mode: string;
+  /** Pause de relecture : `review` est renseigné à la pause, `reviewApprovedAt` à l'accord. */
+  config?: {
+    review?: { deepRequests: number; deepMaxUsd: number; remainingUsd: number };
+    reviewApprovedAt?: string;
+  };
+}
+
+export interface RunRequest {
+  name: string;
+  stage: 'triage' | 'deep';
+  requestHash: string | null;
+  sentToClaude: boolean;
+}
+
+/** Pause de relecture : requêtes Opus écrites, rien n'est envoyé avant l'accord. */
+export const isAwaitingReview = (run: ClaudeRun) =>
+  run.status === 'pending' && run.stage === 'awaiting_review' && !run.config?.reviewApprovedAt;
+
+export interface Proposal {
+  id: string;
+  tier: 'clip' | 'secondary';
+  title: string;
+  explanation: string;
+  categories: string[];
+  relevance: number;
+  reliability: number;
+  reliabilityDetail: { reasons?: string[] };
+  flags: string[];
+  srcStartMs: number;
+  srcEndMs: number;
+  uncertainty: string | null;
+  evidence: { kind: string; segmentId: number | null; quote: string | null; verified: boolean }[];
+}
+
+export interface CallsSummary {
+  calls: {
+    id: string;
+    stage: string;
+    status: string;
+    costUsd: number;
+    windowId: string | null;
+    refusalCategory: string | null;
+  }[];
+  costs: {
+    realCostUsd: number;
+    budgetUsd: number;
+    overrunUsd: number;
+    budgetExceeded: boolean;
+    aboveReservationCalls: number;
+    aboveReservationUsd: number;
+    calls: number;
+    reusedCalls: number;
+    unknownCostCalls: number;
+  };
+}
+
+export const claudeApi = {
+  config: () => getJson<AnalysisPublicConfig>('/api/analysis/config'),
+  start: (recordingId: string, acceptBudgetUsd: number) =>
+    getJson<{ status: 'ready' | 'pending'; run: ClaudeRun; job: Job | null }>(
+      `/api/recordings/${recordingId}/analyses`,
+      send('POST', { mode: 'claude', acceptBudgetUsd }),
+    ),
+  runs: (recordingId: string) =>
+    getJson<{ runs: ClaudeRun[] }>(`/api/recordings/${recordingId}/analyses`),
+  run: (runId: string) =>
+    getJson<{
+      run: ClaudeRun;
+      windows: { id: string; status: string; origin: string; costUsd: number }[];
+    }>(`/api/analyses/${runId}`),
+  proposals: (runId: string) =>
+    getJson<{ proposals: Proposal[] }>(`/api/analyses/${runId}/proposals`),
+  calls: (runId: string) => getJson<CallsSummary>(`/api/analyses/${runId}/calls`),
+  requests: (runId: string) =>
+    getJson<{ requests: RunRequest[] }>(`/api/analyses/${runId}/requests`),
+  approveReview: (runId: string, acceptBudgetUsd: number) =>
+    getJson<{ status: 'pending'; run: ClaudeRun; job: Job | null }>(
+      `/api/analyses/${runId}/approve-review`,
+      send('POST', { acceptBudgetUsd }),
+    ),
+};

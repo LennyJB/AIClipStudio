@@ -459,6 +459,134 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX analysis_windows_run_idx ON analysis_windows(run_id, rank);
     `,
   },
+  {
+    version: 5,
+    name: 'analysis_claude',
+    sql: `
+      -- Étape 4b : appels à Claude, repérage, propositions de clips. Ajouts uniquement :
+      -- aucune table existante n'est reconstruite.
+      ALTER TABLE analysis_runs ADD COLUMN prepared_from_run_id TEXT
+        REFERENCES analysis_runs(id) ON DELETE SET NULL;
+      -- Résumé du stream produit par le repérage : NON VÉRIFIÉ, jamais une preuve.
+      ALTER TABLE analysis_runs ADD COLUMN stream_summary TEXT;
+      -- 1 : l'utilisateur a demandé de refaire les appels malgré des réponses réutilisables.
+      ALTER TABLE analysis_runs ADD COLUMN force_recall INTEGER NOT NULL DEFAULT 0
+        CHECK (force_recall IN (0,1));
+      -- Coût réel au-delà de la réservation (ne devrait jamais arriver : la réservation est un
+      -- pire cas). Le coût réel reste dans llm_calls ; l'analyse s'arrête dès qu'il est > 0.
+      ALTER TABLE analysis_runs ADD COLUMN overrun_usd REAL NOT NULL DEFAULT 0
+        CHECK (overrun_usd >= 0);
+
+      -- Un appel (une tentative) à Claude API. La ligne est créée AVANT l'envoi, avec la
+      -- réservation budgétaire du pire cas ; le coût réel la remplace à la réponse.
+      CREATE TABLE llm_calls (
+        id                    TEXT PRIMARY KEY,
+        run_id                TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+        window_id             TEXT REFERENCES analysis_windows(id) ON DELETE SET NULL,
+        stage                 TEXT NOT NULL CHECK (stage IN ('triage','deep')),
+        chunk_index           INTEGER,
+        attempt               INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
+        model                 TEXT NOT NULL,
+        prompt_version        TEXT NOT NULL,
+        request_hash          TEXT NOT NULL,
+        effort                TEXT NOT NULL,
+        max_tokens            INTEGER NOT NULL,
+        status                TEXT NOT NULL CHECK (status IN ('reserved','succeeded','refused',
+                                'truncated','invalid_output','failed','unknown_cost','reused')),
+        reserved_usd          REAL NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0),
+        cost_usd              REAL NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+        input_tokens          INTEGER,
+        cache_write_tokens    INTEGER,
+        cache_read_tokens     INTEGER,
+        output_tokens         INTEGER,     -- réflexion comprise
+        stop_reason           TEXT,
+        refusal_category      TEXT,
+        refusal_explanation   TEXT,
+        error_code            TEXT,
+        error_message         TEXT,
+        http_status           INTEGER,
+        provider_request_id   TEXT,
+        reused_from_call_id   TEXT REFERENCES llm_calls(id) ON DELETE SET NULL,
+        sent_manifest_json    TEXT NOT NULL DEFAULT '{}',  -- ce qui a été transmis (pistes, images…)
+        request_rel_path      TEXT,
+        response_rel_path     TEXT,
+        duration_ms           INTEGER,
+        created_at            TEXT NOT NULL DEFAULT (${NOW}),
+        completed_at          TEXT
+      );
+      CREATE INDEX llm_calls_hash_idx ON llm_calls(request_hash, status);
+      CREATE INDEX llm_calls_run_idx ON llm_calls(run_id, stage, created_at);
+
+      -- Moments signalés par le repérage global (segments transmis uniquement).
+      CREATE TABLE analysis_triage_moments (
+        id                TEXT PRIMARY KEY,
+        run_id            TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+        chunk_index       INTEGER NOT NULL,
+        call_id           TEXT REFERENCES llm_calls(id) ON DELETE SET NULL,
+        start_segment_id  INTEGER NOT NULL,
+        end_segment_id    INTEGER NOT NULL,
+        src_start_ms      INTEGER,
+        src_end_ms        INTEGER,
+        kind              TEXT NOT NULL,
+        strength          TEXT NOT NULL CHECK (strength IN ('fort','moyen')),
+        why               TEXT NOT NULL,
+        valid             INTEGER NOT NULL CHECK (valid IN (0,1)),
+        reject_reason     TEXT,
+        created_at        TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK (valid = 0 OR (src_start_ms IS NOT NULL AND src_start_ms < src_end_ms))
+      );
+      CREATE INDEX analysis_triage_moments_run_idx ON analysis_triage_moments(run_id, chunk_index);
+
+      -- Propositions de clips (jamais écrasées ; une nouvelle analyse en crée de nouvelles).
+      CREATE TABLE clip_proposals (
+        id                       TEXT PRIMARY KEY,
+        run_id                   TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+        recording_id             TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        window_id                TEXT REFERENCES analysis_windows(id) ON DELETE SET NULL,
+        call_id                  TEXT REFERENCES llm_calls(id) ON DELETE SET NULL,
+        tier                     TEXT NOT NULL CHECK (tier IN ('clip','secondary')),
+        title                    TEXT NOT NULL,
+        explanation              TEXT NOT NULL,
+        categories_json          TEXT NOT NULL,
+        relevance                INTEGER NOT NULL CHECK (relevance BETWEEN 0 AND 100),  -- Claude
+        reliability              INTEGER NOT NULL CHECK (reliability BETWEEN 0 AND 100), -- calcul local
+        reliability_json         TEXT NOT NULL,
+        flags_json               TEXT NOT NULL DEFAULT '[]',
+        src_start_ms             INTEGER NOT NULL,   -- SourceMs
+        src_end_ms               INTEGER NOT NULL,   -- SourceMs
+        setup_segment_id         INTEGER NOT NULL,
+        punchline_segment_id     INTEGER NOT NULL,
+        reaction_end_segment_id  INTEGER NOT NULL,
+        punchline_ms             INTEGER NOT NULL,
+        standalone               INTEGER NOT NULL CHECK (standalone IN (0,1)),
+        tracks_used_json         TEXT NOT NULL DEFAULT '[]',
+        visual_json              TEXT NOT NULL DEFAULT '[]',
+        editing_hint_json        TEXT,
+        uncertainty              TEXT,
+        merged_into_id           TEXT REFERENCES clip_proposals(id) ON DELETE SET NULL,
+        review_status            TEXT NOT NULL DEFAULT 'pending'
+                                   CHECK (review_status IN ('pending','accepted','rejected')),
+        created_at               TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK (src_start_ms >= 0 AND src_start_ms < src_end_ms)
+      );
+      CREATE INDEX clip_proposals_run_idx ON clip_proposals(run_id, tier, relevance);
+      CREATE INDEX clip_proposals_recording_idx ON clip_proposals(recording_id, created_at);
+
+      CREATE TABLE proposal_evidence (
+        id                   INTEGER PRIMARY KEY,
+        proposal_id          TEXT NOT NULL REFERENCES clip_proposals(id) ON DELETE CASCADE,
+        kind                 TEXT NOT NULL CHECK (kind IN ('quote','frame','signal')),
+        segment_id           INTEGER,
+        quote                TEXT,          -- telle qu'envoyée (pseudonymisée)
+        verified             INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0,1)),
+        role                 TEXT,
+        src_ms               INTEGER,
+        frame_derivative_id  TEXT,
+        note                 TEXT
+      );
+      CREATE INDEX proposal_evidence_idx ON proposal_evidence(proposal_id);
+    `,
+  },
 ];
 
 export function openDatabase(

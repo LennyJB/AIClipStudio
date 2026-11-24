@@ -46,6 +46,32 @@ export const defaultSettings = (recordingId: string): AnalysisSettingsDto => ({
 export type AnalysisRunStatus =
   'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | 'cancelled' | 'budget_exhausted';
 
+/** Étape d'une analyse avec Claude en pause, en attente de la relecture des requêtes Opus. */
+export const AWAITING_REVIEW = 'awaiting_review';
+/** Code d'une analyse en pause remplacée par une nouvelle (jamais reprise). */
+export const SUPERSEDED = 'SUPERSEDED';
+
+/** Ce qui est montré au créateur pendant la pause de relecture. */
+export interface ReviewInfo {
+  pausedAt: string;
+  /** Requêtes Opus prêtes (une par fenêtre restant à analyser), dans requetes/. */
+  deepRequests: number;
+  /** Pire cas estimé localement (sans comptage par l'API) de ces requêtes. */
+  deepMaxUsd: number;
+  /** Plafond restant (plafond − déjà dépensé). */
+  remainingUsd: number;
+}
+
+/** Pause de relecture : en attente (pas encore approuvée) ? */
+export function isAwaitingReview(run: AnalysisRunDto): boolean {
+  return (
+    run.mode === 'claude' &&
+    run.status === 'pending' &&
+    run.stage === AWAITING_REVIEW &&
+    !(run.config as { reviewApprovedAt?: string }).reviewApprovedAt
+  );
+}
+
 export interface AnalysisRunDto {
   id: string;
   recordingId: string;
@@ -61,12 +87,21 @@ export interface AnalysisRunDto {
   config: Record<string, unknown>;
   privacy: Record<string, unknown>;
   profiles: Record<string, unknown>;
+  /** Plafond de RÉSERVATION : dépensé (compté) + réservé ne le dépasse jamais (contrainte en base). */
   budgetUsd: number;
   estimate: unknown;
+  /** Part du coût comptée dans le plafond (≤ budget). */
   spentUsd: number;
   reservedUsd: number;
   outputRelDir: string | null;
   windowCount: number;
+  preparedFromRunId: string | null;
+  streamSummary: string | null;
+  forceRecall: boolean;
+  /** Coût réel calculé au-delà du plafond (0 normalement). */
+  overrunUsd: number;
+  /** Coût réel calculé total = dépensé + dépassement ; peut excéder `budgetUsd` si overrunUsd > 0. */
+  totalCostUsd: number;
   error: { code: string; message: string } | null;
   createdAt: string;
   startedAt: string | null;
@@ -94,6 +129,10 @@ interface RunRow {
   reserved_usd: number;
   output_rel_dir: string | null;
   window_count: number;
+  prepared_from_run_id: string | null;
+  stream_summary: string | null;
+  force_recall: number;
+  overrun_usd: number;
   error_code: string | null;
   error_message: string | null;
   created_at: string;
@@ -122,6 +161,11 @@ const toRun = (r: RunRow): AnalysisRunDto => ({
   reservedUsd: r.reserved_usd,
   outputRelDir: r.output_rel_dir,
   windowCount: r.window_count,
+  preparedFromRunId: r.prepared_from_run_id,
+  streamSummary: r.stream_summary,
+  forceRecall: r.force_recall === 1,
+  overrunUsd: r.overrun_usd,
+  totalCostUsd: Math.round((r.spent_usd + r.overrun_usd) * 1e9) / 1e9,
   error: r.error_code ? { code: r.error_code, message: r.error_message ?? '' } : null,
   createdAt: r.created_at,
   startedAt: r.started_at,
@@ -140,6 +184,8 @@ export interface NewRun {
   privacy: Record<string, unknown>;
   profiles: Record<string, unknown>;
   budgetUsd: number;
+  promptVersion?: string | null;
+  forceRecall?: boolean;
 }
 
 /* ------------------------------ Fenêtres ------------------------------ */
@@ -260,12 +306,15 @@ export class AnalysisRepository {
     this.db
       .prepare(
         `INSERT INTO analysis_runs (id, recording_id, mode, status, pipeline_version, pricing_version, input_key,
-           transcription_ids_json, config_json, privacy_json, profiles_json, budget_usd)
+           transcription_ids_json, config_json, privacy_json, profiles_json, budget_usd, prompt_version,
+           force_recall)
          VALUES (@id, @recordingId, @mode, 'pending', @pipelineVersion, @pricingVersion, @inputKey,
-           @transcriptionIds, @config, @privacy, @profiles, @budgetUsd)`,
+           @transcriptionIds, @config, @privacy, @profiles, @budgetUsd, @promptVersion, @forceRecall)`,
       )
       .run({
         ...r,
+        promptVersion: r.promptVersion ?? null,
+        forceRecall: r.forceRecall ? 1 : 0,
         transcriptionIds: JSON.stringify(r.transcriptionIds),
         config: JSON.stringify(r.config),
         privacy: JSON.stringify(r.privacy),
@@ -290,15 +339,103 @@ export class AnalysisRepository {
     ).map(toRun);
   }
 
-  /** Analyse identique (mêmes entrées) déjà terminée ou en cours. */
+  /**
+   * Analyse identique (mêmes entrées) déjà terminée ou en cours. Une analyse arrêtée par le
+   * budget compte comme terminée : la relancer sans `force` ne dépense rien de plus.
+   */
   findReusable(inputKey: string, mode: 'dry_run' | 'claude'): AnalysisRunDto | null {
     const r = this.db
       .prepare(
         `SELECT * FROM analysis_runs WHERE input_key = ? AND mode = ?
-           AND status IN ('pending','running','completed') ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+           AND status IN ('pending','running','completed','budget_exhausted')
+           ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(inputKey, mode) as RunRow | undefined;
     return r ? toRun(r) : null;
+  }
+
+  /**
+   * Analyse interrompue ou en échec avec les mêmes entrées : reprise (même budget).
+   * `forceRecall` (mode claude) : seule une analyse lancée avec la même option est reprise,
+   * pour qu'une reprise ne redemande jamais à Claude ce que le créateur n'a pas demandé.
+   */
+  findResumable(
+    inputKey: string,
+    mode: 'dry_run' | 'claude',
+    forceRecall = false,
+  ): AnalysisRunDto | null {
+    const r = this.db
+      .prepare(
+        `SELECT * FROM analysis_runs WHERE input_key = ? AND mode = ? AND force_recall = ?
+           AND status IN ('interrupted','failed','cancelled')
+           AND COALESCE(error_code, '') <> '${SUPERSEDED}'
+           ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(inputKey, mode, forceRecall ? 1 : 0) as RunRow | undefined;
+    return r ? toRun(r) : null;
+  }
+
+  setPreparedFrom(id: string, preparedRunId: string, outputRelDir: string) {
+    this.db
+      .prepare(
+        `UPDATE analysis_runs SET prepared_from_run_id = ?, output_rel_dir = ?, updated_at = ${NOW} WHERE id = ?`,
+      )
+      .run(preparedRunId, outputRelDir, id);
+  }
+
+  setStreamSummary(id: string, summary: string | null) {
+    this.db
+      .prepare(`UPDATE analysis_runs SET stream_summary = ?, updated_at = ${NOW} WHERE id = ?`)
+      .run(summary, id);
+  }
+
+  /** Fenêtres d'une analyse avec Claude (remplacées en bloc, statut « pending »). */
+  insertWindows(runId: string, windows: readonly NewWindow[]) {
+    const ins = this.db.prepare(
+      `INSERT INTO analysis_windows (id, run_id, rank, origin, far_start_ms, src_start_ms, core_start_ms,
+         core_end_ms, src_end_ms, local_score, signals_json, frames_json, payload_rel_path, estimate_json,
+         status, cache_key)
+       VALUES (@id, @runId, @rank, @origin, @farStartMs, @startMs, @coreStartMs, @coreEndMs, @endMs,
+         @localScore, @signals, @frames, @payloadRelPath, @estimate, @status, @cacheKey)`,
+    );
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM analysis_windows WHERE run_id = ?').run(runId);
+      for (const w of windows) {
+        ins.run({
+          ...w,
+          runId,
+          signals: JSON.stringify(w.signals),
+          frames: JSON.stringify(w.frames),
+          estimate: w.estimate === null ? null : JSON.stringify(w.estimate),
+        });
+      }
+      this.db
+        .prepare(`UPDATE analysis_runs SET window_count = ?, updated_at = ${NOW} WHERE id = ?`)
+        .run(windows.length, runId);
+    })();
+  }
+
+  /** Fenêtres non encore traitées sont marquées « sautées » (plafond atteint). */
+  skipPendingWindows(runId: string) {
+    this.db
+      .prepare(
+        `UPDATE analysis_windows SET status = 'skipped', updated_at = ${NOW}
+         WHERE run_id = ? AND status IN ('pending','prepared')`,
+      )
+      .run(runId);
+  }
+
+  completeClaudeRun(
+    id: string,
+    status: 'completed' | 'budget_exhausted',
+    error?: { code: string; message: string },
+  ) {
+    this.db
+      .prepare(
+        `UPDATE analysis_runs SET status = ?, stage = 'done', error_code = ?, error_message = ?,
+           completed_at = ${NOW}, updated_at = ${NOW} WHERE id = ?`,
+      )
+      .run(status, error?.code ?? null, error?.message ?? null, id);
   }
 
   markRunning(id: string) {
@@ -362,13 +499,60 @@ export class AnalysisRepository {
   }
 
   markStaleAsInterrupted(): number {
+    // Une analyse en pause de relecture n'a aucun traitement en cours : elle reste en pause.
     return this.db
       .prepare(
         `UPDATE analysis_runs SET status = 'interrupted', error_code = 'INTERRUPTED',
            error_message = 'Interrompue (arrêt du serveur)', updated_at = ${NOW}
-         WHERE status IN ('pending','running')`,
+         WHERE status = 'running'
+            OR (status = 'pending' AND COALESCE(stage, '') <> '${AWAITING_REVIEW}')`,
       )
       .run().changes;
+  }
+
+  /**
+   * Pause après le repérage : toutes les requêtes Opus sont écrites, aucune n'est envoyée.
+   * L'état tient dans les colonnes existantes : statut `pending`, étape `awaiting_review`,
+   * détail dans `config_json.review` (aucune migration).
+   */
+  pauseForReview(id: string, info: ReviewInfo) {
+    this.db
+      .prepare(
+        `UPDATE analysis_runs SET status = 'pending', stage = '${AWAITING_REVIEW}',
+           config_json = json_set(config_json, '$.review', json(?)), updated_at = ${NOW} WHERE id = ?`,
+      )
+      .run(JSON.stringify(info), id);
+  }
+
+  /**
+   * Analyse en pause de relecture remplacée par une nouvelle (`--force`) : fermée, elle ne peut
+   * plus être approuvée ni reprise. Rien n'était en vol ni réservé pendant la pause.
+   */
+  supersede(id: string, byRunId: string): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE analysis_runs SET status = 'cancelled', error_code = '${SUPERSEDED}',
+             error_message = ?, completed_at = ${NOW}, updated_at = ${NOW}
+           WHERE id = ? AND status = 'pending' AND stage = '${AWAITING_REVIEW}'`,
+        )
+        .run(`Remplacée par une nouvelle analyse (${byRunId}) avant toute requête Opus`, id)
+        .changes === 1
+    );
+  }
+
+  /** Relecture faite : l'analyse approfondie est autorisée (une seule fois, sur une pause). */
+  approveReview(id: string): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE analysis_runs SET config_json = json_set(config_json, '$.reviewApprovedAt', ${NOW}),
+             updated_at = ${NOW}
+           WHERE id = ? AND status = 'pending' AND stage = '${AWAITING_REVIEW}'
+             AND json_extract(config_json, '$.reviewApprovedAt') IS NULL`,
+        )
+        .run(id).changes === 1
+    );
   }
 
   listWindows(runId: string): AnalysisWindowDto[] {

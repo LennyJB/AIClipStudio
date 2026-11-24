@@ -1,8 +1,9 @@
 # Analyse éditoriale (étape 4)
 
-> **Statut : étape 4a implémentée (préparation locale, AUCUN appel à Claude API).**
-> L'étape 4b (appels à Claude, propositions de clips) ne commencera qu'après validation de la 4a.
-> Plan validé par le créateur le 23/11/2026.
+> **Statut : 4a (préparation locale, PR #4) et 4b (analyse avec Claude) implémentées.**
+> La 4b n'a encore fait **aucun appel réel** : elle est testée avec un faux modèle (CI) ;
+> le premier essai réel aura lieu lors de la campagne de tests sur la machine du créateur.
+> Plans validés par le créateur les 23 et 24/11/2026.
 
 ## 1. Objectif et découpage
 
@@ -10,10 +11,10 @@ Sélectionner automatiquement les moments qui méritent de devenir des clips, en
 l'**humour et les interactions humaines** (ironie, échanges, malentendus, réactions), pas les
 seules éliminations. Aucun quota : un stream peut produire zéro, un ou plusieurs clips.
 
-| Sous-étape | Contenu                                                                                                        | État             |
-| ---------- | -------------------------------------------------------------------------------------------------------------- | ---------------- |
-| **4a**     | Signaux locaux, fenêtres candidates, cadrage, confidentialité, contenu préparé consultable, estimation du coût | ✅ Cette PR      |
-| 4b         | Repérage global (Claude Haiku 5.5), analyse approfondie (Claude Opus 5.5), vérifications, propositions         | Après validation |
+| Sous-étape | Contenu                                                                                                        | État     |
+| ---------- | -------------------------------------------------------------------------------------------------------------- | -------- |
+| **4a**     | Signaux locaux, fenêtres candidates, cadrage, confidentialité, contenu préparé consultable, estimation du coût | ✅ PR #4 |
+| **4b**     | Repérage global (Claude Haiku 5.5), analyse approfondie (Claude Opus 5.5), vérifications, propositions         | ✅ § 11  |
 
 Pipeline cible :
 
@@ -27,7 +28,7 @@ Transcriptions + formes d'onde + vidéo (lecture seule)
   → F. pertinence (Claude) + fiabilité (calcul local) → niveaux  4b
 ```
 
-## 2. Utilisation (étape 4a)
+## 2. Utilisation
 
 Prérequis : l'enregistrement est importé **et transcrit** (étape 3).
 
@@ -35,7 +36,13 @@ Prérequis : l'enregistrement est importé **et transcrit** (étape 3).
 npm run analyze -- <id> --dry-run                  # préparer et résumer (aucun appel externe)
 npm run analyze -- <id> --dry-run --window 1       # contenu qui serait transmis pour la fenêtre 1
 npm run analyze -- <id> --dry-run --show-payload   # TOUT le contenu qui serait transmis
-npm run analyze -- <id> --list                     # préparations existantes
+npm run analyze -- <id> --list                     # analyses existantes
+npm run analyze -- <id> --run                      # analyse PAYANTE : estimation, puis « oui » requis
+npm run analyze -- <id> --run --yes                # confirmation explicite sans question
+npm run analyze -- <id> --proposals                # clips et moments secondaires
+npm run analyze -- <id> --calls                    # appels, jetons, coût réel
+npm run analyze -- <id> --costs                    # coût réel cumulé du stream
+npm run doctor -- --claude                         # clé et modèles accessibles (aucune génération)
 ```
 
 Interface : `npm run dev` → « Enregistrements » → choisir le fichier → section « Analyse
@@ -55,9 +62,12 @@ Le contenu préparé est écrit dans `storage/analysis/<enregistrement>/<analyse
 | `reperage/tranche-NN.txt`   | Transcription condensée pour le repérage global                            |
 | `fenetres/fenetre-NNN.txt`  | Texte exact transmis pour une fenêtre                                      |
 | `fenetres/fenetre-NNN.json` | Détail : temps, statistiques, images, jetons estimés                       |
+| `requetes/*.json`           | Requêtes EXACTES : prompt système, message, schéma de réponse, paramètres  |
 
-À l'étape 4a, ce contenu ne comprend que les **données** (transcription, mesures, images) ;
-les consignes du prompt s'y ajouteront à l'étape 4b et resteront consultables de la même façon.
+Les requêtes de `requetes/` sont exactement celles qui partiraient, à deux détails près :
+les images y sont remplacées par leur empreinte (sha256), et le résumé du repérage par un
+repère, puisqu'il n'existe qu'après les appels de repérage. Une analyse avec Claude vérifie que
+le texte de repérage envoyé est identique à celui de la préparation relue.
 
 ## 3. Confidentialité
 
@@ -230,8 +240,9 @@ Tarifs vérifiés le 23/11/2026 sur la [page officielle](https://platform.claude
   - _pire cas_ : entrée +20 %, prompt système réécrit en cache à chaque appel (tarif d'écriture),
     sortie = limite `ANALYSIS_MAX_OUTPUT_TOKENS` (12 000, **réflexion comprise**). C'est ce
     montant que l'étape 4b **réservera avant chaque appel**.
-- **Plafond strict** (`ANALYSIS_MAX_COST_USD`, 5 $) : la base refuse toute écriture où
+- **Plafond de réservation** (`ANALYSIS_MAX_COST_USD`, 5 $) : la base refuse toute écriture où
   `dépensé + réservé > budget` (contrainte `CHECK`), en plus du contrôle applicatif de la 4b.
+  Ce qu'il garantit et ne garantit pas : § 11.3.
 - Les jetons de texte sont estimés localement (1 jeton pour 3 octets) ; la taille du prompt
   système est une hypothèse. Les comptes réels seront mesurés à l'étape 4b.
 
@@ -261,10 +272,182 @@ migrations 1 à 3 ne sont pas modifiées.
   invalide.
 - **Interface** : réglages, cadrage, préparation et lecture du contenu (fetch simulé).
 
-## 11. Rappel : étape 4b (après validation)
+## 11. Analyse avec Claude (étape 4b)
 
-Client Claude (sorties structurées, revalidation Zod), repérage Haiku, analyse Opus en effort
-`high`, citations vérifiées mot à mot, bornes recalées sur les mots, **pertinence** (Claude) et
-**fiabilité** (calcul local) séparées, zéro clip possible, doublons fusionnés, refus enregistrés
-**sans** repli vers un autre modèle, budget réservé avant chaque appel, reprise sans payer deux
-fois, coût réel par fenêtre et par stream.
+### 11.1 Déroulement
+
+1. **Préparation liée** : une préparation à blanc identique est réutilisée (ou refaite) ; la clé
+   d'entrée inclut les versions des prompts, donc un prompt modifié impose une nouvelle préparation.
+2. **Repérage global** (`claude-haiku-5-5`, effort `medium`) : une requête par tranche ; réponse
+   `TriageResult` (moments signalés par identifiants de segments + résumé du stream). Les
+   identifiants doivent appartenir à la tranche ; le repérage est facultatif (une tranche en
+   échec n'arrête pas l'analyse). **C'est lui qui trouve l'ironie calme sans signal local.**
+3. **Fenêtres** : fenêtres à signaux ∪ zones repérées (origine `signals`, `triage` ou `both`),
+   par ordre de priorité ; une reprise réutilise les mêmes fenêtres. **Toutes les requêtes Opus**
+   (y compris celles des fenêtres nées du repérage, avec le résumé réel) sont alors écrites dans
+   `requetes/` de l'analyse, avant le premier appel Opus.
+   **Pause de relecture (par défaut)** : l'analyse s'arrête ici (statut `pending`, étape
+   `awaiting_review`), sans rien envoyer à Opus. Le créateur relit les requêtes (`--requests`,
+   interface) puis donne un second accord (`--continue`, ou « oui » dans le terminal, ou le bouton
+   de l'interface), avec reconfirmation du plafond. `--no-review` enchaîne tout explicitement.
+4. **Analyse approfondie** (`claude-opus-5-5`, effort `high`) : une requête par fenêtre ; réponse
+   `DeepResult` (0 à 3 moments). Le résumé du stream y figure comme **non vérifié**.
+5. **Vérification locale** (`verify.ts`) : identifiants réellement transmis, ordre mise en place →
+   chute → réaction, citations retrouvées **mot à mot** (casse, accents et ponctuation ignorés) ;
+   une citation fausse est retirée ; sans citation vérifiée de la chute, le moment est rejeté.
+6. **Bornes** (`boundaries.ts`) : début sur la mise en place (avec l'amorce du profil), fin après
+   la réaction, jamais au milieu d'un mot ; durée 20 à 80 s (ou celle du profil de jeu), sinon
+   alerte `trop_court` / `contexte_trop_long`. Si une limite de la plage tombe dans un mot qui la
+   déborde, le recalage passe de l'autre côté de ce mot ; s'il n'existe aucun instant hors d'un
+   mot dans la plage, alerte `mot_coupe` (jamais un clip). Le recalage se termine toujours.
+7. **Fiabilité** (`reliability.ts`, calcul local, 0 à 100) : qualité de transcription des preuves,
+   citations vérifiées, mise en place, contexte (réponses Discord non transmises, parole
+   simultanée). Preuve douteuse → plafond 55 ; pseudo-consigne → −30.
+8. **Niveau** : `clip` si Claude le suggère, pertinence ≥ 60 **et** fiabilité ≥ 60, sans alerte ;
+   `secondary` si pertinence ≥ 40 ; sinon rejeté (conservé dans la réponse enregistrée).
+9. **Consolidation** : chevauchement ≥ 50 %, chute de l'un dans l'autre, ou même blague (citations
+   de chute similaires à moins de 10 min) → fusion dans la meilleure ; un moment secondaire
+   n'est jamais promu ; **aucun quota**.
+
+### 11.2 Sécurité
+
+- **Aucun outil** n'est fourni au modèle (`tools` absent), aucun `fallbacks`, aucun `temperature`,
+  aucun préremplissage ; la sortie est un JSON imposé (`output_config.format`) puis **revalidé par
+  Zod** (bornes, longueurs, champs inconnus refusés).
+- Les transcriptions et le résumé sont encadrés et neutralisés ; le prompt système rappelle
+  qu'une parole adressée à « Claude » n'est jamais une consigne.
+- **Refus** (`stop_reason: refusal`) : enregistré avec sa catégorie ; aucune nouvelle tentative,
+  aucun autre modèle ; la fenêtre passe en `refused`.
+- Le vrai client refuse de démarrer quand `NODE_ENV=test` : la CI ne peut pas appeler l'API.
+
+### 11.3 Budget, erreurs et reprise
+
+| Situation                                  | Traitement                                                                                                                                                  |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Avant chaque appel                         | Réservation du pire cas (entrée comptée par l'API +10 % ou estimée +20 %, schéma, `max_tokens` réflexion comprise) ; refusée si le plafond serait dépassé   |
+| Réponse reçue                              | Coût réel (usage de l'API, cache compris) à la place de la réservation                                                                                      |
+| 429, 5xx, délai, connexion                 | Nouvelle tentative (au plus `ANALYSIS_MAX_ATTEMPTS`), `retry-after` respecté, chacune réservée à part ; le SDK ne refait jamais rien seul (`maxRetries: 0`) |
+| 400, 404, 413                              | Fenêtre en échec                                                                                                                                            |
+| 401, 403, 402, plafond du compte           | Toute l'analyse s'arrête                                                                                                                                    |
+| JSON invalide (réponse complète)           | **Une** nouvelle tentative, réservée à part                                                                                                                 |
+| Sortie tronquée (`max_tokens`)             | Fenêtre `truncated`, coût compté, pas de nouvelle tentative                                                                                                 |
+| Coupure après l'envoi, arrêt du serveur    | Appel `unknown_cost` : sa réservation entière est comptée (prudence)                                                                                        |
+| Coût réel > marge restante sous le plafond | Excédent consigné dans `overrun_usd`, analyse arrêtée (`budget_exhausted`, code `BUDGET_OVERRUN`), coût réel affiché en entier                              |
+| Plafond atteint                            | Statut `budget_exhausted` (code `BUDGET_EXHAUSTED`), fenêtres restantes `skipped`, résultats conservés                                                      |
+
+#### Ce que le plafond garantit, et ce qu'il ne garantit pas
+
+|                                                                                                                                                                                                               | Garanti par l'application ?       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| **Plafond de réservation** : aucun appel n'est envoyé si son pire cas estimé ne tient pas sous le plafond ; `dépensé + réservé ≤ plafond`, même avec des appels simultanés (transaction + contrainte `CHECK`) | **Oui**                           |
+| Plus aucun appel après un dépassement réel, ni pour cette analyse ni à sa reprise                                                                                                                             | **Oui**                           |
+| **Facture réelle ≤ plafond**                                                                                                                                                                                  | **Non** : risque faible mais réel |
+
+Pourquoi la facture peut dépasser le plafond :
+
+- le pire cas réservé repose sur un **comptage estimé** de l'entrée (`count_tokens` +10 %, ou
+  estimation locale +20 % s'il est indisponible) ; l'API peut facturer davantage ;
+- la **table de tarifs** est versionnée dans le code : un changement de prix chez Anthropic n'est
+  pas détecté automatiquement ;
+- un appel coupé (`unknown_cost`) est compté au pire cas, mais sa facturation réelle est inconnue.
+
+La sortie, elle, ne peut pas dépasser `max_tokens` (réflexion comprise), qui est entièrement réservé.
+Ce qu'on voit en cas de dépassement : `overrun_usd` > 0 sur l'analyse, coût réel calculé complet
+(`totalCostUsd`, `--calls`, `--costs`, `--list`, interface) avec un avertissement explicite, et
+les appels dont le coût a dépassé leur réservation. Les coûts affichés sont **calculés** (jetons
+renvoyés par l'API × tarifs versionnés) : **la facture d'Anthropic fait foi**.
+
+Une analyse arrêtée par le budget compte comme terminée : la relancer sans `--force` ne dépense
+rien. `--force` lance une **nouvelle** analyse, avec un nouveau plafond (après une nouvelle
+confirmation) ; les réponses déjà obtenues y sont relues pour 0 $. Le plafond est donc **par
+analyse** ; le coût cumulé d'un enregistrement est visible avec `--costs`.
+
+#### `--force` et `--force-recall` selon l'état de l'analyse identique la plus récente
+
+Les deux options demandent une **nouvelle** analyse ; `--force-recall` interdit en plus de relire
+les réponses obtenues par une autre analyse (tout est redemandé, payant).
+
+| Analyse identique existante       | Sans option                         | `--force` / `--force-recall`                                                                                                                                |
+| --------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Aucune                            | Nouvelle analyse                    | Nouvelle analyse                                                                                                                                            |
+| Terminée ou arrêtée par le budget | Renvoyée telle quelle (0 $)         | Nouvelle analyse (nouveau plafond)                                                                                                                          |
+| Interrompue, en échec ou annulée  | Reprise (même analyse, même budget) | Nouvelle analyse ; l'ancienne n'est plus reprise                                                                                                            |
+| **En pause de relecture**         | Renvoyée, toujours en pause         | **Remplacée** : l'ancienne est fermée (`cancelled`, code `SUPERSEDED`, plus approuvable ni reprise) et une nouvelle analyse est créée, dans une transaction |
+| **En file ou en cours**           | Renvoyée (suivi de son traitement)  | **Refus** (`CONFLICT`) : attendre sa fin ou annuler son traitement (le message donne l'identifiant et `POST /api/jobs/<id>/cancel`)                         |
+
+Pourquoi ces deux derniers cas : une analyse en pause n'a **aucun appel en vol ni aucune
+réservation** (le repérage est terminé et payé), la remplacer ne perd rien et ses réponses de
+repérage restent relues pour 0 $ par la nouvelle (sauf `--force-recall`). Une analyse en cours
+peut avoir un appel en vol : en lancer une seconde en parallèle doublerait l'exposition budgétaire
+et ferait payer deux fois les mêmes requêtes ; l'annuler d'office pourrait faire facturer un appel
+coupé. On refuse donc, et le créateur choisit.
+
+- **Réutilisation** : une requête identique (même empreinte) déjà aboutie — réussie, refusée ou
+  tronquée — n'est jamais rappelée : sa réponse est relue pour 0 $. `--force-recall` crée une
+  **nouvelle analyse** qui redemande tout à Claude (payant) ; à sa reprise, seuls ses propres
+  appels réussis sont relus.
+- **Reprise** : relancer la même analyse après une interruption reprend **la même analyse et son
+  budget** ; les appels réussis sont réutilisés, seuls les manquants sont payés. Un appel coupé
+  en cours a pu être facturé : il est compté au pire cas et pourra être payé une seconde fois.
+
+### 11.4 Transparence des requêtes et traçabilité
+
+**Pourquoi une pause ?** Les requêtes Opus dépendent de la réponse de Haiku : résumé du stream
+et fenêtres découvertes par le repérage. Le dry-run ne peut donc pas les montrer (il affiche un
+repère à la place du résumé, et ignore les fenêtres que le repérage trouvera). Sans pause, elles
+seraient enregistrées et consultables, mais l'analyse enchaînerait aussitôt : ce serait une
+traçabilité, pas une relecture préalable. **Seule la pause garantit qu'on peut les relire avant
+leur envoi** ; elle est donc active par défaut.
+
+| Requête          | Écrite dans `requetes/` de l'analyse            | Garantie avant l'envoi                                                                                 |
+| ---------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Repérage (Haiku) | Avant son envoi                                 | Identique à celle du dry-run relu (même empreinte), sinon arrêt                                        |
+| Analyse (Opus)   | Toutes, avant le premier appel Opus, puis pause | Identique au fichier relu (empreinte comparée juste avant l'envoi), sinon la fenêtre échoue sans appel |
+
+Une requête Opus ne peut pas changer entre la relecture et l'envoi : à la reprise, chaque
+requête reconstruite est comparée au fichier déjà écrit ; une différence arrête l'analyse
+(`CONFLICT`). Consultation : `npm run analyze -- <id> --requests [--window N]`,
+`GET /api/analyses/:runId/requests[/:nom]`, ou l'interface pendant la pause.
+
+Pour chaque appel : `appels/<id>.request.json` (corps sans clé, images par empreinte, réservation,
+ce qui a été transmis) et `appels/<id>.response.json` (message brut, usage, `stop_reason`,
+identifiant de requête Anthropic). En base (`llm_calls`) : statut, jetons (entrée, écriture et
+lecture du cache, sortie), coût, refus, erreur. Coûts visibles par fenêtre, par analyse
+(`--calls`) et par stream (`--costs`).
+
+### 11.5 Données (migration 5)
+
+| Table / colonne            | Rôle                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------ |
+| `llm_calls`                | Une ligne par tentative, créée AVANT l'envoi avec sa réservation                                 |
+| `analysis_triage_moments`  | Moments signalés par le repérage (valides ou rejetés, avec le motif)                             |
+| `clip_proposals`           | Propositions : niveau, pertinence, fiabilité, bornes SourceMs, fusion, `review_status` (étape 5) |
+| `proposal_evidence`        | Citations vérifiées et images utilisées                                                          |
+| `analysis_runs` (colonnes) | `prepared_from_run_id`, `stream_summary`, `force_recall`, `overrun_usd`                          |
+
+Ajouts uniquement : aucune table existante n'est reconstruite ; les migrations 1 à 4 sont inchangées.
+
+### 11.6 Tests (aucun appel réel)
+
+- **Unitaires** : schémas (aucun mot-clé non pris en charge, validation stricte), prompts
+  (déterministes, règles présentes), corps de requête (ni outil ni repli), client sur faux
+  transport HTTP (refus, tronqué, 429/529/500/400/401/402/403, coupure de flux, délai, annulation),
+  réservation (propriété : coût réel ≤ réservation), exécuteur (propriété : dépensé + réservé ≤
+  plafond), vérification des citations, bornes (propriété : jamais au milieu d'un mot, durée ou
+  alerte), fiabilité (propriété : transcription douteuse → jamais un clip), consolidation, fusion.
+- **Intégration** (FFmpeg réel + faux modèle) : ironie calme trouvée par le repérage seul et
+  retenue comme clip ; zéro clip ; réutilisation sans aucun nouvel appel ; plafond trop bas →
+  `budget_exhausted` ; refus ; citation inventée rejetée ; arrêt du serveur pendant un appel puis
+  reprise de la même analyse ; aucune donnée Discord ni nom réel dans les requêtes ;
+  `--force-recall` (nouvelle analyse, tout redemandé) ; dépassement réel du plafond (arrêt, coût
+  complet visible) ; requêtes Opus toutes écrites avant le premier appel Opus et identiques à ce
+  qui part ; requête altérée sur disque → aucun appel ; pause de relecture (rien ne part avant
+  l'accord, la pause survit à un redémarrage, l'accord exige le plafond, envoi = requêtes relues).
+
+### 11.7 Limites connues
+
+- **Aucun appel réel n'a été fait** : la qualité éditoriale, les coûts réels et la résistance du
+  vrai modèle aux injections restent à mesurer sur vos streams.
+- Les seuils (60/60), les poids de la fiabilité et la grille de pertinence sont des points de
+  départ, à calibrer à l'étape 6.
+- La neutralisation du résumé remplace aussi les crochets des pseudonymes par des parenthèses.
