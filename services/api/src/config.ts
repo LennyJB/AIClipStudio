@@ -110,6 +110,16 @@ export const EnvSchema = z.object({
   CLIP_WINDOW_GRID_SEC: z.coerce.number().int().min(1).max(600).default(30),
   /* ---------------------------- Analyse éditoriale ---------------------------- */
   ANALYSIS_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
+  /** Effort du repérage global (Haiku). */
+  ANALYSIS_TRIAGE_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
+  /** Seuils d'un clip : pertinence (jugée par Claude) ET fiabilité (calculée localement). */
+  ANALYSIS_MIN_RELEVANCE: z.coerce.number().int().min(0).max(100).default(60),
+  ANALYSIS_MIN_RELIABILITY: z.coerce.number().int().min(0).max(100).default(60),
+  /** Appels d'analyse approfondie simultanés. */
+  ANALYSIS_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(1),
+  /** Tentatives par appel en cas d'erreur passagère (429, 5xx, délai), chacune réservée à part. */
+  ANALYSIS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(5).default(3),
+  ANALYSIS_REQUEST_TIMEOUT_SEC: z.coerce.number().int().min(30).max(3_600).default(600),
   /** Plafond STRICT de dépense par analyse, en dollars (jetons de réflexion et cache compris). */
   ANALYSIS_MAX_COST_USD: z.coerce.number().positive().max(1000).default(5),
   /** Jetons de sortie maximum par appel d'analyse approfondie (réflexion comprise). */
@@ -175,6 +185,12 @@ export interface AppConfig {
   clipWindow: { marginMs: number; gridMs: number };
   analysis: {
     effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    triageEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    minRelevance: number;
+    minReliability: number;
+    concurrency: number;
+    maxAttempts: number;
+    requestTimeoutMs: number;
     maxCostUsd: number;
     maxOutputTokens: number;
     triageMaxOutputTokens: number;
@@ -268,6 +284,12 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
     },
     analysis: {
       effort: e.ANALYSIS_EFFORT,
+      triageEffort: e.ANALYSIS_TRIAGE_EFFORT,
+      minRelevance: e.ANALYSIS_MIN_RELEVANCE,
+      minReliability: e.ANALYSIS_MIN_RELIABILITY,
+      concurrency: e.ANALYSIS_CONCURRENCY,
+      maxAttempts: e.ANALYSIS_MAX_ATTEMPTS,
+      requestTimeoutMs: e.ANALYSIS_REQUEST_TIMEOUT_SEC * 1000,
       maxCostUsd: e.ANALYSIS_MAX_COST_USD,
       maxOutputTokens: e.ANALYSIS_MAX_OUTPUT_TOKENS,
       triageMaxOutputTokens: e.ANALYSIS_TRIAGE_MAX_OUTPUT_TOKENS,

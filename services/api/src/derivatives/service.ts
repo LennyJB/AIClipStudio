@@ -453,7 +453,10 @@ export class DerivativeService {
 
   /* -------------------------------- Handlers -------------------------------- */
 
-  handlers(): Record<Exclude<JobType, 'transcribe_recording' | 'prepare_analysis'>, JobHandler> {
+  handlers(): Record<
+    Exclude<JobType, 'transcribe_recording' | 'prepare_analysis' | 'run_analysis'>,
+    JobHandler
+  > {
     return {
       extract_transcription_audio: (job, hctx) =>
         this.runAudioJob(job, hctx, 'audio_transcription'),

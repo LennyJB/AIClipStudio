@@ -29,7 +29,7 @@ function v3WithData() {
 describe('migration 4 (analyse locale)', () => {
   it('conserve dérivés, liens, traitements et fichiers protégés', () => {
     const db = v3WithData();
-    expect(migrate(db, MIGRATIONS)).toEqual([4]);
+    expect(migrate(db, MIGRATIONS.slice(0, 4))).toEqual([4]);
     expect(db.pragma('foreign_key_check')).toEqual([]);
     expect(
       db
