@@ -711,7 +711,8 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE TRIGGER review_requests_no_delete BEFORE DELETE ON review_requests
       BEGIN SELECT RAISE(ABORT, 'review_requests : journal en ajout seul'); END;
     `,
-  },  {
+  },
+  {
     version: 7,
     name: 'clip_projects',
     // Étape 6a : projets de clip et persistance. Ajouts uniquement (docs/plan-etape-6.md §5.2).

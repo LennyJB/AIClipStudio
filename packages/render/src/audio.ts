@@ -144,7 +144,7 @@ export function describeMissing(missing: readonly MissingRequirement[]): string 
         ? m.subject === 'mix_composition'
           ? 'composition de la piste « tout » non déclarée'
           : 'présence du chat vocal dans la piste jeu non déclarée'
-        : `accord requis pour les ${CATEGORY_LABELS[m.subject]}`,
+        : `accord requis : ${CATEGORY_LABELS[m.subject]}`,
     )
     .join(' ; ');
 }

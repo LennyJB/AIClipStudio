@@ -5,6 +5,7 @@ import type { AppConfig } from './config';
 import type { Db } from './db';
 import { loggerOptions } from './logger';
 import { registerAnalysisRoutes } from './routes/analysis';
+import { registerClipRoutes } from './routes/clips';
 import { registerReviewRoutes } from './routes/review';
 import { registerRecordingRoutes } from './routes/recordings';
 import { registerStorageRoutes } from './routes/storage';
@@ -103,6 +104,7 @@ export function buildApp({ config, db, model }: AppDeps): {
   registerTranscriptionRoutes(app, ctx, services);
   registerAnalysisRoutes(app, services);
   registerReviewRoutes(app, services);
+  registerClipRoutes(app, services);
   app.addHook('onClose', async () => {
     await services.runner.stop();
   });

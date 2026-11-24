@@ -24,6 +24,7 @@
     "transcribe": "tsx scripts/transcribe.ts",
     "analyze": "tsx scripts/analyze.ts",
     "review": "tsx scripts/review.ts",
+    "render": "tsx scripts/render.ts",
     "analysis-settings": "tsx scripts/analysis-settings.ts",
     "framing": "tsx scripts/analysis-settings.ts framing",
     "test": "vitest run",

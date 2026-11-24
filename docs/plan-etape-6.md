@@ -69,43 +69,43 @@ exportable, avec sous-titres lisibles, cadrage gameplay / facecam et effets cont
 
 **Invariants conservés**
 
-| Règle | Application à l'étape 6 |
-|---|---|
-| Original jamais modifié | Source lue en `-i` uniquement ; intégrité vérifiée avant et après rendu (§6.5). |
-| `SourceMs` / `EditMs` jamais mélangés | Le projet stocke segments, sous-titres et effets en temps source ; le plan de rendu convertit en `EditMs` via `packages/timeline` uniquement. |
-| Migrations publiées intouchables | Nouvelle **migration 7** + mise à jour de `migrations-lock.test.ts`. |
-| Aucune commande générée par l'IA exécutée | `editingHint.ideas` est affiché comme texte, jamais interprété. Seul `editingHint.mode` (enum validé) présélectionne fidèle / enrichi. |
-| Pas de dialogue inventé | Sous-titres = mots de la transcription ; seules les corrections manuelles du créateur modifient le texte affiché, tracées et réversibles. |
-| Consentement des tiers | Aucune voix ni aucun texte Discord exporté sans autorisation explicite de l'enregistrement concerné. |
-| Durée 20–80 s par défaut | `effectiveClipDuration(creator, game)` ; bornes absolues 5–180 s ; hors plage effective = avertissement + confirmation. |
-| Configuration documentée | Toute variable `RENDER_*` ajoutée à `.env.example` (test existant). |
-| CI sans secret ni Claude | Aucune dépendance réseau ; FFmpeg seul. |
+| Règle                                     | Application à l'étape 6                                                                                                                       |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Original jamais modifié                   | Source lue en `-i` uniquement ; intégrité vérifiée avant et après rendu (§6.5).                                                               |
+| `SourceMs` / `EditMs` jamais mélangés     | Le projet stocke segments, sous-titres et effets en temps source ; le plan de rendu convertit en `EditMs` via `packages/timeline` uniquement. |
+| Migrations publiées intouchables          | Nouvelle **migration 7** + mise à jour de `migrations-lock.test.ts`.                                                                          |
+| Aucune commande générée par l'IA exécutée | `editingHint.ideas` est affiché comme texte, jamais interprété. Seul `editingHint.mode` (enum validé) présélectionne fidèle / enrichi.        |
+| Pas de dialogue inventé                   | Sous-titres = mots de la transcription ; seules les corrections manuelles du créateur modifient le texte affiché, tracées et réversibles.     |
+| Consentement des tiers                    | Aucune voix ni aucun texte Discord exporté sans autorisation explicite de l'enregistrement concerné.                                          |
+| Durée 20–80 s par défaut                  | `effectiveClipDuration(creator, game)` ; bornes absolues 5–180 s ; hors plage effective = avertissement + confirmation.                       |
+| Configuration documentée                  | Toute variable `RENDER_*` ajoutée à `.env.example` (test existant).                                                                           |
+| CI sans secret ni Claude                  | Aucune dépendance réseau ; FFmpeg seul.                                                                                                       |
 
 ---
 
 ## 2. Analyse de l'existant (ce qui est réutilisé)
 
-| Existant | Où | Usage à l'étape 6 |
-|---|---|---|
-| Modèle temporel `SourceMs`/`EditMs`, `SourceSegment`, `FreezeSegment`, `Timing`, `resolveTiming`, `sourceRangeToEditRanges`, `validateSegments` | `packages/timeline/src/time.ts` | Segments du projet, conversion des mots et des effets en temps de montage. |
-| Propositions : `src_start_ms`/`src_end_ms` (calés sur les mots, contexte et réaction inclus), `setup/punchline/reaction_end_segment_id`, `punchline_ms`, `editing_hint_json`, `flags` | `clip_proposals`, `services/api/src/analysis/proposals.ts` | Bornes initiales, repères éditoriaux, mode présélectionné. |
-| Décision effective par moment | `packages/memory` (`effectiveDecisions`), `ReviewService` | Seules les propositions dont la décision effective est **acceptée** peuvent être rendues. |
-| Transcriptions avec mots horodatés et rôle de piste | `transcript_segments`, `SegmentDto` | Sous-titres ; calage des bornes sur les mots. |
-| Pseudonymisation (`createPseudonymizer` : noms du fichier de confidentialité, courriels, liens, téléphones, mentions) | `packages/editorial/src/analysis/privacy.ts` | Pseudonymisation du texte **affiché** dans les sous-titres et le `.srt`. |
-| Profils de cadrage (`gameplay`, `facecam`, `masks`) validés par enregistrement avec empreinte | `profiles/framing/*.json`, `FramingProfileSchema`, `recording_analysis_settings.framing_*` | Dispositions 9:16, masquage opaque. |
-| `toPixelRect`, `frameFilter` (aplats `drawbox … color=black@1:t=fill` **avant** recadrage), `extractFrame` | `packages/media/src/frames.ts` | Même approche de masquage dans le rendu ; aperçu image fixe. |
-| Profils de jeu / créateur, `effectiveClipDuration`, `editingStyle` | `packages/shared/src/profiles.ts`, `profiles/creator.json` | Plage de durée, mode par défaut. |
-| Rôles de pistes (`mic`, `discord`, `game`, `mix`, `unknown`) | `packages/media/src/tracks.ts`, `audio_tracks` | Sélection de l'audio autorisé (§7.5). |
-| `fingerprintFile` (taille + 1er Mo + dernier Mo) | `packages/media/src/fingerprint.ts` | Contrôle rapide préalable ; insuffisant seul (§6.5). |
-| Transactions de revue (`db.transaction(...)`, mode différé par défaut) ; base en WAL, `busy_timeout = 5000` | `services/api/src/review/service.ts`, `db.ts` | Passage en `BEGIN IMMEDIATE` pour sérialiser décisions et publication des exports (§6.7). |
-| `recover()` au démarrage (travaux, transcriptions, analyses) | `services/api/src/services.ts` | Même modèle pour la récupération des rendus (§6.7). |
-| `runProcess` (sans shell, annulation, lecture ligne à ligne) | `packages/media/src/process.ts` | FFmpeg et suivi `-progress pipe:1`. |
-| `assertSafeOutputPath`, `isInside` | `packages/media/src/safe-path.ts` | Chemins de sortie. |
-| `JobRunner` (voies `heavy` / `interactive` / `analysis`, `targetKey` unique, `job_files` protégés, annulation, reprise) | `services/api/src/jobs/runner.ts` | Travaux de rendu. Colonne `type` sans `CHECK` : **aucune migration de la table des travaux**. |
-| `StorageService.clean()` (n'opère que dans `processing/`, protège les fichiers des travaux actifs, supprime `.part` et orphelins après 1 h) | `services/api/src/storage/service.ts` | À étendre : sans cela, un aperçu serait vu comme « orphelin » (§6.8). |
-| `decideRange`, `rangeHeaders`, `openServableFile` | `services/api/src/review/` | Lecture vidéo avec Range / HEAD. |
-| Fixtures FFmpeg (`createColorVideo`, `pixelAt`, `pulseMkv`, `bestLagMs`, `createTalkVideo`, `createFixtures` avec pistes Tout/Micro/Discord/Jeu) | `tests/helpers/media-fixtures.ts` | Géométrie, précision de coupe, synchronisation, sélection des pistes. |
-| `ffmpeg` local 6.1.1 : `libass`, `freetype`, `fontconfig`, `harfbuzz`, `libx264` ; filtres `subtitles`, `ass`, `drawbox`, `overlay`, `gblur`, `crop`, `scale` | vérifié dans ce conteneur | Faisabilité confirmée sous Linux. Windows CI (build gyan « essentials ») : libass **à confirmer par un test CI dès la PR 6b** ; la preuve de suffisance de l'ensemble d'octets protégé (§6.5) tourne dès la PR 6a sous Linux et Windows. |
+| Existant                                                                                                                                                                              | Où                                                                                         | Usage à l'étape 6                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Modèle temporel `SourceMs`/`EditMs`, `SourceSegment`, `FreezeSegment`, `Timing`, `resolveTiming`, `sourceRangeToEditRanges`, `validateSegments`                                       | `packages/timeline/src/time.ts`                                                            | Segments du projet, conversion des mots et des effets en temps de montage.                                                                                                                                                               |
+| Propositions : `src_start_ms`/`src_end_ms` (calés sur les mots, contexte et réaction inclus), `setup/punchline/reaction_end_segment_id`, `punchline_ms`, `editing_hint_json`, `flags` | `clip_proposals`, `services/api/src/analysis/proposals.ts`                                 | Bornes initiales, repères éditoriaux, mode présélectionné.                                                                                                                                                                               |
+| Décision effective par moment                                                                                                                                                         | `packages/memory` (`effectiveDecisions`), `ReviewService`                                  | Seules les propositions dont la décision effective est **acceptée** peuvent être rendues.                                                                                                                                                |
+| Transcriptions avec mots horodatés et rôle de piste                                                                                                                                   | `transcript_segments`, `SegmentDto`                                                        | Sous-titres ; calage des bornes sur les mots.                                                                                                                                                                                            |
+| Pseudonymisation (`createPseudonymizer` : noms du fichier de confidentialité, courriels, liens, téléphones, mentions)                                                                 | `packages/editorial/src/analysis/privacy.ts`                                               | Pseudonymisation du texte **affiché** dans les sous-titres et le `.srt`.                                                                                                                                                                 |
+| Profils de cadrage (`gameplay`, `facecam`, `masks`) validés par enregistrement avec empreinte                                                                                         | `profiles/framing/*.json`, `FramingProfileSchema`, `recording_analysis_settings.framing_*` | Dispositions 9:16, masquage opaque.                                                                                                                                                                                                      |
+| `toPixelRect`, `frameFilter` (aplats `drawbox … color=black@1:t=fill` **avant** recadrage), `extractFrame`                                                                            | `packages/media/src/frames.ts`                                                             | Même approche de masquage dans le rendu ; aperçu image fixe.                                                                                                                                                                             |
+| Profils de jeu / créateur, `effectiveClipDuration`, `editingStyle`                                                                                                                    | `packages/shared/src/profiles.ts`, `profiles/creator.json`                                 | Plage de durée, mode par défaut.                                                                                                                                                                                                         |
+| Rôles de pistes (`mic`, `discord`, `game`, `mix`, `unknown`)                                                                                                                          | `packages/media/src/tracks.ts`, `audio_tracks`                                             | Sélection de l'audio autorisé (§7.5).                                                                                                                                                                                                    |
+| `fingerprintFile` (taille + 1er Mo + dernier Mo)                                                                                                                                      | `packages/media/src/fingerprint.ts`                                                        | Contrôle rapide préalable ; insuffisant seul (§6.5).                                                                                                                                                                                     |
+| Transactions de revue (`db.transaction(...)`, mode différé par défaut) ; base en WAL, `busy_timeout = 5000`                                                                           | `services/api/src/review/service.ts`, `db.ts`                                              | Passage en `BEGIN IMMEDIATE` pour sérialiser décisions et publication des exports (§6.7).                                                                                                                                                |
+| `recover()` au démarrage (travaux, transcriptions, analyses)                                                                                                                          | `services/api/src/services.ts`                                                             | Même modèle pour la récupération des rendus (§6.7).                                                                                                                                                                                      |
+| `runProcess` (sans shell, annulation, lecture ligne à ligne)                                                                                                                          | `packages/media/src/process.ts`                                                            | FFmpeg et suivi `-progress pipe:1`.                                                                                                                                                                                                      |
+| `assertSafeOutputPath`, `isInside`                                                                                                                                                    | `packages/media/src/safe-path.ts`                                                          | Chemins de sortie.                                                                                                                                                                                                                       |
+| `JobRunner` (voies `heavy` / `interactive` / `analysis`, `targetKey` unique, `job_files` protégés, annulation, reprise)                                                               | `services/api/src/jobs/runner.ts`                                                          | Travaux de rendu. Colonne `type` sans `CHECK` : **aucune migration de la table des travaux**.                                                                                                                                            |
+| `StorageService.clean()` (n'opère que dans `processing/`, protège les fichiers des travaux actifs, supprime `.part` et orphelins après 1 h)                                           | `services/api/src/storage/service.ts`                                                      | À étendre : sans cela, un aperçu serait vu comme « orphelin » (§6.8).                                                                                                                                                                    |
+| `decideRange`, `rangeHeaders`, `openServableFile`                                                                                                                                     | `services/api/src/review/`                                                                 | Lecture vidéo avec Range / HEAD.                                                                                                                                                                                                         |
+| Fixtures FFmpeg (`createColorVideo`, `pixelAt`, `pulseMkv`, `bestLagMs`, `createTalkVideo`, `createFixtures` avec pistes Tout/Micro/Discord/Jeu)                                      | `tests/helpers/media-fixtures.ts`                                                          | Géométrie, précision de coupe, synchronisation, sélection des pistes.                                                                                                                                                                    |
+| `ffmpeg` local 6.1.1 : `libass`, `freetype`, `fontconfig`, `harfbuzz`, `libx264` ; filtres `subtitles`, `ass`, `drawbox`, `overlay`, `gblur`, `crop`, `scale`                         | vérifié dans ce conteneur                                                                  | Faisabilité confirmée sous Linux. Windows CI (build gyan « essentials ») : libass **à confirmer par un test CI dès la PR 6b** ; la preuve de suffisance de l'ensemble d'octets protégé (§6.5) tourne dès la PR 6a sous Linux et Windows. |
 
 ---
 
@@ -422,13 +422,13 @@ Règles (fonction pure `allowedAudio()`, §7.5) :
 Vérification faite sur un MKV de type OBS (H.264, GOP de 2 s, deux pistes AAC titrées
 « Micro » / « Discord ») avec FFmpeg 6.1.1 :
 
-| Constat | Mesure |
-|---|---|
-| Déterministe pour un même fichier et une même version de FFmpeg | deux calculs identiques |
-| Avec `-ss 10.3` avant `-i` et `-c copy`, la copie commence à l'**image clé précédente** (10,0 s) : la couverture dépend du GOP, pas de la fenêtre demandée | premier paquet vidéo à 10,000 s |
-| Un octet de données modifié dans la plage copiée est détecté ; hors de cette plage (y compris entre une image clé antérieure et la fenêtre) il ne l'est pas | 12 s : modifié ; 9 s et 25 s : inchangé |
-| Les **horodatages** ne sont pas couverts : tout le fichier décalé de 0,5 s donne la même empreinte, alors que la coupe serait décalée | empreintes identiques |
-| Les **métadonnées des pistes** ne sont pas couvertes : renommer la piste « Discord » en « Micro__ » (ce qui changerait la détection des rôles, donc le consentement appliqué) ne change pas l'empreinte | empreintes identiques |
+| Constat                                                                                                                                                                                                 | Mesure                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Déterministe pour un même fichier et une même version de FFmpeg                                                                                                                                         | deux calculs identiques                 |
+| Avec `-ss 10.3` avant `-i` et `-c copy`, la copie commence à l'**image clé précédente** (10,0 s) : la couverture dépend du GOP, pas de la fenêtre demandée                                              | premier paquet vidéo à 10,000 s         |
+| Un octet de données modifié dans la plage copiée est détecté ; hors de cette plage (y compris entre une image clé antérieure et la fenêtre) il ne l'est pas                                             | 12 s : modifié ; 9 s et 25 s : inchangé |
+| Les **horodatages** ne sont pas couverts : tout le fichier décalé de 0,5 s donne la même empreinte, alors que la coupe serait décalée                                                                   | empreintes identiques                   |
+| Les **métadonnées des pistes** ne sont pas couvertes : renommer la piste « Discord » en « Micro__ » (ce qui changerait la détection des rôles, donc le consentement appliqué) ne change pas l'empreinte | empreintes identiques                   |
 
 `streamhash` garantit donc seulement « mêmes données de paquets, pour les flux copiés, à partir
 de l'image clé choisie par cette version de FFmpeg ». Il ne détecte ni toute modification des
@@ -554,6 +554,7 @@ concurrentes (API, interface, CLI dans un autre processus) ou d'arrêt brutal.
    l'export ». Aucun ordre ne permet à une proposition déjà refusée de faire apparaître un
    export. La transaction B ne contient qu'un `rename` : le verrou est tenu quelques
    millisecondes.
+
 4. **Échec du renommage** (antivirus Windows, fichier verrouillé) : `ROLLBACK`, le rendu reste
    `finalizing`, nouvel essai borné (3 fois, avec délai), puis `failed` avec `RENDER_FAILED`.
    **Échec du `COMMIT` après le renommage** (erreur d'écriture) : renommage inverse vers la zone
@@ -572,12 +573,12 @@ d'autre. `exports/.staging/` n'est jamais servi.
 - rendus `finalizing` (arrêt entre la transaction A et la fin de B), traités **chacun dans une
   transaction `BEGIN IMMEDIATE`** :
 
-| État des fichiers | Décision effective et `plan_hash` valides | Sinon |
-|---|---|---|
-| Fichier en attente présent, destination absente (arrêt avant le renommage) | Reprendre la transaction B | `failed`, fichier en attente supprimé |
+| État des fichiers                                                                   | Décision effective et `plan_hash` valides                                                                                                                                        | Sinon                                                                                                                                                                 |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fichier en attente présent, destination absente (arrêt avant le renommage)          | Reprendre la transaction B                                                                                                                                                       | `failed`, fichier en attente supprimé                                                                                                                                 |
 | Destination présente, attente absente (**arrêt entre le renommage et le `COMMIT`**) | SHA-256 de la destination = `output_sha256` → `succeeded` ; différent → `failed` et fichier mis en quarantaine (`exports/.staging/quarantine/`, jamais supprimé automatiquement) | Fichier retiré de la destination (renommé vers `exports/.staging/`, puis supprimé) et `failed`. Il n'a **jamais** été un export : sa ligne n'a jamais été `succeeded` |
-| Les deux absents | `failed` (`RENDER_FAILED`) | `failed` |
-| Les deux présents (anomalie) | Destination traitée comme ci-dessus, fichier en attente supprimé | idem |
+| Les deux absents                                                                    | `failed` (`RENDER_FAILED`)                                                                                                                                                       | `failed`                                                                                                                                                              |
+| Les deux présents (anomalie)                                                        | Destination traitée comme ci-dessus, fichier en attente supprimé                                                                                                                 | idem                                                                                                                                                                  |
 
 **Autres garanties :**
 
@@ -625,11 +626,11 @@ d'autre. `exports/.staging/` n'est jamais servi.
 
 ### 7.2 Dispositions 9:16 et masquage
 
-| Préréglage | Composition |
-|---|---|
-| `facecam_top` | Facecam recadrée en haut (`facecamShare`, 0,33 par défaut), gameplay recadré dessous, centré sur `focusX`. |
-| `gameplay_crop` | Gameplay recadré plein cadre 9:16 autour de `focusX`. |
-| `blurred_fit` | Gameplay entier au centre, fond = même image agrandie et floutée. Disposition de repli. |
+| Préréglage      | Composition                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------------- |
+| `facecam_top`   | Facecam recadrée en haut (`facecamShare`, 0,33 par défaut), gameplay recadré dessous, centré sur `focusX`. |
+| `gameplay_crop` | Gameplay recadré plein cadre 9:16 autour de `focusX`.                                                      |
+| `blurred_fit`   | Gameplay entier au centre, fond = même image agrandie et floutée. Disposition de repli.                    |
 
 - **Masquage opaque** des zones `masks` du profil, appliqué **sur l'image source avant tout
   recadrage**, exactement comme `frameFilter` (`drawbox … color=black@1:t=fill`) : la zone ne peut
@@ -673,11 +674,11 @@ d'autre. `exports/.staging/` n'est jamais servi.
 
 ### 7.4 Effets contextuels (catalogue v1)
 
-| Effet | Ancrage (validé par l'acceptation) | Indice technique requis | Mode |
-|---|---|---|---|
-| `caption_emphasis` | ligne de la chute (`punchlineMs`) | aucun | fidèle + enrichi |
-| `punch_zoom` (1,00 → 1,12 puis retour, ≤ 1,5 s) | `punchlineMs` | hausse d'énergie de la piste micro dans la réaction | enrichi |
-| `reaction_hold` (léger zoom maintenu sur la facecam) | début de réaction | facecam présente + hausse d'énergie de la piste micro | enrichi |
+| Effet                                                | Ancrage (validé par l'acceptation) | Indice technique requis                               | Mode             |
+| ---------------------------------------------------- | ---------------------------------- | ----------------------------------------------------- | ---------------- |
+| `caption_emphasis`                                   | ligne de la chute (`punchlineMs`)  | aucun                                                 | fidèle + enrichi |
+| `punch_zoom` (1,00 → 1,12 puis retour, ≤ 1,5 s)      | `punchlineMs`                      | hausse d'énergie de la piste micro dans la réaction   | enrichi          |
+| `reaction_hold` (léger zoom maintenu sur la facecam) | début de réaction                  | facecam présente + hausse d'énergie de la piste micro | enrichi          |
 
 - Les mesures d'énergie (RMS) sont des **indices techniques**, jamais présentés comme une preuve
   de rire ou de réaction. Raison affichée, par exemple : « Zoom sur la chute (01:23) : le volume
@@ -697,12 +698,12 @@ d'autre. `exports/.staging/` n'est jamais servi.
 Sélection par `allowedAudio(tracks, audioState)` (`packages/render/src/audio.ts`, pure, testée
 de façon exhaustive), selon les règles du §6.4 :
 
-| Piste | Catégories de tiers possibles | Exportable si |
-|---|---|---|
-| `mic` | aucune (voix du créateur ; rappel sur le retour des haut-parleurs) | toujours |
-| `discord` | Discord | consentement `discord_voices` |
-| `game` | chat vocal du jeu | `game_composition` déclarée **et** (`gameVoiceChat: absent` **ou** consentement `game_voice_chat`) |
-| `mix`, piste unique, `unknown` | Discord, chat vocal du jeu, autres voix | `mix_composition` déclarée **et** consentement pour **chaque** catégorie déclarée `present` (`discord_voices`, `game_voice_chat`, `other_voices`) |
+| Piste                          | Catégories de tiers possibles                                      | Exportable si                                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mic`                          | aucune (voix du créateur ; rappel sur le retour des haut-parleurs) | toujours                                                                                                                                          |
+| `discord`                      | Discord                                                            | consentement `discord_voices`                                                                                                                     |
+| `game`                         | chat vocal du jeu                                                  | `game_composition` déclarée **et** (`gameVoiceChat: absent` **ou** consentement `game_voice_chat`)                                                |
+| `mix`, piste unique, `unknown` | Discord, chat vocal du jeu, autres voix                            | `mix_composition` déclarée **et** consentement pour **chaque** catégorie déclarée `present` (`discord_voices`, `game_voice_chat`, `other_voices`) |
 
 Choix de la combinaison :
 
@@ -733,22 +734,22 @@ Encodage :
 
 ## 8. API
 
-| Méthode | Route | Rôle | Erreurs principales |
-|---|---|---|---|
-| GET | `/api/recordings/:id/clips` | Propositions acceptées + projet + derniers rendus | 404 |
-| GET | `/api/recordings/:id/export-audio` | Consentements, déclarations, historique, pistes exportables et raisons | 404 |
-| POST | `/api/recordings/:id/export-audio` | `{ requestId, kind, subject, action, payload?, note? }` (schéma strict) | 400 |
-| POST | `/api/proposals/:id/clip-project` | Crée (ou renvoie) le projet | 409 `PROPOSAL_NOT_ACCEPTED` |
-| GET | `/api/clip-projects/:id` | Révision courante, avertissements, décision effective | 404 |
-| GET | `/api/clip-projects/:id/revisions` | Historique (résumés, corrections) | 404 |
-| PATCH | `/api/clip-projects/:id` | Réglages → nouvelle révision | 400, 409 `VERSION_CONFLICT` / `PROPOSAL_NOT_ACCEPTED`, 422 |
-| GET | `/api/clip-projects/:id/frame?atEditMs=` | Image fixe (JPEG) | 404, 422 |
-| POST | `/api/clip-projects/:id/renders` | Aperçu / final | 409, 422 `DURATION_OUT_OF_RANGE` / `EXPORT_CONSENT_REQUIRED`, 503 `TOOL_MISSING` |
-| GET | `/api/renders/:id` | État, progression, avertissements | 404 |
-| POST | `/api/renders/:id/cancel` | Annule | 409 |
-| GET/HEAD | `/api/renders/:id/video` | Lecture avec Range | 404, 416 |
-| GET | `/api/renders/:id/download` | Final en pièce jointe | 404, 409 |
-| GET | `/api/renders/:id/subtitles.srt` | Sous-titres | 404 |
+| Méthode  | Route                                    | Rôle                                                                    | Erreurs principales                                                              |
+| -------- | ---------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| GET      | `/api/recordings/:id/clips`              | Propositions acceptées + projet + derniers rendus                       | 404                                                                              |
+| GET      | `/api/recordings/:id/export-audio`       | Consentements, déclarations, historique, pistes exportables et raisons  | 404                                                                              |
+| POST     | `/api/recordings/:id/export-audio`       | `{ requestId, kind, subject, action, payload?, note? }` (schéma strict) | 400                                                                              |
+| POST     | `/api/proposals/:id/clip-project`        | Crée (ou renvoie) le projet                                             | 409 `PROPOSAL_NOT_ACCEPTED`                                                      |
+| GET      | `/api/clip-projects/:id`                 | Révision courante, avertissements, décision effective                   | 404                                                                              |
+| GET      | `/api/clip-projects/:id/revisions`       | Historique (résumés, corrections)                                       | 404                                                                              |
+| PATCH    | `/api/clip-projects/:id`                 | Réglages → nouvelle révision                                            | 400, 409 `VERSION_CONFLICT` / `PROPOSAL_NOT_ACCEPTED`, 422                       |
+| GET      | `/api/clip-projects/:id/frame?atEditMs=` | Image fixe (JPEG)                                                       | 404, 422                                                                         |
+| POST     | `/api/clip-projects/:id/renders`         | Aperçu / final                                                          | 409, 422 `DURATION_OUT_OF_RANGE` / `EXPORT_CONSENT_REQUIRED`, 503 `TOOL_MISSING` |
+| GET      | `/api/renders/:id`                       | État, progression, avertissements                                       | 404                                                                              |
+| POST     | `/api/renders/:id/cancel`                | Annule                                                                  | 409                                                                              |
+| GET/HEAD | `/api/renders/:id/video`                 | Lecture avec Range                                                      | 404, 416                                                                         |
+| GET      | `/api/renders/:id/download`              | Final en pièce jointe                                                   | 404, 409                                                                         |
+| GET      | `/api/renders/:id/subtitles.srt`         | Sous-titres                                                             | 404                                                                              |
 
 Entrées validées par Zod. Nouveaux codes (`packages/shared/src/errors.ts`) :
 `PROPOSAL_NOT_ACCEPTED`, `DURATION_OUT_OF_RANGE`, `EXPORT_CONSENT_REQUIRED`, `RENDER_FAILED`,
@@ -839,26 +840,26 @@ sur une fixture générée, avec le FFmpeg installé.
 
 ## 12. Gestion des erreurs et cas limites
 
-| Cas | Comportement |
-|---|---|
-| Proposition non acceptée / décision changée (même pendant un rendu) | 409, aucun nouveau rendu ; publication refusée sous verrou (§6.7) ; exports publiés avant la décision conservés et signalés |
-| Arrêt entre le renommage et la validation en base | Récupération au démarrage (§6.7) : validé si décision toujours acceptée et SHA-256 identique, sinon retiré (jamais devenu un export) |
-| Renommage impossible (fichier verrouillé) | 3 essais, puis `RENDER_FAILED` ; renommage inverse si la validation échoue |
-| Source absente / modifiée (ensemble d'octets protégé) | `MEDIA_NOT_FOUND` / `MEDIA_SOURCE_CHANGED` |
-| Structure non analysable (élément de taille inconnue, conteneur inconnu) | Méthode `full_file` (plus lente) + avertissement |
-| Pas de flux vidéo | `MEDIA_UNSUPPORTED` |
-| Piste non exportable demandée ; `mix` ou `game` sans déclaration ; catégorie `present` sans consentement | `EXPORT_CONSENT_REQUIRED`, avec la déclaration ou le consentement manquant |
-| Consentement révoqué / déclaration modifiée | Nouveau `plan_hash`, rendus antérieurs non réutilisés, exports signalés |
-| Profil de cadrage non validé ou modifié | Repli `blurred_fit` + avertissement |
-| Masques désactivés | Avertissement `MASKS_DISABLED` partout |
-| Fichier de confidentialité invalide | `PRIVACY_CONFIG_INVALID`, rendu refusé |
-| Transcription absente | Projet sans sous-titres + avertissement |
-| Durée hors plage effective / hors 5–180 s | 422 tant que non confirmée / refus |
-| FFmpeg sans libass ou libx264 ; preuve de suffisance en échec (`doctor --render`) | `TOOL_MISSING` / rendu refusé avec message explicite |
-| Échec FFmpeg | `RENDER_FAILED` + fin de stderr (chemins absolus retirés), `.part` supprimé |
-| Annulation / arrêt du serveur | Temporaires supprimés par chemins exacts ; `renders.recover()` au démarrage |
-| Espace disque insuffisant | Refus avant lancement |
-| Double clic / relance | Idempotence `requestId` + `plan_hash` unique |
+| Cas                                                                                                      | Comportement                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Proposition non acceptée / décision changée (même pendant un rendu)                                      | 409, aucun nouveau rendu ; publication refusée sous verrou (§6.7) ; exports publiés avant la décision conservés et signalés          |
+| Arrêt entre le renommage et la validation en base                                                        | Récupération au démarrage (§6.7) : validé si décision toujours acceptée et SHA-256 identique, sinon retiré (jamais devenu un export) |
+| Renommage impossible (fichier verrouillé)                                                                | 3 essais, puis `RENDER_FAILED` ; renommage inverse si la validation échoue                                                           |
+| Source absente / modifiée (ensemble d'octets protégé)                                                    | `MEDIA_NOT_FOUND` / `MEDIA_SOURCE_CHANGED`                                                                                           |
+| Structure non analysable (élément de taille inconnue, conteneur inconnu)                                 | Méthode `full_file` (plus lente) + avertissement                                                                                     |
+| Pas de flux vidéo                                                                                        | `MEDIA_UNSUPPORTED`                                                                                                                  |
+| Piste non exportable demandée ; `mix` ou `game` sans déclaration ; catégorie `present` sans consentement | `EXPORT_CONSENT_REQUIRED`, avec la déclaration ou le consentement manquant                                                           |
+| Consentement révoqué / déclaration modifiée                                                              | Nouveau `plan_hash`, rendus antérieurs non réutilisés, exports signalés                                                              |
+| Profil de cadrage non validé ou modifié                                                                  | Repli `blurred_fit` + avertissement                                                                                                  |
+| Masques désactivés                                                                                       | Avertissement `MASKS_DISABLED` partout                                                                                               |
+| Fichier de confidentialité invalide                                                                      | `PRIVACY_CONFIG_INVALID`, rendu refusé                                                                                               |
+| Transcription absente                                                                                    | Projet sans sous-titres + avertissement                                                                                              |
+| Durée hors plage effective / hors 5–180 s                                                                | 422 tant que non confirmée / refus                                                                                                   |
+| FFmpeg sans libass ou libx264 ; preuve de suffisance en échec (`doctor --render`)                        | `TOOL_MISSING` / rendu refusé avec message explicite                                                                                 |
+| Échec FFmpeg                                                                                             | `RENDER_FAILED` + fin de stderr (chemins absolus retirés), `.part` supprimé                                                          |
+| Annulation / arrêt du serveur                                                                            | Temporaires supprimés par chemins exacts ; `renders.recover()` au démarrage                                                          |
+| Espace disque insuffisant                                                                                | Refus avant lancement                                                                                                                |
+| Double clic / relance                                                                                    | Idempotence `requestId` + `plan_hash` unique                                                                                         |
 
 ---
 
@@ -956,19 +957,19 @@ lancés (local + CI).
 
 ## 14. Décisions validées
 
-| # | Sujet | Décision |
-|---|---|---|
-| 1 | Moteur | FFmpeg seul pour l'étape 6 ; Remotion réévalué pour l'aperçu interactif de l'étape 7. |
-| 2 | Numérotation | 6 = moteur de rendu, 7 = éditeur complet ; feuille de route et architecture mises à jour (PR 6a). |
-| 3 | Voix de tiers et confidentialité | Micro par défaut ; Discord (sous-titres **et audio exporté**) uniquement avec autorisation explicite de l'enregistrement ; `mix` et piste jeu soumises à une déclaration de composition et à un consentement par catégorie de voix présente (§6.4) ; pseudonymisation des informations personnelles affichées, tracée, transcription originale intacte. |
-| 4 | Zones sensibles | Masquage **opaque** par défaut (approche `frames.ts`), désactivable par clip avec avertissement. |
-| 5 | Polices | Montserrat ExtraBold et Inter, licences OFL jointes. |
-| 6 | Durée | 20–80 s par défaut (ou profil) ; bornes absolues 5–180 s ; hors plage effective = avertissement + confirmation explicite. |
-| 7 | Bornes | Ajustement ±10 s, calé sur les mots, alertes contexte / réaction. |
-| 8 | Sous-titres | Correction manuelle du texte, original conservé, corrections tracées. |
-| 9 | Volume | −14 LUFS par défaut, désactivable. |
-| 10 | Images par seconde | Fréquence source plafonnée à 60 i/s. |
-| 11 | Découpage | Trois PR successives (6a, 6b, 6c), chacune relue, validée et fusionnée avant la suivante. |
+| #   | Sujet                            | Décision                                                                                                                                                                                                                                                                                                                                                |
+| --- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Moteur                           | FFmpeg seul pour l'étape 6 ; Remotion réévalué pour l'aperçu interactif de l'étape 7.                                                                                                                                                                                                                                                                   |
+| 2   | Numérotation                     | 6 = moteur de rendu, 7 = éditeur complet ; feuille de route et architecture mises à jour (PR 6a).                                                                                                                                                                                                                                                       |
+| 3   | Voix de tiers et confidentialité | Micro par défaut ; Discord (sous-titres **et audio exporté**) uniquement avec autorisation explicite de l'enregistrement ; `mix` et piste jeu soumises à une déclaration de composition et à un consentement par catégorie de voix présente (§6.4) ; pseudonymisation des informations personnelles affichées, tracée, transcription originale intacte. |
+| 4   | Zones sensibles                  | Masquage **opaque** par défaut (approche `frames.ts`), désactivable par clip avec avertissement.                                                                                                                                                                                                                                                        |
+| 5   | Polices                          | Montserrat ExtraBold et Inter, licences OFL jointes.                                                                                                                                                                                                                                                                                                    |
+| 6   | Durée                            | 20–80 s par défaut (ou profil) ; bornes absolues 5–180 s ; hors plage effective = avertissement + confirmation explicite.                                                                                                                                                                                                                               |
+| 7   | Bornes                           | Ajustement ±10 s, calé sur les mots, alertes contexte / réaction.                                                                                                                                                                                                                                                                                       |
+| 8   | Sous-titres                      | Correction manuelle du texte, original conservé, corrections tracées.                                                                                                                                                                                                                                                                                   |
+| 9   | Volume                           | −14 LUFS par défaut, désactivable.                                                                                                                                                                                                                                                                                                                      |
+| 10  | Images par seconde               | Fréquence source plafonnée à 60 i/s.                                                                                                                                                                                                                                                                                                                    |
+| 11  | Découpage                        | Trois PR successives (6a, 6b, 6c), chacune relue, validée et fusionnée avant la suivante.                                                                                                                                                                                                                                                               |
 
 Corrections de relecture intégrées :
 
@@ -986,11 +987,11 @@ Chaque PR part de `main` à jour, passe `npm run check` et la CI complète (Wind
 le modèle de PR, et attend ta relecture, ta validation et ta fusion avant le début de la
 suivante. Aucune PR n'est fusionnée par moi.
 
-| PR | Branche | Contenu | FFmpeg |
-|---|---|---|---|
-| **6a** | `feature/etape-6a-projet-clip` | Schéma `ClipProject` v1, `projectFromProposal`, `adjustBounds`, sous-titres (regroupement, `EditMs`, corrections, pseudonymisation), `allowedAudio()` pure, migration 7 + verrou, audio exporté (consentements, déclarations : service, routes, CLI), garde de décision, passage des transactions de revue en `BEGIN IMMEDIATE`, manifeste d'intégrité (`packages/media/src/integrity.ts`) avec preuve de suffisance, routes projets, CLI `--list/--create/--audio/--consent/--declare-*`, docs (renumérotation, architecture §12, ce plan) | `ffprobe` (positions des paquets) et preuve de suffisance (`framemd5`) |
-| **6b** | `feature/etape-6b-rendu-ffmpeg` | `packages/render` (dispositions, masques, ASS/SRT, effets v1, plan, arguments, progression, exécution), travaux `render_clip`, contrôles avant / après rendu, **protocole de publication sous verrou et `renders.recover()`** avec tests de concurrence et de récupération, extension du nettoyage, routes rendu / vidéo / téléchargement / image fixe, polices OFL, `doctor`, variables `RENDER_*`, CLI `--preview/--final`, tests d'intégration FFmpeg (Linux + Windows) | oui |
-| **6c** | `feature/etape-6c-interface-clips` | Onglet « Clips », bloc « Audio exporté », réglages, aperçu, export, tests composants, `docs/rendu-clips.md`, compte rendu de l'étape | non |
+| PR     | Branche                            | Contenu                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | FFmpeg                                                                 |
+| ------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **6a** | `feature/etape-6a-projet-clip`     | Schéma `ClipProject` v1, `projectFromProposal`, `adjustBounds`, sous-titres (regroupement, `EditMs`, corrections, pseudonymisation), `allowedAudio()` pure, migration 7 + verrou, audio exporté (consentements, déclarations : service, routes, CLI), garde de décision, passage des transactions de revue en `BEGIN IMMEDIATE`, manifeste d'intégrité (`packages/media/src/integrity.ts`) avec preuve de suffisance, routes projets, CLI `--list/--create/--audio/--consent/--declare-*`, docs (renumérotation, architecture §12, ce plan) | `ffprobe` (positions des paquets) et preuve de suffisance (`framemd5`) |
+| **6b** | `feature/etape-6b-rendu-ffmpeg`    | `packages/render` (dispositions, masques, ASS/SRT, effets v1, plan, arguments, progression, exécution), travaux `render_clip`, contrôles avant / après rendu, **protocole de publication sous verrou et `renders.recover()`** avec tests de concurrence et de récupération, extension du nettoyage, routes rendu / vidéo / téléchargement / image fixe, polices OFL, `doctor`, variables `RENDER_*`, CLI `--preview/--final`, tests d'intégration FFmpeg (Linux + Windows)                                                                  | oui                                                                    |
+| **6c** | `feature/etape-6c-interface-clips` | Onglet « Clips », bloc « Audio exporté », réglages, aperçu, export, tests composants, `docs/rendu-clips.md`, compte rendu de l'étape                                                                                                                                                                                                                                                                                                                                                                                                        | non                                                                    |
 
 ---
 
