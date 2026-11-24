@@ -99,8 +99,10 @@ export function renderTranscript(
   range: TimeRange,
   policy: TransmissionPolicy,
   pseudonymizer: Pseudonymizer,
-): { text: string; stats: RenderStats } {
+): { text: string; stats: RenderStats; sentTexts: Map<number, string> } {
   const stats = emptyStats();
+  /** Texte EXACT transmis pour chaque segment (référence pour vérifier les citations). */
+  const sentTexts = new Map<number, string>();
   type Line = { at: number; end: number; order: number; text: string };
   const lines: Line[] = [];
   const inRange = segments.filter((s) => s.endMs > range.startMs && s.startMs < range.endMs);
@@ -129,6 +131,7 @@ export function renderTranscript(
       stats.masked[k] += p.masked[k];
     stats.transmittedSegments += 1;
     stats.segmentIds.push(s.id);
+    sentTexts.set(s.id, p.text);
     lines.push({
       at: s.startMs,
       end: s.endMs,
@@ -166,7 +169,7 @@ export function renderTranscript(
   if (range.endMs - lastAt >= GAP_SUMMARY_MS) {
     out.push(`[… ${formatDuration(range.endMs - lastAt)} sans parole transmise …]`);
   }
-  return { text: [UNTRUSTED_OPEN, ...out, UNTRUSTED_CLOSE].join('\n'), stats };
+  return { text: [UNTRUSTED_OPEN, ...out, UNTRUSTED_CLOSE].join('\n'), stats, sentTexts };
 }
 
 /* ------------------------------ Repérage global ------------------------------ */
@@ -178,6 +181,7 @@ export interface TriageChunk {
   endMs: number;
   text: string;
   stats: RenderStats;
+  sentTexts: Map<number, string>;
   estimatedTokens: number;
 }
 
@@ -219,7 +223,12 @@ export function buildTriageChunks(input: {
   const queue = [...pieces];
   while (queue.length) {
     const r = queue.shift()!;
-    const { text, stats } = renderTranscript(input.segments, r, input.policy, input.pseudonymizer);
+    const { text, stats, sentTexts } = renderTranscript(
+      input.segments,
+      r,
+      input.policy,
+      input.pseudonymizer,
+    );
     if (!stats.transmittedSegments) continue; // rien d'autorisé à transmettre dans cette tranche
     const estimatedTokens = estimateTextTokens(text);
     if (estimatedTokens > TRIAGE_CHUNK_TOKEN_CEILING && r.endMs - r.startMs > 60_000) {
@@ -227,7 +236,7 @@ export function buildTriageChunks(input: {
       queue.unshift({ startMs: r.startMs, endMs: mid }, { startMs: mid, endMs: r.endMs });
       continue;
     }
-    rendered.push({ startMs: r.startMs, endMs: r.endMs, text, stats, estimatedTokens });
+    rendered.push({ startMs: r.startMs, endMs: r.endMs, text, stats, sentTexts, estimatedTokens });
   }
   return rendered.map((c, i) => {
     const header = `Tranche ${i + 1}/${rendered.length} : ${formatClock(c.startMs, false)} → ${formatClock(c.endMs, false)}\n${LEGEND}\n`;
@@ -257,6 +266,7 @@ export interface PreparedFrame {
 export interface WindowPayload {
   text: string;
   stats: RenderStats;
+  sentTexts: Map<number, string>;
   estimatedTextTokens: number;
 }
 
@@ -329,6 +339,7 @@ export function buildWindowPayload(input: {
   return {
     text,
     stats: mergeStats(far.stats, near.stats),
+    sentTexts: new Map([...far.sentTexts, ...near.sentTexts]),
     estimatedTextTokens: estimateTextTokens(text),
   };
 }
