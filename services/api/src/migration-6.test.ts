@@ -34,7 +34,7 @@ describe('migration 6 (validation et mémoire éditoriale)', () => {
     db.prepare(RUN).run();
     db.prepare(PROPOSAL).run('p1');
     const before = db.prepare('SELECT * FROM clip_proposals').all();
-    expect(migrate(db, MIGRATIONS)).toEqual([6]);
+    expect(migrate(db, MIGRATIONS.slice(0, 6))).toEqual([6]);
     expect(db.prepare('SELECT * FROM clip_proposals').all()).toEqual(before);
     expect(db.prepare('SELECT COUNT(*) AS n FROM proposal_reviews').get()).toEqual({ n: 0 });
     expect(db.pragma('foreign_key_check')).toEqual([]);

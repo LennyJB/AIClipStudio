@@ -711,6 +711,127 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE TRIGGER review_requests_no_delete BEFORE DELETE ON review_requests
       BEGIN SELECT RAISE(ABORT, 'review_requests : journal en ajout seul'); END;
     `,
+  },  {
+    version: 7,
+    name: 'clip_projects',
+    // Étape 6a : projets de clip et persistance. Ajouts uniquement (docs/plan-etape-6.md §5.2).
+    //  - export_audio_events : consentements (voix de tiers) et déclarations de composition des
+    //    pistes, par enregistrement, en ajout seul. Distincts de l'accord « texte Discord envoyé à
+    //    Claude » (migration 4) : finalités différentes.
+    //  - source_integrity_manifests : ensemble d'octets protégé d'une fenêtre source (§6.5).
+    //  - clip_projects / clip_project_revisions : document du projet, révisions immuables. La
+    //    décision effective n'y est JAMAIS copiée : elle est recalculée depuis proposal_reviews.
+    //  - clip_renders : rendus (utilisés à partir de l'étape 6b).
+    sql: `
+      CREATE TABLE export_audio_events (
+        seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+        id            TEXT NOT NULL UNIQUE,
+        recording_id  TEXT NOT NULL REFERENCES recordings(id),
+        kind          TEXT NOT NULL CHECK (kind IN ('consent','declaration')),
+        subject       TEXT NOT NULL CHECK (subject IN (
+                        'discord_voices','game_voice_chat','other_voices',
+                        'mix_composition','game_composition')),
+        action        TEXT NOT NULL CHECK (action IN ('granted','revoked','declared')),
+        payload_json  TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),
+        note          TEXT CHECK (note IS NULL OR length(note) <= 500),
+        request_id    TEXT NOT NULL UNIQUE,
+        source        TEXT NOT NULL CHECK (source IN ('ui','cli','api')),
+        created_at    TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK ((kind = 'consent'
+                  AND subject IN ('discord_voices','game_voice_chat','other_voices')
+                  AND action IN ('granted','revoked') AND payload_json IS NULL)
+            OR (kind = 'declaration'
+                  AND subject IN ('mix_composition','game_composition')
+                  AND action = 'declared' AND payload_json IS NOT NULL))
+      );
+      CREATE INDEX export_audio_events_recording_idx ON export_audio_events(recording_id, seq);
+      CREATE TRIGGER export_audio_events_no_update BEFORE UPDATE ON export_audio_events
+      BEGIN SELECT RAISE(ABORT, 'export_audio_events : journal en ajout seul'); END;
+      CREATE TRIGGER export_audio_events_no_delete BEFORE DELETE ON export_audio_events
+      BEGIN SELECT RAISE(ABORT, 'export_audio_events : journal en ajout seul'); END;
+
+      CREATE TABLE source_integrity_manifests (
+        id               TEXT PRIMARY KEY,
+        recording_id     TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        method           TEXT NOT NULL CHECK (method IN ('byte_ranges','full_file')),
+        container        TEXT NOT NULL,
+        file_size        INTEGER NOT NULL CHECK (file_size >= 0),
+        window_start_ms  INTEGER NOT NULL CHECK (window_start_ms >= 0),
+        window_end_ms    INTEGER NOT NULL,
+        probe_bytes      INTEGER NOT NULL CHECK (probe_bytes >= 0),
+        ranges_json      TEXT NOT NULL CHECK (json_valid(ranges_json)),
+        protected_bytes  INTEGER NOT NULL CHECK (protected_bytes >= 0),
+        sha256           TEXT NOT NULL CHECK (length(sha256) = 64),
+        algo_version     INTEGER NOT NULL CHECK (algo_version >= 1),
+        created_at       TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK (window_start_ms < window_end_ms)
+      );
+      CREATE INDEX source_integrity_manifests_recording_idx
+        ON source_integrity_manifests(recording_id);
+      CREATE TRIGGER source_integrity_manifests_frozen BEFORE UPDATE ON source_integrity_manifests
+      BEGIN SELECT RAISE(ABORT, 'source_integrity_manifests : un manifeste est figé'); END;
+
+      CREATE TABLE clip_projects (
+        id                TEXT PRIMARY KEY,
+        proposal_id       TEXT NOT NULL UNIQUE REFERENCES clip_proposals(id),
+        recording_id      TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        current_revision  INTEGER NOT NULL CHECK (current_revision >= 1),
+        created_at        TEXT NOT NULL DEFAULT (${NOW}),
+        updated_at        TEXT NOT NULL DEFAULT (${NOW})
+      );
+      CREATE INDEX clip_projects_recording_idx ON clip_projects(recording_id);
+
+      CREATE TABLE clip_project_revisions (
+        project_id      TEXT NOT NULL REFERENCES clip_projects(id) ON DELETE CASCADE,
+        revision        INTEGER NOT NULL CHECK (revision >= 1),
+        schema_version  INTEGER NOT NULL CHECK (schema_version >= 1),
+        document_json   TEXT NOT NULL CHECK (json_valid(document_json)),
+        document_hash   TEXT NOT NULL CHECK (length(document_hash) = 64),
+        change_summary  TEXT CHECK (change_summary IS NULL OR length(change_summary) <= 500),
+        request_id      TEXT NOT NULL,
+        source          TEXT NOT NULL CHECK (source IN ('ui','cli','api','system')),
+        created_at      TEXT NOT NULL DEFAULT (${NOW}),
+        PRIMARY KEY (project_id, revision),
+        UNIQUE (project_id, request_id)
+      );
+      CREATE TRIGGER clip_project_revisions_frozen BEFORE UPDATE ON clip_project_revisions
+      BEGIN SELECT RAISE(ABORT, 'clip_project_revisions : une révision est immuable'); END;
+
+      CREATE TABLE clip_renders (
+        id                TEXT PRIMARY KEY,
+        project_id        TEXT NOT NULL REFERENCES clip_projects(id) ON DELETE CASCADE,
+        revision          INTEGER NOT NULL,
+        kind              TEXT NOT NULL CHECK (kind IN ('preview','final')),
+        status            TEXT NOT NULL CHECK (status IN
+                            ('queued','running','finalizing','succeeded','failed','cancelled','evicted')),
+        plan_hash         TEXT NOT NULL,
+        job_id            TEXT,
+        staging_rel_path  TEXT,
+        output_rel_path   TEXT,
+        output_sha256     TEXT,
+        srt_rel_path      TEXT,
+        size_bytes        INTEGER,
+        duration_ms       INTEGER,
+        width             INTEGER,
+        height            INTEGER,
+        toolchain_json    TEXT CHECK (toolchain_json IS NULL OR json_valid(toolchain_json)),
+        warnings_json     TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(warnings_json)),
+        error_code        TEXT,
+        error_message     TEXT,
+        last_served_at    TEXT,
+        created_at        TEXT NOT NULL DEFAULT (${NOW}),
+        finished_at       TEXT,
+        FOREIGN KEY (project_id, revision) REFERENCES clip_project_revisions(project_id, revision),
+        CHECK (kind = 'preview' OR status <> 'evicted'),
+        CHECK (status <> 'finalizing' OR (staging_rel_path IS NOT NULL
+                                          AND output_rel_path IS NOT NULL
+                                          AND output_sha256 IS NOT NULL)),
+        CHECK (status <> 'succeeded' OR (output_rel_path IS NOT NULL AND output_sha256 IS NOT NULL))
+      );
+      CREATE UNIQUE INDEX clip_renders_active ON clip_renders(plan_hash, kind)
+        WHERE status IN ('queued','running','finalizing','succeeded');
+      CREATE INDEX clip_renders_project_idx ON clip_renders(project_id, created_at);
+    `,
   },
 ];
 

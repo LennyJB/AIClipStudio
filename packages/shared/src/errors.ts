@@ -37,6 +37,9 @@ export type AppErrorCode =
   | 'PROPOSAL_NOT_REVIEWABLE'
   | 'AUDIO_TRACK_MISSING'
   | 'NOT_READY'
+  | 'PROPOSAL_NOT_ACCEPTED'
+  | 'EXPORT_CONSENT_REQUIRED'
+  | 'DURATION_OUT_OF_RANGE'
   | 'INTERNAL';
 
 export class AppError extends Error {
