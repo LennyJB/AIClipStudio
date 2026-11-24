@@ -14,7 +14,9 @@
  *   npm run analyze -- <id> --run --no-review         tout enchaîner sans pause (explicite)
  *   npm run analyze -- <id> --run --yes               confirmation du plafond sans question (la pause
  *                                                     de relecture reste : --continue ensuite)
- *   npm run analyze -- <id> --run --force             nouvelle analyse (réponses identiques réutilisées, 0 $)
+ *   npm run analyze -- <id> --run --force             nouvelle analyse (réponses identiques réutilisées, 0 $) ;
+ *                                                     remplace une analyse en pause ; refusé si une
+ *                                                     analyse identique est en cours
  *   npm run analyze -- <id> --run --force-recall      nouvelle analyse qui redemande TOUT à Claude (payant)
  *
  * Résultats :

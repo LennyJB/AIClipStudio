@@ -362,6 +362,26 @@ rien. `--force` lance une **nouvelle** analyse, avec un nouveau plafond (après 
 confirmation) ; les réponses déjà obtenues y sont relues pour 0 $. Le plafond est donc **par
 analyse** ; le coût cumulé d'un enregistrement est visible avec `--costs`.
 
+#### `--force` et `--force-recall` selon l'état de l'analyse identique la plus récente
+
+Les deux options demandent une **nouvelle** analyse ; `--force-recall` interdit en plus de relire
+les réponses obtenues par une autre analyse (tout est redemandé, payant).
+
+| Analyse identique existante       | Sans option                         | `--force` / `--force-recall`                                                                                                                                |
+| --------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Aucune                            | Nouvelle analyse                    | Nouvelle analyse                                                                                                                                            |
+| Terminée ou arrêtée par le budget | Renvoyée telle quelle (0 $)         | Nouvelle analyse (nouveau plafond)                                                                                                                          |
+| Interrompue, en échec ou annulée  | Reprise (même analyse, même budget) | Nouvelle analyse ; l'ancienne n'est plus reprise                                                                                                            |
+| **En pause de relecture**         | Renvoyée, toujours en pause         | **Remplacée** : l'ancienne est fermée (`cancelled`, code `SUPERSEDED`, plus approuvable ni reprise) et une nouvelle analyse est créée, dans une transaction |
+| **En file ou en cours**           | Renvoyée (suivi de son traitement)  | **Refus** (`CONFLICT`) : attendre sa fin ou annuler son traitement (le message donne l'identifiant et `POST /api/jobs/<id>/cancel`)                         |
+
+Pourquoi ces deux derniers cas : une analyse en pause n'a **aucun appel en vol ni aucune
+réservation** (le repérage est terminé et payé), la remplacer ne perd rien et ses réponses de
+repérage restent relues pour 0 $ par la nouvelle (sauf `--force-recall`). Une analyse en cours
+peut avoir un appel en vol : en lancer une seconde en parallèle doublerait l'exposition budgétaire
+et ferait payer deux fois les mêmes requêtes ; l'annuler d'office pourrait faire facturer un appel
+coupé. On refuse donc, et le créateur choisit.
+
 - **Réutilisation** : une requête identique (même empreinte) déjà aboutie — réussie, refusée ou
   tronquée — n'est jamais rappelée : sa réponse est relue pour 0 $. `--force-recall` crée une
   **nouvelle analyse** qui redemande tout à Claude (payant) ; à sa reprise, seuls ses propres

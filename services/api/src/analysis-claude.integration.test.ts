@@ -479,6 +479,105 @@ describe.skipIf(!enabled)('Analyse avec Claude (faux modèle, aucun appel réel)
     expect((await call('POST', url, { acceptBudgetUsd: 5 })).status).toBe(409);
   });
 
+  it('--force sur une analyse en pause : elle est remplacée (fermée, plus approuvable), la nouvelle réutilise le repérage', async () => {
+    await setup(smart);
+    const rec = await importAndTranscribe();
+    const a = await analyze(rec.id, { review: undefined });
+    expect(a.run).toMatchObject({ status: 'pending', stage: 'awaiting_review' });
+    const triage = model.calls.filter((c) => c.stage === 'triage').length;
+
+    const b = await analyze(rec.id, { review: undefined, force: true });
+    expect(b.run!.id).not.toBe(a.run!.id);
+    expect(b.run).toMatchObject({ status: 'pending', stage: 'awaiting_review' });
+    // Réponses du repérage relues pour 0 $ : aucun nouvel appel, aucun appel Opus.
+    expect(model.calls.filter((c) => c.stage === 'triage')).toHaveLength(triage);
+    expect(model.calls.filter((c) => c.stage === 'deep')).toHaveLength(0);
+    expect(b.calls.every((c) => c.status === 'reused' && c.costUsd === 0)).toBe(true);
+
+    // L'ancienne analyse est fermée : ni approuvable, ni reprise.
+    const old = services.analysis.repo.getRun(a.run!.id)!;
+    expect(old).toMatchObject({ status: 'cancelled', error: { code: 'SUPERSEDED' } });
+    expect(
+      (await call('POST', `/api/analyses/${a.run!.id}/approve-review`, { acceptBudgetUsd: 5 }))
+        .status,
+    ).toBe(409);
+    const again = await analyze(rec.id, { review: undefined });
+    expect(again.run!.id).toBe(b.run!.id); // la nouvelle pause, pas l'ancienne
+
+    // La nouvelle analyse s'approuve et se termine normalement.
+    expect(
+      (await call('POST', `/api/analyses/${b.run!.id}/approve-review`, { acceptBudgetUsd: 5 }))
+        .status,
+    ).toBe(202);
+    await services.runner.idle();
+    expect(services.analysis.repo.getRun(b.run!.id)).toMatchObject({ status: 'completed' });
+    expect(model.calls.filter((c) => c.stage === 'deep')).toHaveLength(2);
+    expect(services.analysis.listRuns(rec.id).filter((r) => r.mode === 'claude')).toHaveLength(2);
+  });
+
+  it('--force-recall sur une analyse en pause : remplacée, et le repérage est réellement redemandé', async () => {
+    await setup(smart);
+    const rec = await importAndTranscribe();
+    const a = await analyze(rec.id, { review: undefined });
+    const triage = model.calls.filter((c) => c.stage === 'triage').length;
+    const b = await analyze(rec.id, { review: undefined, forceRecall: true });
+    expect(b.run!.id).not.toBe(a.run!.id);
+    expect(b.run).toMatchObject({ status: 'pending', stage: 'awaiting_review', forceRecall: true });
+    expect(model.calls.filter((c) => c.stage === 'triage')).toHaveLength(2 * triage);
+    expect(services.analysis.repo.getRun(a.run!.id)).toMatchObject({
+      status: 'cancelled',
+      error: { code: 'SUPERSEDED' },
+    });
+    // Une seconde demande --force-recall remplace à son tour la nouvelle pause (jamais l'ancienne).
+    const c = await analyze(rec.id, { review: undefined, forceRecall: true });
+    expect(c.run!.id).not.toBe(b.run!.id);
+    expect(services.analysis.repo.getRun(b.run!.id)!.error?.code).toBe('SUPERSEDED');
+    expect(services.analysis.repo.getRun(a.run!.id)!.status).toBe('cancelled');
+  });
+
+  it('--force pendant une analyse en cours : refus explicite (jamais deux analyses payantes simultanées), puis nouvelle analyse après annulation', async () => {
+    let hang = true;
+    const slow: Script = (req, i) =>
+      req.stage === 'deep' && hang ? { kind: 'hang' } : smart(req, i);
+    await setup(slow);
+    const rec = await importAndTranscribe();
+    const url = `/api/recordings/${rec.id}/analyses`;
+    const body = { mode: 'claude', acceptBudgetUsd: 5, review: false };
+    const first = await call<{ run: AnalysisRunDto; job: { id: string } }>('POST', url, body);
+    while (!model.calls.some((c) => c.stage === 'deep'))
+      await new Promise((x) => setTimeout(x, 20));
+    const runId = first.body.run.id;
+    expect(services.analysis.repo.getRun(runId)!.status).toBe('running');
+
+    // Sans option : la même analyse est renvoyée (aucune nouvelle).
+    const same = await call<{ run: AnalysisRunDto }>('POST', url, body);
+    expect(same.body.run.id).toBe(runId);
+    // --force et --force-recall : refusés, avec l'analyse et le traitement à annuler.
+    for (const opt of [{ force: true }, { forceRecall: true }]) {
+      const r = await call<{ error: { code: string; message: string } }>('POST', url, {
+        ...body,
+        ...opt,
+      });
+      expect(r.status).toBe(409);
+      expect(r.body.error.code).toBe('CONFLICT');
+      expect(r.body.error.message).toContain(runId);
+      expect(r.body.error.message).toContain(`/api/jobs/${first.body.job.id}/cancel`);
+    }
+    expect(services.analysis.listRuns(rec.id).filter((x) => x.mode === 'claude')).toHaveLength(1);
+
+    // Annulation : l'appel en vol est compté au pire cas, puis --force crée une nouvelle analyse.
+    await call('POST', `/api/jobs/${first.body.job.id}/cancel`, {});
+    await services.runner.idle();
+    const cancelled = services.analysis.repo.getRun(runId)!;
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled.reservedUsd).toBe(0);
+    hang = false;
+    const b = await analyze(rec.id, { force: true });
+    expect(b.run!.id).not.toBe(runId);
+    expect(b.run).toMatchObject({ status: 'completed' });
+    expect(services.analysis.repo.getRun(runId)!.status).toBe('cancelled'); // jamais reprise
+  });
+
   it('zéro clip est un résultat normal ; une nouvelle analyse réutilise toutes les réponses (0 $)', async () => {
     const none: Script = (req) =>
       req.stage === 'triage'

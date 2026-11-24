@@ -48,6 +48,8 @@ export type AnalysisRunStatus =
 
 /** Étape d'une analyse avec Claude en pause, en attente de la relecture des requêtes Opus. */
 export const AWAITING_REVIEW = 'awaiting_review';
+/** Code d'une analyse en pause remplacée par une nouvelle (jamais reprise). */
+export const SUPERSEDED = 'SUPERSEDED';
 
 /** Ce qui est montré au créateur pendant la pause de relecture. */
 export interface ReviewInfo {
@@ -365,7 +367,9 @@ export class AnalysisRepository {
     const r = this.db
       .prepare(
         `SELECT * FROM analysis_runs WHERE input_key = ? AND mode = ? AND force_recall = ?
-           AND status IN ('interrupted','failed','cancelled') ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+           AND status IN ('interrupted','failed','cancelled')
+           AND COALESCE(error_code, '') <> '${SUPERSEDED}'
+           ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(inputKey, mode, forceRecall ? 1 : 0) as RunRow | undefined;
     return r ? toRun(r) : null;
@@ -518,6 +522,23 @@ export class AnalysisRepository {
            config_json = json_set(config_json, '$.review', json(?)), updated_at = ${NOW} WHERE id = ?`,
       )
       .run(JSON.stringify(info), id);
+  }
+
+  /**
+   * Analyse en pause de relecture remplacée par une nouvelle (`--force`) : fermée, elle ne peut
+   * plus être approuvée ni reprise. Rien n'était en vol ni réservé pendant la pause.
+   */
+  supersede(id: string, byRunId: string): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE analysis_runs SET status = 'cancelled', error_code = '${SUPERSEDED}',
+             error_message = ?, completed_at = ${NOW}, updated_at = ${NOW}
+           WHERE id = ? AND status = 'pending' AND stage = '${AWAITING_REVIEW}'`,
+        )
+        .run(`Remplacée par une nouvelle analyse (${byRunId}) avant toute requête Opus`, id)
+        .changes === 1
+    );
   }
 
   /** Relecture faite : l'analyse approfondie est autorisée (une seule fois, sur une pause). */

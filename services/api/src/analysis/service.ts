@@ -61,7 +61,12 @@ import {
 import type { AppContext } from '../context';
 import type { DerivativeService, FrameRequest } from '../derivatives/service';
 import type { JobHandler, JobHandlerContext, JobRunner } from '../jobs/runner';
-import { RecordingRepository, type JobDto, type RecordingDto } from '../recordings/repository';
+import {
+  JobRepository,
+  RecordingRepository,
+  type JobDto,
+  type RecordingDto,
+} from '../recordings/repository';
 import { toAbs } from '../storage/paths';
 import { TranscriptionRepository, type TranscriptionDto } from '../transcriptions/repository';
 import { LlmCallRepository } from './calls';
@@ -624,18 +629,29 @@ export class AnalysisService {
     const key = this.claudeInputKey(inp);
     // `force` et `forceRecall` demandent tous deux une NOUVELLE analyse ; `forceRecall` y ajoute
     // l'interdiction de relire une réponse obtenue par une autre analyse (payant).
+    //
+    // Avec `force` / `forceRecall`, selon l'analyse identique la plus récente :
+    //  - terminée ou arrêtée par le budget → nouvelle analyse ;
+    //  - en pause de relecture (rien n'est en vol, rien n'est réservé) → elle est REMPLACÉE :
+    //    fermée (`cancelled`, code SUPERSEDED, plus approuvable) et une nouvelle analyse est créée ;
+    //  - en file ou en cours (appels possiblement en vol) → REFUS explicite : jamais deux
+    //    analyses identiques payantes en même temps ; il faut attendre sa fin ou l'annuler.
     const fresh = opts.force || opts.forceRecall;
     const active = this.repo.findReusable(key, 'claude');
     const finished = active?.status === 'completed' || active?.status === 'budget_exhausted';
-    // En pause de relecture : rien ne part sans l'accord explicite (approveReview).
-    if (active && isAwaitingReview(active) && !fresh) {
-      return { status: 'pending' as const, run: active, job: null, reused: true };
-    }
-    if (active && !finished) {
-      if (opts.forceRecall && !active.forceRecall) {
+    let superseded: AnalysisRunDto | null = null;
+    if (active && isAwaitingReview(active)) {
+      // En pause de relecture : rien ne part sans l'accord explicite (approveReview).
+      if (!fresh) return { status: 'pending' as const, run: active, job: null, reused: true };
+      superseded = active;
+    } else if (active && !finished) {
+      if (fresh) {
+        const job = new JobRepository(this.ctx.db).findActiveByTarget(`run_analysis:${active.id}`);
         throw new AppError(
           'CONFLICT',
-          'Une analyse identique est déjà en cours : attendez sa fin ou annulez-la avant de tout redemander (--force-recall)',
+          `Une analyse identique est en cours (${active.id}) : attendez sa fin ou annulez-la` +
+            (job ? ` (traitement ${job.id} : POST /api/jobs/${job.id}/cancel)` : '') +
+            ' avant d’en lancer une nouvelle (--force / --force-recall)',
         );
       }
       return {
@@ -644,11 +660,13 @@ export class AnalysisService {
         job: this.enqueueClaude(active).job,
         reused: true,
       };
+    } else if (active && !fresh) {
+      return { status: 'ready' as const, run: active, job: null, reused: true };
     }
-    if (active && !fresh) return { status: 'ready' as const, run: active, job: null, reused: true };
     // Reprise d'une analyse identique interrompue, lancée avec la même option `forceRecall`,
     // à condition qu'aucune analyse identique ne se soit terminée depuis.
-    const resumable = opts.force ? null : this.repo.findResumable(key, 'claude', opts.forceRecall);
+    const resumable =
+      opts.force || superseded ? null : this.repo.findResumable(key, 'claude', opts.forceRecall);
     if (resumable && (!active || resumable.createdAt > active.createdAt)) {
       return {
         status: 'pending' as const,
@@ -657,27 +675,32 @@ export class AnalysisService {
         reused: true,
       };
     }
-    const run = this.repo.createRun({
-      id: randomUUID(),
-      recordingId,
-      mode: 'claude',
-      pipelineVersion: ANALYSIS_PIPELINE_VERSION,
-      pricingVersion: PRICING_VERSION,
-      inputKey: key,
-      transcriptionIds: inp.transcriptions.map((t) => t.id),
-      config: {
-        ...inp.config,
-        minRelevance: this.cfg.minRelevance,
-        minReliability: this.cfg.minReliability,
-        triageEffort: this.cfg.triageEffort,
-        reviewBeforeDeep: opts.review,
-      },
-      privacy: inp.privacy,
-      profiles: inp.profiles,
-      budgetUsd: this.cfg.maxCostUsd,
-      promptVersion: `${TRIAGE_PROMPT_VERSION}+${DEEP_PROMPT_VERSION}`,
-      forceRecall: opts.forceRecall,
-    });
+    // Création et remplacement éventuel d'une analyse en pause : une seule transaction.
+    const run = this.ctx.db.transaction(() => {
+      const created = this.repo.createRun({
+        id: randomUUID(),
+        recordingId,
+        mode: 'claude',
+        pipelineVersion: ANALYSIS_PIPELINE_VERSION,
+        pricingVersion: PRICING_VERSION,
+        inputKey: key,
+        transcriptionIds: inp.transcriptions.map((t) => t.id),
+        config: {
+          ...inp.config,
+          minRelevance: this.cfg.minRelevance,
+          minReliability: this.cfg.minReliability,
+          triageEffort: this.cfg.triageEffort,
+          reviewBeforeDeep: opts.review,
+        },
+        privacy: inp.privacy,
+        profiles: inp.profiles,
+        budgetUsd: this.cfg.maxCostUsd,
+        promptVersion: `${TRIAGE_PROMPT_VERSION}+${DEEP_PROMPT_VERSION}`,
+        forceRecall: opts.forceRecall,
+      });
+      if (superseded) this.repo.supersede(superseded.id, created.id);
+      return created;
+    })();
     this.ctx.log.info(
       { runId: run.id, recordingId, budgetUsd: run.budgetUsd },
       'Analyse avec Claude demandée (plafond accepté)',
