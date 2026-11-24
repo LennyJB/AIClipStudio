@@ -78,6 +78,12 @@ export class WhisperWorker {
     });
     createInterface({ input: this.child.stdout }).on('line', (line) => this.onLine(line));
     this.child.on('error', (err) => this.failAll(err));
+    // Écrire à un worker qui vient de s'arrêter (annulation, plantage) échoue en EPIPE, de façon
+    // asynchrone : sans ce gestionnaire, l'erreur ferait tomber tout le processus. La mort du
+    // worker est déjà signalée par l'événement « close » (failAll), rien d'autre à faire.
+    this.child.stdin.on('error', (err) =>
+      this.log.debug({ err: err.message }, 'Écriture impossible vers le worker (déjà arrêté)'),
+    );
     this.child.on('close', (code) => {
       this.exited = true;
       this.failAll(
@@ -171,6 +177,7 @@ export class WhisperWorker {
   }
 
   private send(obj: object) {
+    if (this.exited || !this.child.stdin.writable) return;
     this.child.stdin.write(`${JSON.stringify(obj)}\n`);
   }
 
