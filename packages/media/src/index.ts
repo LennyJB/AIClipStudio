@@ -12,3 +12,4 @@ export * from './safe-path';
 export * from './tracks';
 export * from './wav';
 export * from './waveform';
+export * from './integrity';
