@@ -250,3 +250,77 @@ export const analysisApi = {
   triageChunk: (runId: string, index: number) =>
     getJson<{ text: string }>(`/api/analyses/${runId}/triage/${index}`),
 };
+
+/* ------------------------------------------------------------------ */
+/* Analyse avec Claude (étape 4b) : payante, plafond strict            */
+/* ------------------------------------------------------------------ */
+
+export interface AnalysisPublicConfig {
+  mode: string;
+  claudeConfigured: boolean;
+  models: { triage: string; deep: string };
+  effort: string;
+  budgetUsd: number;
+  minRelevance: number;
+  minReliability: number;
+}
+
+export interface ClaudeRun {
+  id: string;
+  status: string;
+  stage: string | null;
+  budgetUsd: number;
+  spentUsd: number;
+  reservedUsd: number;
+  windowCount: number;
+  error: { code: string; message: string } | null;
+  createdAt: string;
+  mode: string;
+}
+
+export interface Proposal {
+  id: string;
+  tier: 'clip' | 'secondary';
+  title: string;
+  explanation: string;
+  categories: string[];
+  relevance: number;
+  reliability: number;
+  reliabilityDetail: { reasons?: string[] };
+  flags: string[];
+  srcStartMs: number;
+  srcEndMs: number;
+  uncertainty: string | null;
+  evidence: { kind: string; segmentId: number | null; quote: string | null; verified: boolean }[];
+}
+
+export interface CallsSummary {
+  calls: {
+    id: string;
+    stage: string;
+    status: string;
+    costUsd: number;
+    windowId: string | null;
+    refusalCategory: string | null;
+  }[];
+  costs: { realCostUsd: number; calls: number; reusedCalls: number; unknownCostCalls: number };
+}
+
+export const claudeApi = {
+  config: () => getJson<AnalysisPublicConfig>('/api/analysis/config'),
+  start: (recordingId: string, acceptBudgetUsd: number) =>
+    getJson<{ status: 'ready' | 'pending'; run: ClaudeRun; job: Job | null }>(
+      `/api/recordings/${recordingId}/analyses`,
+      send('POST', { mode: 'claude', acceptBudgetUsd }),
+    ),
+  runs: (recordingId: string) =>
+    getJson<{ runs: ClaudeRun[] }>(`/api/recordings/${recordingId}/analyses`),
+  run: (runId: string) =>
+    getJson<{
+      run: ClaudeRun;
+      windows: { id: string; status: string; origin: string; costUsd: number }[];
+    }>(`/api/analyses/${runId}`),
+  proposals: (runId: string) =>
+    getJson<{ proposals: Proposal[] }>(`/api/analyses/${runId}/proposals`),
+  calls: (runId: string) => getJson<CallsSummary>(`/api/analyses/${runId}/calls`),
+};
