@@ -12,6 +12,8 @@ const ALLOWED = new Set([
   'services/api/src/db.ts',
   'services/api/src/migration-5.test.ts',
   'services/api/src/review-status.architecture.test.ts',
+  // Test « canari » : force la colonne en base pour prouver qu'aucune réponse n'en dépend.
+  'services/api/src/review.integration.test.ts',
 ]);
 const ROOTS = ['apps', 'packages', 'services', 'scripts', 'tests'];
 
