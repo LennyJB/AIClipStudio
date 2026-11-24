@@ -354,6 +354,36 @@ describe.skipIf(!enabled)('Analyse avec Claude (faux modèle, aucun appel réel)
     expect(b.run!.spentUsd).toBe(0);
   });
 
+  it('--force-recall : nouvelle analyse qui redemande réellement chaque réponse à Claude, sans autre paramètre', async () => {
+    await setup(smart);
+    const rec = await importAndTranscribe();
+    const a = await analyze(rec.id);
+    expect(a.run).toMatchObject({ status: 'completed' });
+    const n = model.calls.length;
+    expect(n).toBeGreaterThan(0);
+
+    // Exactement ce qu'envoie `npm run analyze -- <id> --run --force-recall` (force: false).
+    const b = await analyze(rec.id, { forceRecall: true });
+    expect(b.run!.id).not.toBe(a.run!.id);
+    expect(b.run).toMatchObject({ status: 'completed', forceRecall: true });
+    expect(model.calls).toHaveLength(2 * n); // chaque requête est repartie chez Claude
+    expect(b.calls.length).toBeGreaterThan(0);
+    expect(b.calls.some((c) => c.status === 'reused')).toBe(false);
+    expect(b.calls.every((c) => c.status === 'succeeded' && c.costUsd > 0)).toBe(true);
+    expect(b.run!.spentUsd).toBeGreaterThan(0);
+    expect(b.proposals).toHaveLength(1);
+
+    // Une seconde demande --force-recall rappelle encore (nouvelle analyse, payante).
+    const c = await analyze(rec.id, { forceRecall: true });
+    expect(c.run!.id).not.toBe(b.run!.id);
+    expect(model.calls).toHaveLength(3 * n);
+
+    // Sans option : l'analyse identique terminée la plus récente est renvoyée, sans appel.
+    const d = await analyze(rec.id);
+    expect(d.run!.id).toBe(c.run!.id);
+    expect(model.calls).toHaveLength(3 * n);
+  });
+
   it('plafond trop bas : arrêt propre, résultats conservés, plafond jamais dépassé', async () => {
     await setup(smart, { ANALYSIS_MAX_COST_USD: '0.05' });
     const rec = await importAndTranscribe();

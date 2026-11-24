@@ -318,14 +318,22 @@ export class AnalysisRepository {
     return r ? toRun(r) : null;
   }
 
-  /** Analyse interrompue ou en échec avec les mêmes entrées : reprise (même budget). */
-  findResumable(inputKey: string, mode: 'dry_run' | 'claude'): AnalysisRunDto | null {
+  /**
+   * Analyse interrompue ou en échec avec les mêmes entrées : reprise (même budget).
+   * `forceRecall` (mode claude) : seule une analyse lancée avec la même option est reprise,
+   * pour qu'une reprise ne redemande jamais à Claude ce que le créateur n'a pas demandé.
+   */
+  findResumable(
+    inputKey: string,
+    mode: 'dry_run' | 'claude',
+    forceRecall = false,
+  ): AnalysisRunDto | null {
     const r = this.db
       .prepare(
-        `SELECT * FROM analysis_runs WHERE input_key = ? AND mode = ?
+        `SELECT * FROM analysis_runs WHERE input_key = ? AND mode = ? AND force_recall = ?
            AND status IN ('interrupted','failed','cancelled') ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
-      .get(inputKey, mode) as RunRow | undefined;
+      .get(inputKey, mode, forceRecall ? 1 : 0) as RunRow | undefined;
     return r ? toRun(r) : null;
   }
 

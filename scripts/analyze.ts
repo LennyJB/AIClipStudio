@@ -9,8 +9,8 @@
  * Analyse avec Claude (PAYANTE, plafond strict, confirmation obligatoire) :
  *   npm run analyze -- <id> --run                     prépare, affiche l'estimation, demande « oui »
  *   npm run analyze -- <id> --run --yes               confirmation explicite sans question
- *   npm run analyze -- <id> --run --force             nouvelle analyse (réponses identiques réutilisées)
- *   npm run analyze -- <id> --run --force-recall      redemander à Claude même ce qui est déjà obtenu
+ *   npm run analyze -- <id> --run --force             nouvelle analyse (réponses identiques réutilisées, 0 $)
+ *   npm run analyze -- <id> --run --force-recall      nouvelle analyse qui redemande TOUT à Claude (payant)
  *
  * Résultats :
  *   npm run analyze -- <id> --proposals | --calls | --costs | --list

@@ -121,9 +121,10 @@ export class CallExecutor {
     const callsDir = `${p.runRelDir}/appels`;
     await mkdir(this.abs(callsDir), { recursive: true });
 
-    // 1. Réponse déjà obtenue pour exactement la même requête ?
-    if (!p.forceRecall) {
-      const prior = this.calls.findReusable(hash);
+    // 1. Réponse déjà obtenue pour exactement la même requête ? Avec `forceRecall`, seules les
+    //    réponses obtenues par CETTE analyse comptent (une reprise ne repaie jamais un appel réussi).
+    {
+      const prior = this.calls.findReusable(hash, p.forceRecall ? p.runId : undefined);
       if (prior?.responseRelPath && existsSync(this.abs(prior.responseRelPath))) {
         const stored = JSON.parse(
           await readFile(this.abs(prior.responseRelPath), 'utf8'),

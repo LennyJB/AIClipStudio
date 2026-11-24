@@ -258,14 +258,15 @@ export class LlmCallRepository {
     })();
   }
 
-  /** Réponse déjà obtenue pour une requête identique (toutes analyses confondues). */
-  findReusable(requestHash: string): LlmCallDto | null {
+  /** Réponse déjà obtenue pour une requête identique (toutes analyses, ou une seule si `onlyRunId`). */
+  findReusable(requestHash: string, onlyRunId?: string): LlmCallDto | null {
     const r = this.db
       .prepare(
         `SELECT * FROM llm_calls WHERE request_hash = ? AND status IN ('succeeded','refused','truncated')
-           AND response_rel_path IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+           AND response_rel_path IS NOT NULL AND (? IS NULL OR run_id = ?)
+           ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
-      .get(requestHash) as Row | undefined;
+      .get(requestHash, onlyRunId ?? null, onlyRunId ?? null) as Row | undefined;
     return r ? toDto(r) : null;
   }
 

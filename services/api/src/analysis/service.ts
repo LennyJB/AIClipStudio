@@ -586,7 +586,9 @@ export class AnalysisService {
 
   /**
    * Analyse PAYANTE : exige une clé et l'accord explicite au plafond. Une analyse identique
-   * interrompue est reprise (même budget) ; terminée, elle est renvoyée sauf `force`.
+   * interrompue est reprise (même budget) ; terminée, elle est renvoyée sauf `force` ou
+   * `forceRecall` (nouvelle analyse ; avec `forceRecall`, aucune réponse d'une autre analyse
+   * n'est relue).
    */
   private requestClaude(
     recordingId: string,
@@ -609,10 +611,17 @@ export class AnalysisService {
       );
     }
     const key = this.claudeInputKey(inp);
+    // `force` et `forceRecall` demandent tous deux une NOUVELLE analyse ; `forceRecall` y ajoute
+    // l'interdiction de relire une réponse obtenue par une autre analyse (payant).
+    const fresh = opts.force || opts.forceRecall;
     const active = this.repo.findReusable(key, 'claude');
-    if (active && (active.status !== 'completed' || !opts.force)) {
-      if (active.status === 'completed')
-        return { status: 'ready' as const, run: active, job: null, reused: true };
+    if (active && active.status !== 'completed') {
+      if (opts.forceRecall && !active.forceRecall) {
+        throw new AppError(
+          'CONFLICT',
+          'Une analyse identique est déjà en cours : attendez sa fin ou annulez-la avant de tout redemander (--force-recall)',
+        );
+      }
       return {
         status: 'pending' as const,
         run: active,
@@ -620,8 +629,11 @@ export class AnalysisService {
         reused: true,
       };
     }
-    const resumable = opts.force ? null : this.repo.findResumable(key, 'claude');
-    if (resumable) {
+    if (active && !fresh) return { status: 'ready' as const, run: active, job: null, reused: true };
+    // Reprise d'une analyse identique interrompue, lancée avec la même option `forceRecall`,
+    // à condition qu'aucune analyse identique ne se soit terminée depuis.
+    const resumable = opts.force ? null : this.repo.findResumable(key, 'claude', opts.forceRecall);
+    if (resumable && (!active || resumable.createdAt > active.createdAt)) {
       return {
         status: 'pending' as const,
         run: resumable,

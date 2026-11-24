@@ -102,9 +102,13 @@ const statuses = () =>
     (r) => r.status,
   );
 
-const exec = (ex: CallExecutor, r = req(), o: { force?: boolean; signal?: AbortSignal } = {}) =>
+const exec = (
+  ex: CallExecutor,
+  r = req(),
+  o: { force?: boolean; signal?: AbortSignal; runId?: string } = {},
+) =>
   ex.execute({
-    runId: 'run',
+    runId: o.runId ?? 'run',
     windowId: null,
     chunkIndex: 1,
     req: r,
@@ -144,7 +148,22 @@ describe('CallExecutor', () => {
     expect(model.calls).toHaveLength(1);
     expect(run().spent).toBe(spent);
     expect(statuses()).toEqual(['succeeded', 'reused']);
-    await exec(ex, req(), { force: true });
+    // --force-recall : une AUTRE analyse redemande réellement à Claude…
+    db.prepare(
+      `INSERT INTO analysis_runs (id, recording_id, mode, status, pipeline_version, pricing_version,
+         input_key, transcription_ids_json, config_json, privacy_json, profiles_json, budget_usd, force_recall)
+       VALUES ('run2', 'r', 'claude', 'running', 1, 'p', 'k', '[]', '{}', '{}', '{}', 5, 1)`,
+    ).run();
+    expect(await exec(ex, req(), { force: true, runId: 'run2' })).toMatchObject({
+      status: 'ok',
+      reused: false,
+    });
+    expect(model.calls).toHaveLength(2);
+    // …mais à la reprise de cette même analyse, un appel déjà réussi n'est jamais repayé.
+    expect(await exec(ex, req(), { force: true, runId: 'run2' })).toMatchObject({
+      status: 'ok',
+      reused: true,
+    });
     expect(model.calls).toHaveLength(2);
   });
 
