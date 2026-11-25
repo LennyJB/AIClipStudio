@@ -28,7 +28,8 @@ const code = (f: () => unknown) => {
 /** Applique puis annule : le document doit redevenir EXACTEMENT identique. */
 function roundTrip(d: ClipProjectV2, op: Operation, ctx = {}) {
   const a = applyOperation(d, op, ctx);
-  const back = applyOperation(a.doc, a.inverse, ctx);
+  // Confirmation explicite : exigée si l'annulation retire ou désactive un masque opaque.
+  const back = applyOperation(a.doc, { ...a.inverse, acknowledgeMaskRisk: true }, ctx);
   expect(fp(back.doc)).toBe(fp(d));
   return a;
 }
@@ -462,5 +463,132 @@ describe('masques, audio, mise en page, éléments', () => {
     expect(code(() => applyOperation(d, { type: 'setMode', mode: 'enrichi', x: 1 }))).toBe(
       'VALIDATION_FAILED',
     );
+  });
+});
+
+describe('masques : suppression et annulation exigent une confirmation (revue PR 7a)', () => {
+  const d = fixtureV2();
+  const maskId = d.masks[0]!.id;
+
+  it('supprimer un masque sans confirmation : refusé ; avec confirmation : accepté et annulable', () => {
+    expect(
+      code(() => applyOperation(d, { type: 'removeEntity', collection: 'mask', id: maskId })),
+    ).toBe('MASK_RISK_NOT_ACKNOWLEDGED');
+    expect(
+      code(() =>
+        applyOperation(d, {
+          type: 'removeEntity',
+          collection: 'mask',
+          id: maskId,
+          acknowledgeMaskRisk: false,
+        }),
+      ),
+    ).toBe('MASK_RISK_NOT_ACKNOWLEDGED');
+    const removed = roundTrip(d, {
+      type: 'removeEntity',
+      collection: 'mask',
+      id: maskId,
+      acknowledgeMaskRisk: true,
+    });
+    expect(removed.doc.masks).toEqual([]);
+    // Annuler la suppression remet le masque : aucune confirmation nécessaire (protection rétablie).
+    expect(applyOperation(removed.doc, removed.inverse).doc.masks).toEqual(d.masks);
+  });
+
+  it('supprimer un autre élément ne demande aucune confirmation', () => {
+    const effect = {
+      id: 'fx',
+      type: 'flash',
+      params: { intensity: 0.5 },
+      region: null,
+      timing: { anchor: 'source', srcStartMs: 115_000, srcEndMs: 116_000 },
+      enabled: true,
+      origin: 'creator',
+      reason: '',
+      signals: {},
+    };
+    const added = applyOperation(d, {
+      type: 'setEntity',
+      collection: 'effect',
+      entity: effect,
+    }).doc;
+    expect(
+      applyOperation(added, { type: 'removeEntity', collection: 'effect', id: 'fx' }).doc.effects,
+    ).toEqual(d.effects);
+  });
+
+  it('annuler l’AJOUT d’un masque (qui le retire) : confirmation exigée ; annuler sa désactivation : non', () => {
+    const tm = {
+      id: 'tm',
+      rect: { x: 0, y: 0, w: 0.2, h: 0.2 },
+      label: 'Pseudo',
+      mode: 'opaque',
+      srcRange: null,
+    };
+    const added = applyOperation(d, { type: 'setEntity', collection: 'mask', entity: tm });
+    expect(code(() => applyOperation(added.doc, added.inverse))).toBe('MASK_RISK_NOT_ACKNOWLEDGED');
+    expect(
+      applyOperation(added.doc, { ...added.inverse, acknowledgeMaskRisk: true }).doc.masks,
+    ).toEqual(d.masks);
+    const disabled = applyOperation(d, {
+      type: 'setEntity',
+      collection: 'mask',
+      entity: { ...d.masks[0]!, mode: 'off' },
+      acknowledgeMaskRisk: true,
+    });
+    // Annuler la désactivation remet l'aplat : aucune confirmation.
+    expect(applyOperation(disabled.doc, disabled.inverse).doc.masks).toEqual(d.masks);
+  });
+});
+
+describe('arrêt sur image : cadrage du segment conservé (revue PR 7a)', () => {
+  const layers = [
+    {
+      id: 'l1',
+      role: 'gameplay' as const,
+      crop: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
+      frame: { x: 0, y: 0, w: 1, h: 1 },
+      z: 0,
+    },
+  ];
+  const d = applyOperation(fixtureV2(), {
+    type: 'setEntity',
+    collection: 'layoutOverride',
+    entity: { id: 'seg-0', layers },
+  }).doc;
+
+  it('avant, arrêt et après gardent la surcharge de cadrage du segment', () => {
+    const a = roundTrip(d, {
+      type: 'insertFreeze',
+      segmentId: 'seg-0',
+      atSrcMs: 120_000,
+      freezeId: 'f',
+      newId: 'apres',
+      editDurMs: 1_000,
+    });
+    expect(a.doc.segments.map((s) => s.id)).toEqual(['seg-0', 'f', 'apres']);
+    expect(a.doc.layout.overrides).toEqual([
+      { id: 'apres', layers },
+      { id: 'f', layers },
+      { id: 'seg-0', layers },
+    ]);
+    expect(a.reads).toEqual(
+      expect.arrayContaining(['layoutOverride:seg-0', 'layoutOverride:f', 'layoutOverride:apres']),
+    );
+    expect(a.writes).toEqual(
+      expect.arrayContaining(['segments', 'layoutOverride:f', 'layoutOverride:apres']),
+    );
+  });
+
+  it('sans surcharge : aucune surcharge créée', () => {
+    const a = applyOperation(fixtureV2(), {
+      type: 'insertFreeze',
+      segmentId: 'seg-0',
+      atSrcMs: 120_000,
+      freezeId: 'f',
+      newId: 'apres',
+      editDurMs: 1_000,
+    });
+    expect(a.doc.layout.overrides).toEqual([]);
   });
 });

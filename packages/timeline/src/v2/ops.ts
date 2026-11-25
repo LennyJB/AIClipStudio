@@ -143,7 +143,13 @@ export const OperationSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   z
-    .object({ type: z.literal('removeEntity'), collection: z.enum(ENTITY_COLLECTIONS), id })
+    .object({
+      type: z.literal('removeEntity'),
+      collection: z.enum(ENTITY_COLLECTIONS),
+      id,
+      /** Exigé pour supprimer un masque (même règle que sa désactivation). */
+      acknowledgeMaskRisk: z.boolean().optional(),
+    })
     .strict(),
   // Mise en page
   z
@@ -198,6 +204,11 @@ export const OperationSchema = z.discriminatedUnion('type', [
         )
         .min(1)
         .max(400),
+      /**
+       * Exigé si la restauration retire ou désactive un masque opaque (annuler l'ajout d'un
+       * masque, par exemple) : aucune protection ne disparaît sans confirmation explicite.
+       */
+      acknowledgeMaskRisk: z.boolean().optional(),
     })
     .strict(),
 ]);
@@ -379,6 +390,16 @@ function plan(d: ClipProjectV2, op: Operation): Plan {
         srcStartMs: op.atSrcMs,
       });
       writes.set('segments', segs);
+      // La surcharge de disposition du segment s'applique aussi à l'arrêt et à la partie après.
+      const ov = `layoutOverride:${op.segmentId}`;
+      reads.add(ov);
+      reads.add(`layoutOverride:${op.freezeId}`);
+      reads.add(`layoutOverride:${op.newId}`);
+      const existing = getKey(d, ov) as { layers: unknown } | undefined;
+      if (existing) {
+        writes.set(`layoutOverride:${op.freezeId}`, { ...clone(existing), id: op.freezeId });
+        writes.set(`layoutOverride:${op.newId}`, { ...clone(existing), id: op.newId });
+      }
       break;
     }
     case 'extendWindow': {
@@ -572,6 +593,13 @@ function plan(d: ClipProjectV2, op: Operation): Plan {
       reads.add(key);
       if (getKey(d, key) === undefined)
         throw new OpError('NOT_FOUND', `Élément introuvable : ${op.id}`);
+      // Supprimer un masque retire une protection : confirmation explicite, comme sa désactivation.
+      if (op.collection === 'mask' && op.acknowledgeMaskRisk !== true) {
+        throw new OpError(
+          'MASK_RISK_NOT_ACKNOWLEDGED',
+          'Supprimer un masque exige de confirmer le risque',
+        );
+      }
       writes.set(key, undefined);
       break;
     }
@@ -641,6 +669,20 @@ function plan(d: ClipProjectV2, op: Operation): Plan {
         reads.add(e.key);
         expects.set(e.key, e.expect);
         writes.set(e.key, e.value === null ? undefined : e.value);
+        const before = e.key.startsWith('mask:')
+          ? (getKey(d, e.key) as { mode: string } | undefined)
+          : undefined;
+        const after = e.value as { mode?: string } | null;
+        if (
+          before?.mode === 'opaque' &&
+          after?.mode !== 'opaque' &&
+          op.acknowledgeMaskRisk !== true
+        ) {
+          throw new OpError(
+            'MASK_RISK_NOT_ACKNOWLEDGED',
+            'Cette annulation retire ou désactive un masque : confirmez le risque',
+          );
+        }
       }
       return { reads, writes, expects };
     }

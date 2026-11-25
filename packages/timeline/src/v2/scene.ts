@@ -25,6 +25,7 @@ import {
   type Timing,
 } from '../time';
 import { presetLayers, toPixelRect, type PixelRect, type PlacedLayer } from '../geometry';
+import type { CaptionRole } from '../captions';
 import { segmentsV2, type ClipProjectV2, type EffectTypeV2, type TimingV2 } from './schema';
 
 /** Fondu anti-clic à chaque raccord (aperçu ET export). */
@@ -42,8 +43,16 @@ export const MOTION_EFFECTS: readonly EffectTypeV2[] = [
 export interface SceneOptions {
   src: { width: number; height: number };
   out: { width: number; height: number };
-  /** Pistes autorisées AUJOURD'HUI (décision du serveur) ; absent : toutes les pistes activées. */
-  allowedAudioIndexes?: readonly number[];
+  /**
+   * Pistes autorisées AUJOURD'HUI (décision du serveur). OBLIGATOIRE : une liste vide n'autorise
+   * aucune piste ; rien n'est autorisé par défaut.
+   */
+  allowedAudioIndexes: readonly number[];
+  /**
+   * Sources de sous-titres autorisées AUJOURD'HUI (décision du serveur). OBLIGATOIRE : une source
+   * dont l'accord a été révoqué n'est jamais affichée, même si le document la contient encore.
+   */
+  allowedCaptionRoles: readonly CaptionRole[];
 }
 
 export interface SceneAudioTrack {
@@ -170,11 +179,15 @@ export function sceneAt(d: ClipProjectV2, t: EditMs | number, o: SceneOptions): 
       role: i.speakerRole,
     };
   });
+  // Sources affichées = sources choisies ∩ sources autorisées aujourd'hui. Les sous-titres manuels
+  // (écrits par le créateur, aucune voix de tiers) ne dépendent d'aucune source audio.
   const captionIds = !d.captions.enabled
     ? []
     : [
         ...items
-          .filter((i) => d.captions.sources.includes(i.role))
+          .filter(
+            (i) => d.captions.sources.includes(i.role) && o.allowedCaptionRoles.includes(i.role),
+          )
           .filter((i) => visibleAt(d, i.timing, t)),
         ...d.captions.manual
           .map((m) => ({
@@ -189,16 +202,18 @@ export function sceneAt(d: ClipProjectV2, t: EditMs | number, o: SceneOptions): 
     .sort((a, b) => a.z - b.z || (a.id < b.id ? -1 : 1))
     .map((ov) => ov.id);
 
-  const sourceAudible = inSource && !frozen && !d.audio.silent;
   const allowed = o.allowedAudioIndexes;
-  const tracks = sourceAudible
-    ? d.audio.tracks
-        .filter((tr) => tr.enabled && (!allowed || allowed.includes(tr.audioIndex)))
-        .map((tr) => ({
-          audioIndex: tr.audioIndex,
-          gainDb: tr.gainDb + automationGainDb(tr.automation, srcMs!),
-        }))
-    : [];
+  const tracks =
+    inSource && !frozen && !d.audio.silent
+      ? d.audio.tracks
+          .filter((tr) => tr.enabled && allowed.includes(tr.audioIndex))
+          .map((tr) => ({
+            audioIndex: tr.audioIndex,
+            gainDb: tr.gainDb + automationGainDb(tr.automation, srcMs!),
+          }))
+      : [];
+  // Audible seulement si au moins une piste autorisée ET activée est effectivement jouée.
+  const sourceAudible = tracks.length > 0;
   const sfxIds = d.audio.silent
     ? []
     : d.audio.sfx

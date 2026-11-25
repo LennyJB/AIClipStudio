@@ -18,12 +18,15 @@ import {
   applyBatch,
   OpError,
   type AppliedOp,
+  type Operation,
 } from './ops';
 import { ClipProjectV2Schema, type ClipProjectV2 } from './schema';
 import { fixtureV2 } from './test-fixtures';
 import { canonicalJson } from '../project';
 
 const base = fixtureV2();
+/** Annulation confirmée (exigée si elle retire ou désactive un masque opaque). */
+const confirmed = (op: Operation) => ({ ...op, acknowledgeMaskRisk: true });
 const tryApply = (d: ClipProjectV2, op: unknown): AppliedOp | null => {
   try {
     return applyOperation(d, op);
@@ -56,7 +59,7 @@ describe('propriétés des opérations (étape 7a)', () => {
           accepted++;
           expect(ClipProjectV2Schema.safeParse(a.doc).success).toBe(true);
           expect(checkInvariants(a.doc)).toEqual([]);
-          const back = applyOperation(a.doc, a.inverse);
+          const back = applyOperation(a.doc, confirmed(a.inverse));
           expect(documentFingerprint(back.doc)).toBe(documentFingerprint(d));
         },
       ),
@@ -80,7 +83,7 @@ describe('propriétés des opérations (étape 7a)', () => {
               d = a.doc;
             }
           }
-          const back = applyBatch(d, inverseOfBatch(applied)).doc;
+          const back = applyBatch(d, inverseOfBatch(applied).map(confirmed)).doc;
           expect(documentFingerprint(back)).toBe(documentFingerprint(base));
         },
       ),

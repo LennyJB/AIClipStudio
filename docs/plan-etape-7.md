@@ -1016,3 +1016,21 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   identique à celui de `@acs/media`.
 - **Dépendances** : `fast-check` était déjà présent (`^4.11.0`) ; il est verrouillé en version
   exacte (`4.11.0`). `zustand` et Playwright arrivent avec la PR 7e, comme prévu.
+
+**Corrections de la revue de la PR 7a** :
+
+- **Suppression d'un masque** (`removeEntity`, collection `mask`) : exige `acknowledgeMaskRisk: true`,
+  comme sa désactivation. Même règle pour une **annulation** qui retirerait ou désactiverait un
+  masque opaque (annuler l'ajout d'un masque, par exemple) : l'interface devra demander la
+  confirmation. Annuler une suppression ou une désactivation (protection rétablie) n'en demande
+  pas.
+- **Autorisations explicites de la scène** : `SceneOptions.allowedAudioIndexes` et
+  `SceneOptions.allowedCaptionRoles` sont **obligatoires**. Une liste vide n'autorise rien ; aucune
+  piste ni source n'est autorisée par défaut. Les sous-titres affichés sont les sources choisies
+  **et** autorisées aujourd'hui : une source révoquée (Discord) n'apparaît plus, même si le
+  document la contient encore. Les sous-titres manuels, écrits par le créateur, ne dépendent
+  d'aucune source audio.
+- **Arrêt sur image et cadrage** : `insertFreeze` reporte la surcharge de disposition du segment sur
+  l'arrêt et sur la partie après (les trois parties gardent le même cadrage).
+- **`sourceAudible`** : vrai seulement si au moins une piste autorisée et activée est effectivement
+  jouée (faux après révocation, retrait de la piste, ou sans piste).

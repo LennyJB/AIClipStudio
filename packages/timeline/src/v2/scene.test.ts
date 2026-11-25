@@ -4,7 +4,12 @@ import { applyBatch, type Operation } from './ops';
 import { automationGainDb, sceneAt } from './scene';
 import { fixtureV2 } from './test-fixtures';
 
-const o = { src: { width: 1920, height: 1080 }, out: { width: 1080, height: 1920 } };
+const o = {
+  src: { width: 1920, height: 1080 },
+  out: { width: 1080, height: 1920 },
+  allowedAudioIndexes: [1],
+  allowedCaptionRoles: ['mic' as const],
+};
 const base = fixtureV2();
 // Montage : [110–115 s] [arrêt 1,5 s sur 115 s] [115–120 s] [vide 3 s] [125–133,8 s]
 const ops: Operation[] = [
@@ -72,7 +77,7 @@ const ops: Operation[] = [
   },
 ];
 const d = applyBatch(base, ops).doc;
-const at = (t: number) => sceneAt(d, t, { ...o, allowedAudioIndexes: [1] });
+const at = (t: number) => sceneAt(d, t, o);
 
 describe('scène : arrêt sur image', () => {
   it('image figée avec les aplats de l’instant figé ; silence des pistes de l’enregistrement', () => {
@@ -164,5 +169,88 @@ describe('scène : masques, effets, audio, géométrie', () => {
     expect(at(1_000).layers).toEqual(
       presetLayers({ ...d.layout, preset: 'facecam_top' }, o.src, o.out).sort((a, b) => a.z - b.z),
     );
+  });
+});
+
+describe('scène : autorisations explicites (sous-titres et audio)', () => {
+  // Discord était autorisé : ses sous-titres sont dans le document.
+  const withDiscord = applyBatch(
+    base,
+    [{ type: 'setCaptionsConfig', sources: ['mic', 'discord'] }],
+    { allowedCaptionRoles: ['mic', 'discord'] },
+  ).doc;
+  const discordItem = withDiscord.captions.items.find(
+    (i) => i.speakerRole === 'discord' && i.srcStartMs >= 111_000,
+  )!;
+  // Instant montage où la ligne Discord est affichée (segment unique : 110 s → 0 ms).
+  const t = discordItem.srcStartMs - 110_000 + 50;
+
+  it('Discord autorisé : ses sous-titres sont affichés', () => {
+    const s = sceneAt(withDiscord, t, { ...o, allowedCaptionRoles: ['mic', 'discord'] });
+    expect(s.captionIds).toContain(discordItem.id);
+  });
+
+  it('accord Discord révoqué : ses sous-titres disparaissent, même si le document les contient encore', () => {
+    const s = sceneAt(withDiscord, t, { ...o, allowedCaptionRoles: ['mic'] });
+    expect(withDiscord.captions.sources).toContain('discord');
+    expect(s.captionIds).not.toContain(discordItem.id);
+    expect(
+      s.captionIds.every(
+        (id) => withDiscord.captions.items.find((i) => i.id === id)?.speakerRole !== 'discord',
+      ),
+    ).toBe(true);
+    // Aucune source autorisée : aucun sous-titre issu d'une piste.
+    expect(sceneAt(withDiscord, t, { ...o, allowedCaptionRoles: [] }).captionIds).toEqual([]);
+  });
+
+  it('sous-titres manuels (écrits par le créateur) : indépendants des accords de voix', () => {
+    const manual = applyBatch(withDiscord, [
+      {
+        type: 'setEntity',
+        collection: 'manual',
+        entity: {
+          id: 'man-1',
+          origin: 'creator',
+          text: 'GG',
+          srcStartMs: 111_000,
+          srcEndMs: 112_000,
+          style: null,
+          position: null,
+        },
+      },
+    ]).doc;
+    expect(sceneAt(manual, 1_500, { ...o, allowedCaptionRoles: [] }).captionIds).toEqual(['man-1']);
+  });
+
+  it('audio : aucune piste autorisée par défaut ; liste vide = aucune piste', () => {
+    const s = sceneAt(base, 1_000, { ...o, allowedAudioIndexes: [] });
+    expect(s.audio.tracks).toEqual([]);
+  });
+});
+
+describe('scène : sourceAudible cohérent avec les pistes réellement jouées', () => {
+  it('vrai seulement si au moins une piste autorisée ET activée est jouée', () => {
+    expect(sceneAt(base, 1_000, o).audio).toMatchObject({
+      sourceAudible: true,
+      tracks: [{ audioIndex: 1 }],
+    });
+  });
+
+  it('faux si la seule piste n’est plus autorisée (accord révoqué)', () => {
+    expect(sceneAt(base, 1_000, { ...o, allowedAudioIndexes: [] }).audio).toEqual({
+      sourceAudible: false,
+      tracks: [],
+      sfxIds: [],
+    });
+  });
+
+  it('faux si la seule piste autorisée est retirée du montage', () => {
+    const off = applyBatch(base, [{ type: 'setTrack', audioIndex: 1, enabled: false }]).doc;
+    expect(sceneAt(off, 1_000, o).audio.sourceAudible).toBe(false);
+  });
+
+  it('faux si le projet n’a aucune piste audio', () => {
+    const none = { ...base, audio: { ...base.audio, tracks: [] } };
+    expect(sceneAt(none, 1_000, o).audio.sourceAudible).toBe(false);
   });
 });
