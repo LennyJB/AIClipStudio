@@ -48,16 +48,16 @@ const ms = z.number().int().nonnegative();
 const id = z.string().min(1).max(100);
 const EPS = 1e-9;
 const unit = z.number().min(0).max(1);
-const RectSchema = z
+export const RectSchema = z
   .object({ x: unit, y: unit, w: z.number().gt(0).max(1), h: z.number().gt(0).max(1) })
   .strict()
   .refine((r) => r.x + r.w <= 1 + EPS && r.y + r.h <= 1 + EPS, 'le rectangle sort de l’image');
 const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/u, 'couleur #RRGGBB attendue');
 
-const CaptionWordSchema = z
+export const CaptionWordSchema = z
   .object({ text: z.string().min(1).max(200), srcStartMs: ms, srcEndMs: ms })
   .strict();
-const CaptionItemSchema = z
+export const CaptionItemSchema = z
   .object({
     id,
     speakerRole: z.enum(CAPTION_ROLES),
@@ -103,7 +103,7 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   emphasizePunchline: true,
 };
 
-const CorrectionSchema = z
+export const CorrectionSchema = z
   .object({
     itemId: id,
     originalText: z.string().max(2000),
@@ -113,7 +113,7 @@ const CorrectionSchema = z
   })
   .strict();
 
-const EffectSchema = z
+export const EffectSchema = z
   .object({
     id,
     type: z.enum(EFFECT_TYPES),

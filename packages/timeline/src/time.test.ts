@@ -432,4 +432,3 @@ describe('vide (suppression sans décalage)', () => {
     );
   });
 });
-

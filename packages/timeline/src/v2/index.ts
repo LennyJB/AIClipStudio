@@ -1,0 +1,8 @@
+/**
+ * ClipProject v2 et opérations de l'éditeur (étape 7, docs/plan-etape-7.md). Code pur, partagé.
+ */
+export * from './schema';
+export * from './invariants';
+export * from './keys';
+export * from './migrate';
+export * from './ops';
