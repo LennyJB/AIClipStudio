@@ -382,6 +382,10 @@ npm run render -- <propositionId> --final                            # export (s
 npm run doctor -- --render                                           # filtres, polices, intégrité
 ```
 
+Dans l'interface, la section **Clips** (sous « Revue des propositions ») permet les mêmes
+opérations sans ligne de commande : audio exporté, cadrage, sous-titres, effets, durée, aperçu et
+export. Guide : [`docs/rendu-clips.md`](docs/rendu-clips.md).
+
 ---
 
 ## Architecture

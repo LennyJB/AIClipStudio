@@ -1101,3 +1101,33 @@ Précisions apportées pendant l'implémentation de la PR 6b, sans changer les d
   la publication normale, l'empreinte du fichier de confidentialité est relue de façon synchrone
   DANS la transaction, juste avant tout renommage, et comparée à celle du rendu. Un fichier
   modifié entre le recalcul du plan et la publication ⇒ fichier retiré et `VERSION_CONFLICT`.
+
+## 19. Écarts de mise en œuvre (PR 6c)
+
+Précisions validées avant l'implémentation de la PR 6c (interface) :
+
+- **Section « Clips »** sous « Revue des propositions », sans système d'onglets.
+- **API** : `GET /api/recordings/:id/clips` renvoie aussi les projets dont la décision n'est plus
+  « acceptée » (`readOnly: true`, `decision`) et le dernier rendu de chaque projet
+  (`project.lastRender`). Aucune migration.
+- **Audio** : ajout et retrait des pistes depuis l'interface. L'ajout ou la réactivation n'est
+  proposé que pour une piste de `audio.selected` (décision du serveur) ; le serveur le revérifie
+  sous verrou (`EXPORT_CONSENT_REQUIRED` sinon). Aucun changement d'API n'était nécessaire.
+- **Effets proposés** (correction de la 6b) : un nouveau type d'effet arrive **désactivé** ;
+  l'état des effets déjà présents (créateur ou automatiques) n'est jamais modifié, un effet
+  automatique proposé de nouveau ne voit changer que ses instants et mesures, un effet plus
+  proposé est conservé tel quel. Les révisions existantes ne sont jamais réécrites : les effets
+  actifs créés en 6b restent actifs.
+- **Image fixe** : trois mécanismes distincts.
+  1. Client : debounce, abandon de la requête précédente (`AbortController`).
+  2. Serveur : FFmpeg reçoit l'ordre d'arrêt si le client se déconnecte ou si une demande plus
+     récente arrive pour le même projet (`409 CANCELLED` pour la précédente) ; au plus 2
+     générations simultanées, refus immédiat au-delà (`409 CONFLICT`), sans file d'attente.
+     Non garanti : l'arrêt n'est pas instantané (brève coexistence possible) ; la préparation du
+     plan, qui ne lance aucun processus, n'est pas interrompue.
+  3. Réponses obsolètes ignorées par numéro de séquence, même si l'annulation n'a pas eu lieu.
+- **Sauvegarde** : file en série, brouillons locaux, même `requestId` au nouvel essai, conflit
+  `409` → rechargement sans perte puis « Réappliquer » explicite.
+- **Lecture seule** : aucun réglage, aucun nouveau rendu, aucune proposition d'effets ; exports
+  antérieurs consultables avec l'avertissement `decisionChangedSinceExport`.
+- **Style des sous-titres** limité aux champs du schéma `CaptionStyle`.
