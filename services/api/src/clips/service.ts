@@ -584,6 +584,55 @@ export class ClipProjectService {
       .immediate();
   }
 
+  /* ------------------------- Journal d'édition (7b) ------------------------ */
+
+  /** Lot, annulation ou rétablissement (API de l'éditeur). */
+  submitEdit(projectId: string, body: unknown, source: Source) {
+    const row = this.projectRow(projectId);
+    return this.edits.submit(projectId, row.recordingId, row.proposalId, body, source);
+  }
+
+  /** Document v2 courant, sa version, son empreinte et l'état de l'historique. */
+  editorDocument(projectId: string) {
+    const row = this.projectRow(projectId);
+    const h = this.edits.head(projectId);
+    const decision = this.guard.effective(row.proposalId);
+    const history = this.edits.history(projectId);
+    return {
+      projectId,
+      version: h.version,
+      hash: h.hash,
+      document: h.doc,
+      editable: decision.status === 'accepted' && !decision.merged,
+      decision,
+      history: { undo: history.undoable.at(-1) ?? null, redo: history.redoable.at(-1) ?? null },
+      checkpointRevision: this.edits.repo.head(projectId)!.checkpointRevision,
+    };
+  }
+
+  /** Entrées du journal après une version (synchronisation entre onglets). */
+  editsSince(projectId: string, since: number) {
+    this.projectRow(projectId);
+    const head = this.edits.head(projectId);
+    const history = this.edits.history(projectId);
+    return {
+      head: { version: head.version, hash: head.hash },
+      history: { undo: history.undoable.at(-1) ?? null, redo: history.redoable.at(-1) ?? null },
+      entries: this.edits.entries(projectId, since).map((e) => ({
+        seq: e.seq,
+        kind: e.kind,
+        targetSeq: e.targetSeq,
+        ops: e.ops,
+        hashAfter: e.hashAfter,
+        baseSeq: e.baseSeq,
+        clientId: e.clientId,
+        summary: e.summary,
+        source: e.source,
+        createdAt: e.createdAt,
+      })),
+    };
+  }
+
   /* ------------------------------ Intégrité ------------------------------ */
 
   /** Vérifie l'ensemble d'octets protégé de la source du projet (utilisé avant chaque rendu). */

@@ -89,6 +89,30 @@ export function registerClipRoutes(app: FastifyInstance, services: Services) {
     return clips.patch(id, req.body ?? {}, 'ui');
   });
 
+  /* ------------------------ Journal d'édition (étape 7b) ------------------------ */
+
+  /** Document v2 courant (éditeur) : version, empreinte, historique. */
+  app.get('/api/clip-projects/:id/document', async (req) => {
+    const { id } = parse(IdParams, req.params);
+    return clips.editorDocument(id);
+  });
+
+  /** Lot d'opérations, annulation ou rétablissement (journal en ajout seul). */
+  app.post('/api/clip-projects/:id/edits', async (req) => {
+    const { id } = parse(IdParams, req.params);
+    return clips.submitEdit(id, req.body ?? {}, 'ui');
+  });
+
+  /** Entrées du journal après une version (synchronisation entre onglets). */
+  app.get('/api/clip-projects/:id/edits', async (req) => {
+    const { id } = parse(IdParams, req.params);
+    const q = parse(
+      z.object({ since: z.coerce.number().int().min(0).default(0) }).strict(),
+      req.query ?? {},
+    );
+    return clips.editsSince(id, q.since);
+  });
+
   /* --------------------------------- Rendus --------------------------------- */
 
   /** Demande un aperçu ou un export final (202 : en file ; 200 : rendu identique existant). */
