@@ -106,6 +106,15 @@ export const EnvSchema = z.object({
     )
     .pipe(z.array(TrackRoleSchema).min(1)),
   CACHE_MAX_GB: z.coerce.number().positive().max(10_000).default(30),
+  /** Rendu des clips (étape 6b) : qualité de l'export final (CRF x264, plus bas = meilleur). */
+  RENDER_FINAL_CRF: z.coerce.number().int().min(12).max(30).default(18),
+  RENDER_X264_PRESET: z
+    .enum(['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower'])
+    .default('medium'),
+  /** Hauteur de l'aperçu (largeur déduite en 9:16). */
+  RENDER_PREVIEW_HEIGHT: z.coerce.number().int().min(320).max(1920).default(960),
+  /** Octets lus par FFmpeg à l'ouverture (zone de détection protégée par le manifeste). */
+  RENDER_PROBE_BYTES: z.coerce.number().int().min(32).max(100_000_000).default(5_000_000),
   CLIP_WINDOW_MARGIN_SEC: z.coerce.number().int().min(0).max(600).default(30),
   CLIP_WINDOW_GRID_SEC: z.coerce.number().int().min(1).max(600).default(30),
   /* ---------------------------- Analyse éditoriale ---------------------------- */
@@ -186,6 +195,7 @@ export interface AppConfig {
   };
   audioTrackRoles: TrackRole[];
   cache: { maxBytes: number };
+  render: { finalCrf: number; x264Preset: string; previewHeight: number; probeBytes: number };
   clipWindow: { marginMs: number; gridMs: number };
   analysis: {
     effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -282,6 +292,12 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
     },
     audioTrackRoles: e.AUDIO_TRACK_ROLES,
     cache: { maxBytes: Math.round(e.CACHE_MAX_GB * 1024 ** 3) },
+    render: {
+      finalCrf: e.RENDER_FINAL_CRF,
+      x264Preset: e.RENDER_X264_PRESET,
+      previewHeight: e.RENDER_PREVIEW_HEIGHT,
+      probeBytes: e.RENDER_PROBE_BYTES,
+    },
     clipWindow: {
       marginMs: e.CLIP_WINDOW_MARGIN_SEC * 1000,
       gridMs: e.CLIP_WINDOW_GRID_SEC * 1000,

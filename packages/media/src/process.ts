@@ -6,6 +6,8 @@ export interface RunOptions {
   onStdoutLine?: (line: string) => void;
   /** Conserver stdout en mémoire (désactiver pour les sorties volumineuses). */
   captureStdout?: boolean;
+  /** Répertoire de travail du processus (ex. noms relatifs dans un graphe de filtres FFmpeg). */
+  cwd?: string;
 }
 
 export interface RunResult {
@@ -32,6 +34,7 @@ export function runProcess(command: string, args: readonly string[], opts: RunOp
       shell: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
     });
 
     let stdout = '';

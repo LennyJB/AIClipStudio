@@ -157,6 +157,47 @@ describe.skipIf(!enabled)('CLI npm run render (étape 6a)', () => {
     expect(after.err).toMatch(/PROPOSAL_NOT_ACCEPTED/);
   }, 180_000);
 
+  it('rendus : aperçu puis final, rendu identique réutilisé, refus si le micro n’est plus autorisé', async () => {
+    expect((await cli('review', ['--accept', P1])).code).toBe(0);
+    await cli('render', [
+      '--declare-mic',
+      REC,
+      '--creator-voice',
+      'present',
+      '--other-voices',
+      'absent',
+    ]);
+    // Projet créé sans audio (micro non déclaré à ce moment-là) : rendu refusé tant que la piste
+    // n'est pas ajoutée explicitement.
+    const refused = await cli('render', [P1, '--preview']);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toMatch(/EXPORT_CONSENT_REQUIRED/);
+    const preview = await cli('render', [P1, '--preview', '--enable-allowed-audio']);
+    expect(preview.code, preview.err).toBe(0);
+    expect(preview.out).toMatch(/Pistes autorisées activées : mic/);
+    expect(preview.out).toMatch(
+      /Rendu terminé : processing\/renders\/previews\/[0-9a-f-]+\/clip\.mp4 \(\d+×\d+/,
+    );
+    const final = await cli('render', [P1, '--final']);
+    expect(final.code, final.err).toBe(0);
+    expect(final.out).toMatch(
+      /Rendu terminé : exports\/\d{4}-\d{2}-\d{2}_le-plan-infaillible_[0-9a-f]{8}\/clip\.mp4 \(1080×1920/,
+    );
+    expect((await cli('render', [P1, '--final'])).out).toMatch(/Rendu identique déjà disponible/);
+    // Le micro capte désormais des tiers, sans accord : nouveau rendu refusé.
+    await cli('render', [
+      '--declare-mic',
+      REC,
+      '--creator-voice',
+      'present',
+      '--other-voices',
+      'present',
+    ]);
+    const blocked = await cli('render', [P1, '--final']);
+    expect(blocked.code).toBe(1);
+    expect(blocked.err).toMatch(/EXPORT_CONSENT_REQUIRED/);
+  }, 300_000);
+
   it('erreurs d’usage : code 2', async () => {
     expect((await cli('render', [])).code).toBe(2);
     expect((await cli('render', ['--consent', REC])).code).toBe(2);

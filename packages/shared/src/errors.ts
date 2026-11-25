@@ -40,6 +40,8 @@ export type AppErrorCode =
   | 'PROPOSAL_NOT_ACCEPTED'
   | 'EXPORT_CONSENT_REQUIRED'
   | 'DURATION_OUT_OF_RANGE'
+  | 'RENDER_FAILED'
+  | 'DISK_SPACE_LOW'
   | 'INTERNAL';
 
 export class AppError extends Error {

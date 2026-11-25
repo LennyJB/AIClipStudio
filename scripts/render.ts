@@ -1,6 +1,6 @@
 /**
- * Projets de clip (étape 6a), en ligne de commande. Aucun rendu à cette étape (6b), aucun
- * appel réseau, aucune publication.
+ * Projets de clip et rendus (étapes 6a et 6b), en ligne de commande. Aucun appel réseau,
+ * aucune publication : l'export s'arrête au fichier dans storage/exports/.
  *
  *   npm run render -- --list <recordingId>
  *   npm run render -- --audio <recordingId>
@@ -13,6 +13,11 @@
  *                      --other-voices present|absent [--note "…"]
  *   npm run render -- <proposalId> --create [--layout facecam_top|gameplay_crop|blurred_fit]
  *                      [--captions on|off]
+ *   npm run render -- <proposalId> --suggest-effects
+ *   npm run render -- <proposalId> --preview|--final [--confirm-duration] [--enable-allowed-audio]
+ *                      (attend la fin du rendu ; Ctrl+C l'annule proprement)
+ *     --enable-allowed-audio : ajoute au projet les pistes et sous-titres AUJOURD'HUI autorisés
+ *                              (après une déclaration ou un accord) ; jamais les autres.
  *
  * Les mêmes services que l'API sont utilisés (mêmes gardes : décision effective recalculée,
  * audio exporté, révisions immuables).
@@ -42,6 +47,11 @@ const { values, positionals } = parseArgs({
     create: { type: 'boolean', default: false },
     layout: { type: 'string' },
     captions: { type: 'string' },
+    preview: { type: 'boolean', default: false },
+    final: { type: 'boolean', default: false },
+    'confirm-duration': { type: 'boolean', default: false },
+    'suggest-effects': { type: 'boolean', default: false },
+    'enable-allowed-audio': { type: 'boolean', default: false },
   },
 });
 
@@ -52,7 +62,9 @@ const USAGE =
   '        npm run render -- --declare-mix <recordingId> --discord … --game-voice-chat … --other-voices …\n' +
   '        npm run render -- --declare-game <recordingId> --game-voice-chat present|absent\n' +
   '        npm run render -- --declare-mic <recordingId> --creator-voice present|absent --other-voices present|absent\n' +
-  '        npm run render -- <proposalId> --create [--layout …] [--captions on|off]';
+  '        npm run render -- <proposalId> --create [--layout …] [--captions on|off]\n' +
+  '        npm run render -- <proposalId> --suggest-effects\n' +
+  '        npm run render -- <proposalId> --preview|--final [--confirm-duration] [--enable-allowed-audio]';
 
 const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 
@@ -172,6 +184,13 @@ async function main(): Promise<number> {
     }
 
     const proposalId = positionals[0];
+    if (proposalId && (values.preview || values.final || values['suggest-effects'])) {
+      if (values.preview && values.final) {
+        console.error('Choisissez --preview OU --final');
+        return 2;
+      }
+      return await renderCommand(ctx, proposalId);
+    }
     if (!proposalId || !values.create) {
       console.error(USAGE);
       return 2;
@@ -215,6 +234,89 @@ async function main(): Promise<number> {
   } finally {
     ctx.db.close();
   }
+}
+
+/** Rendu ou effets d'une proposition (son projet doit exister : --create). */
+async function renderCommand(
+  ctx: Awaited<ReturnType<typeof openCliContext>>,
+  proposalId: string,
+): Promise<number> {
+  const { clips, renders, runner } = ctx.services;
+  const project = clips.repo.projectForProposal(proposalId);
+  if (!project) {
+    console.error('Aucun projet pour cette proposition : créez-le avec --create.');
+    return 1;
+  }
+  if (values['suggest-effects']) {
+    const r = await renders.suggest(project.id, {
+      requestId: randomUUID(),
+      baseRevision: project.currentRevision,
+    });
+    console.log(`Effets proposés (révision ${r.revision}) :`);
+    for (const e of r.suggested) console.log(`  ${e.type} — ${e.reason}`);
+    if (!r.suggested.length) console.log('  aucun');
+    return 0;
+  }
+  let revision = project.currentRevision;
+  if (values['enable-allowed-audio']) {
+    const view = await clips.view(project.id);
+    const allowed = view.audio.selected;
+    const captionSources = view.document.captions.sources.length
+      ? view.document.captions.sources.filter((r) => view.audio.captionRoles.includes(r))
+      : view.audio.captionRoles.filter((r) => r === 'mic' || r === 'mix');
+    const v = await clips.patch(
+      project.id,
+      {
+        requestId: randomUUID(),
+        baseRevision: revision,
+        changes: {
+          audio: { tracks: allowed.map((t) => ({ audioIndex: t.audioIndex, enabled: true })) },
+          captions: { enabled: captionSources.length > 0, sources: captionSources },
+        },
+      },
+      'cli',
+    );
+    revision = v.revision;
+    console.log(
+      `Pistes autorisées activées : ${allowed.map((t) => t.role).join(' + ') || 'aucune'} (révision ${revision}).`,
+    );
+  }
+  if (values['confirm-duration']) {
+    const v = await clips.patch(
+      project.id,
+      { requestId: randomUUID(), baseRevision: revision, changes: { confirmDuration: true } },
+      'cli',
+    );
+    revision = v.revision;
+    console.log(`Durée hors plage confirmée (révision ${revision}).`);
+  }
+  const kind = values.final ? 'final' : 'preview';
+  const r = await renders.request(project.id, { requestId: randomUUID(), kind }, 'cli');
+  if (!r.created && r.render.status === 'succeeded') {
+    console.log(`Rendu identique déjà disponible : ${r.render.id}`);
+  } else {
+    console.log(`Rendu ${kind === 'final' ? 'final' : 'd’aperçu'} lancé : ${r.render.id}`);
+    const stop = () => {
+      try {
+        renders.cancel(r.render.id);
+      } catch {
+        /* déjà terminé */
+      }
+    };
+    process.once('SIGINT', stop);
+    await runner.idle();
+    process.off('SIGINT', stop);
+  }
+  const done = renders.get(r.render.id);
+  if (done.status !== 'succeeded') {
+    console.error(`Rendu ${done.status} [${done.errorCode ?? '?'}] : ${done.errorMessage ?? ''}`);
+    return 1;
+  }
+  console.log(
+    `Rendu terminé : ${done.outputRelPath} (${done.width}×${done.height}, ${sec(done.durationMs ?? 0)})`,
+  );
+  if (done.srtRelPath) console.log(`  sous-titres : ${done.srtRelPath}`);
+  return 0;
 }
 
 runMain(main);

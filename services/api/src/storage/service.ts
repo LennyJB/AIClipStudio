@@ -15,6 +15,8 @@ export interface CleanupItem {
   category: CleanupCategory;
   bytes: number;
   derivativeId?: string;
+  /** Aperçu de rendu évincé (étape 6b). */
+  renderId?: string;
 }
 
 export interface CleanupReport {
@@ -104,6 +106,34 @@ export class StorageService {
   }
 
   /** Un chemin est protégé s'il (ou son fichier final) est déclaré par un traitement actif. */
+  /**
+   * Rendus (étape 6b) : dossiers protégés (rendu en attente, en cours ou en publication) et
+   * aperçus réussis (cache évinçable, jamais « orphelins »). Les exports finaux sont dans
+   * `exports/`, que le nettoyage ne parcourt jamais.
+   */
+  private renderState() {
+    const rows = this.ctx.db
+      .prepare(
+        `SELECT id, kind, status, COALESCE(last_served_at, finished_at, created_at) AS used
+         FROM clip_renders WHERE status <> 'evicted' ORDER BY used, id`,
+      )
+      .all() as { id: string; kind: string; status: string; used: string }[];
+    const protectedPrefixes: string[] = [];
+    const previews: { id: string; prefix: string }[] = [];
+    for (const r of rows) {
+      const dirs = [
+        `processing/renders/tmp/${r.id}/`,
+        `processing/renders/staging/${r.id}/`,
+        `processing/renders/previews/${r.id}/`,
+      ];
+      if (['queued', 'running', 'finalizing'].includes(r.status)) protectedPrefixes.push(...dirs);
+      else if (r.kind === 'preview' && r.status === 'succeeded') {
+        previews.push({ id: r.id, prefix: dirs[2]! });
+      }
+    }
+    return { protectedPrefixes, previews };
+  }
+
   private protectedPaths(): Set<string> {
     const set = this.jobs.activeFilePaths();
     for (const p of [...set]) {
@@ -173,15 +203,22 @@ export class StorageService {
     const grace = opts.orphanGraceMs ?? DEFAULT_ORPHAN_GRACE_MS;
     const files = await this.walk(this.paths.processing);
     const prot = this.protectedPaths();
+    const renders = this.renderState();
+    const isProtected = (rel: string, prefixes = renders.protectedPrefixes, set = prot) =>
+      set.has(rel) || prefixes.some((p) => rel.startsWith(p));
     const items: CleanupItem[] = [];
     let skippedInUse = 0;
     const consider = (item: CleanupItem) => {
-      if (prot.has(item.relPath)) skippedInUse++;
+      if (isProtected(item.relPath)) skippedInUse++;
       else items.push(item);
     };
 
     const derivatives = this.derivs.listByLeastRecentlyUsed();
     const known = new Set(derivatives.map((d) => d.relPath));
+    const previewFiles = new Map<string, FileEntry[]>(
+      renders.previews.map((p) => [p.id, files.filter((f) => f.relPath.startsWith(p.prefix))]),
+    );
+    for (const list of previewFiles.values()) for (const f of list) known.add(f.relPath);
     if (opts.includeTemp ?? true) {
       for (const f of files.filter((x) => x.relPath.endsWith('.part'))) {
         consider({ relPath: f.relPath, category: 'temp', bytes: f.bytes });
@@ -191,13 +228,27 @@ export class StorageService {
       const now = Date.now();
       for (const f of files) {
         if (f.relPath.endsWith('.part') || known.has(f.relPath) || now - f.mtimeMs < grace) continue;
+        // Fichiers d'un rendu encore connu en base (actif) : jamais orphelins.
+        if (isProtected(f.relPath)) continue;
         consider({ relPath: f.relPath, category: 'orphan', bytes: f.bytes });
       }
     }
     if (opts.includeCache ?? true) {
       const cache = derivatives.filter((d) => d.retention === 'cache');
-      let total = cache.reduce((s, d) => s + d.sizeBytes, 0);
+      const previewBytes = (id: string) =>
+        (previewFiles.get(id) ?? []).reduce((s, f) => s + f.bytes, 0);
+      let total =
+        cache.reduce((s, d) => s + d.sizeBytes, 0) +
+        renders.previews.reduce((s, p) => s + previewBytes(p.id), 0);
       const budget = opts.evictAllCache ? 0 : this.ctx.config.cache.maxBytes;
+      // Aperçus de rendu d'abord (régénérables rapidement), du moins récemment servi au plus récent.
+      for (const p of renders.previews) {
+        if (total <= budget) break;
+        for (const f of previewFiles.get(p.id) ?? []) {
+          items.push({ relPath: f.relPath, category: 'cache', bytes: f.bytes, renderId: p.id });
+        }
+        total -= previewBytes(p.id);
+      }
       for (const d of cache) {
         if (total <= budget) break;
         if (prot.has(d.relPath)) {
@@ -221,7 +272,22 @@ export class StorageService {
     // puis suppression des fichiers (un dérivé sans ligne ne peut plus être servi).
     const executed = this.ctx.db.transaction(() => {
       const protNow = this.protectedPaths();
-      const ok = items.filter((i) => !protNow.has(i.relPath));
+      const rendersNow = this.renderState();
+      const evicted = new Set<string>();
+      const ok = items.filter((i) => {
+        if (isProtected(i.relPath, rendersNow.protectedPrefixes, protNow)) return false;
+        if (!i.renderId) return true;
+        // Un aperçu n'est supprimé que s'il est encore « réussi » ; un final ne l'est jamais
+        // (contrainte SQL : un final ne peut pas passer à « evicted »).
+        if (evicted.has(i.renderId)) return true;
+        const changed = this.ctx.db
+          .prepare(
+            `UPDATE clip_renders SET status = 'evicted' WHERE id = ? AND kind = 'preview' AND status = 'succeeded'`,
+          )
+          .run(i.renderId).changes;
+        if (changed) evicted.add(i.renderId);
+        return changed === 1;
+      });
       for (const i of ok) if (i.derivativeId) this.derivs.delete(i.derivativeId);
       return ok;
     })();

@@ -4,7 +4,9 @@
  * Les commandes sont lancées avec execFile (sans shell) et des arguments fixes.
  */
 import { execFile } from 'node:child_process';
-import { access, constants } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, constants, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -20,6 +22,11 @@ const { values: cli } = parseArgs({
     'gpu-model': { type: 'string', default: 'tiny' },
     /** Vérifie la clé et les modèles Claude (Models API : aucune génération, aucun coût). */
     claude: { type: 'boolean', default: false },
+    /**
+     * Rejoue la preuve de suffisance du manifeste d'intégrité (étape 6) avec le FFmpeg installé :
+     * octets hors de l'ensemble protégé mis à zéro ⇒ décodage identique.
+     */
+    render: { type: 'boolean', default: false },
   },
 });
 
@@ -85,7 +92,7 @@ async function main() {
       'Encodeurs H.264/AAC',
       missing.length ? 'warn' : 'ok',
       missing.length
-        ? `manquants : ${missing.join(', ')} (requis pour le rendu, plus tard)`
+        ? `manquants : ${missing.join(', ')} (requis pour le rendu des clips)`
         : 'libx264, aac',
       false,
     );
@@ -98,6 +105,53 @@ async function main() {
       false,
     );
   }
+
+  // Rendu des clips (étape 6) : filtres FFmpeg utilisés par le moteur et polices fournies.
+  const filters = await tryRun(config.tools.ffmpeg, ['-hide_banner', '-filters']);
+  if (filters.ok) {
+    const needed = [
+      'subtitles',
+      'drawbox',
+      'zoompan',
+      'gblur',
+      'loudnorm',
+      'amix',
+      'vstack',
+      'overlay',
+    ];
+    const missing = needed.filter((f) => !new RegExp(`\\s${f}\\s`).test(filters.out));
+    add(
+      'Filtres de rendu (libass…)',
+      missing.length ? 'fail' : 'ok',
+      missing.length
+        ? `manquants : ${missing.join(', ')} (rendu des clips impossible)`
+        : needed.join(', '),
+      false,
+    );
+  }
+  const fontsDir = path.join(ROOT_DIR, 'assets', 'fonts');
+  const expectedFonts: Record<string, string> = {
+    'Montserrat-ExtraBold.ttf': 'd3ac6a843d3ba6d5cafd44cf39e437055c8aed7e261010f595f57d3c7b3e2c1b',
+    'Inter-Bold.ttf': '288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f',
+  };
+  const fontProblems: string[] = [];
+  for (const [file, hash] of Object.entries(expectedFonts)) {
+    try {
+      const got = createHash('sha256')
+        .update(await readFile(path.join(fontsDir, file)))
+        .digest('hex');
+      if (got !== hash) fontProblems.push(`${file} modifiée`);
+    } catch {
+      fontProblems.push(`${file} illisible`);
+    }
+  }
+  add(
+    'Polices des sous-titres',
+    fontProblems.length ? 'fail' : 'ok',
+    fontProblems.length ? fontProblems.join(', ') : 'Montserrat ExtraBold, Inter Bold (OFL)',
+    false,
+  );
+  if (cli.render) await integritySelfTest(config);
 
   // SQLite natif
   try {
@@ -191,6 +245,110 @@ async function main() {
     cli.claude,
   );
   if (cli.claude && config.claude.apiKey) await claudeCheck(config);
+}
+
+/**
+ * Preuve de suffisance du manifeste d'intégrité avec CE FFmpeg : sur un MKV généré, tous les
+ * octets hors de l'ensemble protégé sont mis à zéro, puis la fenêtre est décodée et comparée.
+ */
+async function integritySelfTest(config: ReturnType<typeof loadConfig>) {
+  const { buildIntegrityManifest } = await import('@acs/media');
+  const dir = await mkdtemp(path.join(tmpdir(), 'acs-doctor-'));
+  try {
+    const src = path.join(dir, 'source.mkv');
+    const gen = await tryRun(
+      config.tools.ffmpeg,
+      [
+        '-v',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=size=320x180:rate=30',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=f=440:sample_rate=48000',
+        '-t',
+        '20',
+        '-map',
+        '0',
+        '-map',
+        '1',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-g',
+        '60',
+        '-c:a',
+        'aac',
+        src,
+      ],
+      60_000,
+    );
+    if (!gen.ok) {
+      add(
+        'Intégrité (preuve de suffisance)',
+        'fail',
+        'génération de la vidéo de test impossible',
+        false,
+      );
+      return;
+    }
+    const probe = 150_000;
+    const m = await buildIntegrityManifest({
+      ffprobePath: config.tools.ffprobe,
+      filePath: src,
+      windowStartMs: 6_300,
+      windowEndMs: 14_000,
+      probeBytes: probe,
+    });
+    const data = await readFile(src);
+    const zero = Buffer.alloc(data.length);
+    for (const [s, e] of m.ranges) data.copy(zero, s, s, e);
+    const zeroed = path.join(dir, 'zero.mkv');
+    await writeFile(zeroed, zero);
+    const decode = async (f: string) =>
+      (
+        await tryRun(
+          config.tools.ffmpeg,
+          [
+            '-v',
+            'error',
+            '-probesize',
+            String(probe),
+            '-ss',
+            '6.300',
+            '-i',
+            f,
+            '-t',
+            '7.7',
+            '-map',
+            '0',
+            '-f',
+            'framemd5',
+            '-',
+          ],
+          60_000,
+        )
+      ).out
+        .split('\n')
+        .filter((l) => l && !l.startsWith('#'))
+        .join('\n');
+    const same = m.method === 'byte_ranges' && (await decode(src)) === (await decode(zeroed));
+    add(
+      'Intégrité (preuve de suffisance)',
+      same ? 'ok' : 'fail',
+      same
+        ? `décodage identique avec ${((100 * m.protectedBytes) / data.length).toFixed(0)} % des octets protégés`
+        : 'le décodage diffère : la vérification d’intégrité n’est pas fiable avec ce FFmpeg',
+      false,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 /** Clé valide et modèles accessibles (aucune génération : rien n'est facturé). */

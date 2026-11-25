@@ -15,6 +15,7 @@ export async function openCliContext() {
   const ctx = { config, db, log };
   const services = createServices(ctx);
   recoverServices(services);
+  await services.renders.recoverFinalizing();
   const recordings = new RecordingRepository(db);
   return { config, db, ctx, services, recordings };
 }

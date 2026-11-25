@@ -1,5 +1,13 @@
 /**
- * @acs/render — moteur de rendu des clips (code pur).
- * Étape 6a : règle d'audio exporté (`allowedAudio`). Le plan de rendu FFmpeg arrive en 6b.
+ * @acs/render — moteur de rendu des clips. Code pur : règle d'audio exporté, dispositions 9:16,
+ * sous-titres ASS/SRT, effets, plan de rendu et arguments FFmpeg. L'exécution (processus) est
+ * faite par l'API.
  */
 export * from './audio';
+export * from './effects';
+export * from './ffmpeg-args';
+export * from './layout';
+export * from './plan';
+export * from './presets';
+export * from './subtitles';
+export * from './run';

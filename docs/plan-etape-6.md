@@ -1061,3 +1061,43 @@ Précisions apportées pendant l'implémentation de la PR 6a, sans changer les d
   6b avec les autres variables de rendu, la valeur utilisée étant de toute façon enregistrée dans
   chaque manifeste.
 - **Annulation des rendus depuis la revue** et `doctor --render` : en 6b, avec les rendus.
+
+---
+
+## 18. Écarts de mise en œuvre (PR 6b)
+
+Précisions apportées pendant l'implémentation de la PR 6b, sans changer les décisions du § 14 :
+
+- **Chemins en base** : `staging_rel_path`, `output_rel_path` et `srt_rel_path` sont relatifs au
+  dossier `storage/` (comme les autres chemins de la base), par exemple
+  `exports/2026-11-25_titre_3f2a9c1e/clip.mp4` ou `processing/renders/previews/<id>/clip.mp4`.
+- **Effets** : proposés à la demande (`POST /api/clip-projects/:id/effects/suggest`,
+  `npm run render -- <id> --suggest-effects`) dans une révision « système » ; jamais ajoutés sans
+  cette action. L'indice d'énergie est calculé localement sur la piste micro, même non exportée :
+  rien n'en sort du poste.
+- **Zoom** : filtre `zoompan` (une image par image d'entrée) avec montée et descente de 0,25 s ;
+  testé au pixel.
+- **Idempotence des rendus** : par empreinte du plan (document, accords, confidentialité,
+  intégrité, version du moteur) ; la même demande renvoie le rendu existant.
+- **Annulation par la revue** : après la transaction de décision (et non dans la même), car
+  l'annulation d'un processus n'est pas transactionnelle ; la garantie reste la publication sous
+  verrou.
+- **CLI** : `--enable-allowed-audio` ajoute explicitement les pistes et sous-titres autorisés au
+  moment de la commande (projet créé avant une déclaration) ; le CLI attend la fin du rendu
+  (Ctrl+C l'annule).
+- **Image fixe** : renvoyée directement (JPEG), sans être stockée.
+- **Sorties** : `render.json` ne contient ni chemin absolu, ni texte de transcription.
+- **Récupération des rendus `finalizing` (correctif de revue)** : avant toute publication au
+  redémarrage, le plan est recalculé à partir de l'état ACTUEL (document, accords et
+  déclarations audio, fichier de confidentialité, intégrité, version du moteur) et doit avoir
+  exactement l'empreinte du rendu ; puis, sous le verrou, décision, révision et état audio sont
+  revérifiés. Un accord retiré, une déclaration modifiée, des sous-titres devenus non autorisés
+  ou un fichier de confidentialité changé empêchent la publication : les fichiers sont supprimés
+  (ils n'ont jamais été un export) et la ligne passe à `failed` avec la raison
+  (`EXPORT_CONSENT_REQUIRED`, `VERSION_CONFLICT`, `PROPOSAL_NOT_ACCEPTED`) ; un contenu altéré
+  alors que tout est valide est mis en quarantaine. Cette récupération est attendue au démarrage
+  du serveur et du CLI avant tout autre travail.
+- **Confidentialité relue sous le verrou (correctif de revue)** : dans la récupération comme dans
+  la publication normale, l'empreinte du fichier de confidentialité est relue de façon synchrone
+  DANS la transaction, juste avant tout renommage, et comparée à celle du rendu. Un fichier
+  modifié entre le recalcul du plan et la publication ⇒ fichier retiré et `VERSION_CONFLICT`.

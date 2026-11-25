@@ -30,6 +30,7 @@ const DETAILED_CODES = new Set<AppErrorCode>([
   'PROPOSAL_NOT_REVIEWABLE',
   'EXPORT_CONSENT_REQUIRED',
   'DURATION_OUT_OF_RANGE',
+  'DISK_SPACE_LOW',
 ]);
 
 const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
@@ -50,6 +51,8 @@ const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   PROPOSAL_NOT_ACCEPTED: 409,
   EXPORT_CONSENT_REQUIRED: 422,
   DURATION_OUT_OF_RANGE: 422,
+  DISK_SPACE_LOW: 507,
+  RENDER_FAILED: 500,
   TOOL_MISSING: 503,
   INTERNAL: 500,
 };

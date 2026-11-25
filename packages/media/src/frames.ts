@@ -72,6 +72,21 @@ export interface ExtractedFrame {
   sizeBytes: number;
 }
 
+/**
+ * Aplats noirs OPAQUES recouvrant les zones sensibles, en pixels de l'image SOURCE. À placer
+ * avant tout recadrage : la zone ne peut réapparaître dans aucun calque. Partagé avec le rendu.
+ */
+export function opaqueMaskFilters(
+  masks: readonly NormalizedRect[],
+  width: number,
+  height: number,
+): string[] {
+  return masks.map((m) => {
+    const p = toPixelRect(m, width, height);
+    return `drawbox=x=${p.x}:y=${p.y}:w=${p.w}:h=${p.h}:color=black@1:t=fill`;
+  });
+}
+
 export function frameFilter(
   o: Pick<
     ExtractFrameOptions,
@@ -84,11 +99,7 @@ export function frameFilter(
 } {
   const W = o.videoWidth;
   const H = o.videoHeight;
-  const parts: string[] = [];
-  for (const m of o.masks) {
-    const p = toPixelRect(m, W, H);
-    parts.push(`drawbox=x=${p.x}:y=${p.y}:w=${p.w}:h=${p.h}:color=black@1:t=fill`);
-  }
+  const parts: string[] = [...opaqueMaskFilters(o.masks, W, H)];
   for (const l of o.outlines ?? []) {
     const p = toPixelRect(l.rect, W, H);
     const t = Math.max(2, Math.round(W / 320));
