@@ -940,10 +940,11 @@ réaction** de la 6a s'appliquent toujours au premier et au dernier segment.
 
 ## 13. Avancement
 
-| PR                                  | Statut                                                         |
-| ----------------------------------- | -------------------------------------------------------------- |
-| 7a — Modèle v2, opérations et scène | en revue                                                       |
-| 7b à 7k                             | non commencées (chacune attend la validation de la précédente) |
+| PR                                                | Statut                                                         |
+| ------------------------------------------------- | -------------------------------------------------------------- |
+| 7a — Modèle v2, opérations et scène               | fusionnée (PR #18)                                             |
+| 7b — Journal d'édition, points de contrôle et API | en revue                                                       |
+| 7c à 7k                                           | non commencées (chacune attend la validation de la précédente) |
 
 ---
 
@@ -1034,3 +1035,48 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   l'arrêt et sur la partie après (les trois parties gardent le même cadrage).
 - **`sourceAudible`** : vrai seulement si au moins une piste autorisée et activée est effectivement
   jouée (faux après révocation, retrait de la piste, ou sans piste).
+
+## 15. Précisions de mise en œuvre (PR 7b)
+
+- **Transition jusqu'aux PR 7c et 7e (décision du créateur : projection v1 exacte)** :
+  - le document courant est désormais un document v2 (point de contrôle + journal) ;
+  - l'interface 6c, le `PATCH` v1, la proposition d'effets et le moteur de l'étape 6 lisent sa
+    **projection v1 exacte** (`projectToV1`) : elle n'existe que si l'aller-retour v2 → v1 → v2 est
+    sans perte ;
+  - si le document utilise une fonction de l'éditeur (vide, calque, masque temporel, sous-titre
+    manuel, automatisation, disposition personnalisée, fond…), ces chemins répondent
+    `409 EDITOR_REQUIRED` avec un message explicite ; le document reste lisible par
+    `GET /api/clip-projects/:id/document`, et rien n'est jamais projeté approximativement.
+- **Version d'un projet** : numéro de la dernière entrée du journal (les projets existants
+  continuent à partir de leur révision courante). C'est la valeur `revision` renvoyée par l'API
+  6c et attendue comme `baseRevision` par le `PATCH` : l'interface 6c fonctionne sans changement.
+- **Points de contrôle** : révision immuable (schéma v2) dont le numéro est la version
+  qu'elle fige (`request_id = checkpoint-<version>`). Créés avant chaque demande de rendu, tous les
+  200 lots, ou à la demande ; idempotents. `GET /revisions` liste les **versions** (révisions
+  d'origine puis entrées du journal), sans doublon pour les points de contrôle.
+- **PATCH v1 et proposition d'effets** : transformés par les règles de l'étape 6 sur la projection
+  v1, puis enregistrés comme entrée `system` du journal sous forme d'une restauration clé par clé
+  vérifiée (`diffToRestore`). Ils sont annulables depuis l'éditeur comme les autres entrées. La
+  confirmation de désactivation d'un masque est transmise telle quelle.
+- **Rendu** : la demande crée d'abord un point de contrôle ; si le projet change entre ce point
+  et la construction du plan, `VERSION_CONFLICT` (aucun rendu ne référence un état sans révision
+  immuable). La publication et la récupération comparent la **version courante** du journal.
+- **Empreinte attendue** (`expectedHash`) : comparée seulement quand le lot est construit sur la
+  version courante. Un lot réappliqué (`rebased: true`) renvoie la nouvelle empreinte, que
+  l'interface doit reprendre.
+- **Rejeu** : chaque empreinte d'entrée est vérifiée ; un écart donne `JOURNAL_CORRUPTED`, sans
+  aucune correction. Le journal est protégé par des déclencheurs (aucune modification ni
+  suppression, sauf suppression du projet en cascade).
+- **Nouveaux codes d'erreur** : `EDITOR_REQUIRED` (409), `HISTORY_CHANGED` (409),
+  `PRECONDITION_FAILED` (409), `DOCUMENT_DIVERGED` (409), `MASK_RISK_NOT_ACKNOWLEDGED` (422),
+  `JOURNAL_CORRUPTED` (500).
+- **Tests existants adaptés au nouveau stockage** (sans changer ce qu'ils vérifient) : le test de la
+  migration 7 l'applique seule (`MIGRATIONS.slice(0, 7)`) ; le test 6c « révisions antérieures
+  intactes » lit l'empreinte de la version par l'API au lieu de la table des révisions.
+- **API ajoutée** :
+
+  | Méthode | Route                                 | Rôle                                                         |
+  | ------- | ------------------------------------- | ------------------------------------------------------------ |
+  | GET     | `/api/clip-projects/:id/document`     | Document v2, version, empreinte, historique (haut des piles) |
+  | POST    | `/api/clip-projects/:id/edits`        | Lot (`do`), annulation (`undo`), rétablissement (`redo`)     |
+  | GET     | `/api/clip-projects/:id/edits?since=` | Entrées après une version (synchronisation entre onglets)    |
