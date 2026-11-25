@@ -29,6 +29,12 @@ const freeze = (id: string, at: number, dur: number): Segment => ({
   srcAtMs: sourceMs(at),
   editDurMs: dur,
 });
+/** Position source attendue (échoue si l'instant est dans un vide ou hors du clip). */
+const srcAt = (segs: Segment[], t: number) => {
+  const p = editToSource(segs, editMs(t));
+  if (p?.kind !== 'source') throw new Error(`position source attendue à ${t} ms`);
+  return p;
+};
 const editsOf = (segs: Segment[], s: number) =>
   sourceToEdit(segs, sourceMs(s)).map((p) => p.editMs);
 
@@ -140,12 +146,14 @@ describe('arrêts sur image', () => {
   it('le montage avance, la source reste figée', () => {
     expect(totalEditDuration(segs)).toBe(6_500);
     expect(editToSource(segs, editMs(3_200))).toEqual({
+      kind: 'source',
       srcMs: 3_000,
       segmentId: 'f',
       frozen: true,
     });
     expect(editToSource(segs, editMs(4_400))).toMatchObject({ srcMs: 3_000, frozen: true });
     expect(editToSource(segs, editMs(4_500))).toEqual({
+      kind: 'source',
       srcMs: 3_000,
       segmentId: 'b',
       frozen: false,
@@ -186,14 +194,14 @@ describe('modification de la durée des segments', () => {
     expect(totalEditDuration(trimmed)).toBe(16_000);
     expect(resolveTiming(segs, caption).ranges[0]?.editStartMs).toBe(15_000);
     expect(resolveTiming(trimmed, caption).ranges[0]?.editStartMs).toBe(11_000); // 6 s (a rogné) + 5 s
-    expect(editToSource(trimmed, editMs(11_000))?.srcMs).toBe(25_000);
+    expect(srcAt(trimmed, 11_000).srcMs).toBe(25_000);
   });
 
   it('accélérer un segment raccourcit le montage', () => {
     const fast = updateSegment(segs, 'b', { speed: 2 });
     expect(totalEditDuration(fast)).toBe(15_000);
     expect(editsOf(fast, 26_000)).toEqual([13_000]);
-    expect(editToSource(fast, editMs(13_000))?.srcMs).toBe(26_000);
+    expect(srcAt(fast, 13_000).srcMs).toBe(26_000);
   });
 
   it('un carton de fin reste collé à la fin', () => {
@@ -301,7 +309,7 @@ describe('propriétés', () => {
           // Ce segment contient s : au moins une occurrence le concerne.
           const mine = positions.find((p) => p.segmentId === seg.id);
           expect(mine).toBeDefined();
-          const back = editToSource(segs, mine!.editMs)!;
+          const back = srcAt(segs, mine!.editMs);
           expect(back.segmentId).toBe(seg.id);
           expect(Math.abs(back.srcMs - s)).toBeLessThanOrEqual(
             seg.speed === 1 ? 0 : tolerance(seg.speed),
@@ -316,14 +324,13 @@ describe('propriétés', () => {
       fc.property(arbTimeline, fc.double({ min: 0, max: 1, noNaN: true }), (segs, r) => {
         const total = totalEditDuration(segs);
         const t = Math.min(total - 1, Math.floor(r * total));
-        const pos = editToSource(segs, editMs(t));
-        expect(pos).not.toBeNull();
-        if (pos!.frozen) return;
-        const seg = segs.find((x) => x.id === pos!.segmentId) as Extract<
+        const pos = srcAt(segs, t);
+        if (pos.frozen) return;
+        const seg = segs.find((x) => x.id === pos.segmentId) as Extract<
           Segment,
           { kind: 'source' }
         >;
-        const occ = sourceToEdit(segs, pos!.srcMs).find((p) => p.segmentId === seg.id)!;
+        const occ = sourceToEdit(segs, pos.srcMs).find((p) => p.segmentId === seg.id)!;
         expect(Math.abs(occ.editMs - t)).toBeLessThanOrEqual(
           seg.speed === 1 ? 0 : tolerance(1 / seg.speed),
         );
@@ -380,3 +387,49 @@ describe('propriétés', () => {
     );
   });
 });
+
+describe('vide (suppression sans décalage)', () => {
+  const gap = (id: string, dur: number): Segment => ({ id, kind: 'gap', editDurMs: dur });
+  const segs = [src('a', 0, 3_000), gap('g', 2_000), src('b', 10_000, 12_000)];
+
+  it('type de retour exact d’editToSource : source, vide, ou null hors du clip seulement', () => {
+    expect(totalEditDuration(segs)).toBe(7_000);
+    expect(editToSource(segs, editMs(2_999))).toEqual({
+      kind: 'source',
+      srcMs: 2_999,
+      segmentId: 'a',
+      frozen: false,
+    });
+    expect(editToSource(segs, editMs(3_000))).toEqual({ kind: 'gap', segmentId: 'g' });
+    expect(editToSource(segs, editMs(4_999))).toEqual({ kind: 'gap', segmentId: 'g' });
+    expect(editToSource(segs, editMs(5_000))).toEqual({
+      kind: 'source',
+      srcMs: 10_000,
+      segmentId: 'b',
+      frozen: false,
+    });
+    // null : uniquement hors du clip, jamais pour un vide.
+    expect(editToSource(segs, editMs(7_000))).toBeNull();
+  });
+
+  it('un vide ne porte aucun contenu source : rien n’y est placé, le reste suit', () => {
+    expect(sourceToEdit(segs, sourceMs(10_500)).map((p) => p.editMs)).toEqual([5_500]);
+    const ranges = sourceRangeToEditRanges(segs, sourceMs(0), sourceMs(20_000));
+    expect(ranges.map((r) => r.segmentId)).toEqual(['a', 'b']);
+    expect(placeSegments(segs).map((p) => [p.editStartMs, p.editEndMs])).toEqual([
+      [0, 3_000],
+      [3_000, 5_000],
+      [5_000, 7_000],
+    ]);
+  });
+
+  it('validation : durée entière positive', () => {
+    expect(validateSegments([src('a', 0, 1_000), gap('g', 0)]).map((i) => i.code)).toContain(
+      'ZERO_DURATION',
+    );
+    expect(validateSegments([src('a', 0, 1_000), gap('g', 1.5)]).map((i) => i.code)).toContain(
+      'NOT_INTEGER',
+    );
+  });
+});
+

@@ -5,3 +5,4 @@
 export * from './time';
 export * from './captions';
 export * from './project';
+export * from './geometry';

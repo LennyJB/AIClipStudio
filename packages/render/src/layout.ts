@@ -7,14 +7,17 @@
  * peuvent réapparaître dans aucun calque (fond flouté et facecam compris).
  */
 import { opaqueMaskFilters, toPixelRect } from '@acs/media';
-import type { ClipProject } from '@acs/timeline';
+import {
+  cropToAspect,
+  even,
+  evenPos,
+  presetGeometry,
+  type ClipProject,
+  type PixelRect,
+} from '@acs/timeline';
 
-export interface PixelRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+export { cropToAspect };
+export type { PixelRect };
 
 /** Fenêtre de zoom en temps montage (secondes), facteur maximal atteint au plateau. */
 export interface ZoomWindow {
@@ -40,23 +43,11 @@ export interface VideoGraphInput {
   fontsDir: string;
 }
 
-/** Dimension paire (≥ 2). */
-const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
-/** Position paire (≥ 0). */
-const evenPos = (n: number) => Math.max(0, Math.floor(n / 2) * 2);
 const num = (n: number) => {
   if (!Number.isFinite(n)) throw new RangeError('valeur non finie dans le graphe');
   return Number(n.toFixed(4)).toString();
 };
 
-/** Plus grand rectangle d'un rapport donné dans `r`, décalé horizontalement selon `focusX`. */
-export function cropToAspect(r: PixelRect, aspect: number, focusX = 0.5): PixelRect {
-  const w = even(Math.min(r.w, r.h * aspect));
-  const h = even(Math.min(r.h, w / aspect));
-  const x = r.x + evenPos(Math.max(0, Math.min(1, focusX)) * (r.w - w));
-  const y = r.y + evenPos((r.h - h) / 2);
-  return { x, y, w, h };
-}
 
 const crop = (r: PixelRect) => `crop=${r.w}:${r.h}:${r.x}:${r.y}`;
 
@@ -86,34 +77,17 @@ export interface VideoGeometry {
   facecamHeight: number;
 }
 
+/** Géométrie source : fonction partagée avec l'aperçu de l'éditeur (`@acs/timeline`, étape 7). */
 export function computeGeometry(i: VideoGraphInput): VideoGeometry {
-  const W = i.srcWidth;
-  const H = i.srcHeight;
   const masks = i.layout.masks
     .filter((m) => m.mode === 'opaque')
-    .map((m) => toPixelRect(m.rect, W, H));
-  const g = toPixelRect(i.layout.gameplayRect, W, H);
-  if (i.layout.preset === 'facecam_top') {
-    if (!i.layout.facecamRect) throw new RangeError('disposition facecam_top sans facecam');
-    const top = even(i.outHeight * i.layout.facecamShare);
-    const bottom = i.outHeight - top;
-    const f = toPixelRect(i.layout.facecamRect, W, H);
-    return {
-      masks,
-      facecam: cropToAspect(f, i.outWidth / top, 0.5),
-      gameplay: cropToAspect(g, i.outWidth / bottom, i.layout.focusX),
-      facecamHeight: top,
-    };
-  }
-  if (i.layout.preset === 'gameplay_crop') {
-    return {
-      masks,
-      facecam: null,
-      gameplay: cropToAspect(g, i.outWidth / i.outHeight, i.layout.focusX),
-      facecamHeight: 0,
-    };
-  }
-  return { masks, facecam: null, gameplay: { ...g, w: even(g.w), h: even(g.h) }, facecamHeight: 0 };
+    .map((m) => toPixelRect(m.rect, i.srcWidth, i.srcHeight));
+  const geo = presetGeometry(
+    i.layout,
+    { width: i.srcWidth, height: i.srcHeight },
+    { width: i.outWidth, height: i.outHeight },
+  );
+  return { masks, ...geo };
 }
 
 /**
