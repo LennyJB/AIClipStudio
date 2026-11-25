@@ -236,6 +236,17 @@ export class AnalysisService {
     return { framing, status: 'validated' };
   }
 
+  /** Profil de cadrage de l'enregistrement s'il est VALIDÉ et inchangé depuis, sinon null. */
+  async validatedFraming(recordingId: string): Promise<FramingProfile | null> {
+    const { framing, status } = await this.framingState(this.repo.getSettings(recordingId));
+    return status === 'validated' ? framing : null;
+  }
+
+  /** Fichier de confidentialité configuré (null s'il n'existe pas) ; invalide ⇒ erreur. */
+  async privacy(): Promise<{ file: PrivacyFile | null; hash: string | null }> {
+    return this.readPrivacyFile();
+  }
+
   async settings(recordingId: string): Promise<SettingsView> {
     this.recording(recordingId);
     const s = this.repo.getSettings(recordingId);

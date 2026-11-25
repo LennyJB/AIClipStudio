@@ -5,6 +5,7 @@ import type { AppConfig } from './config';
 import type { Db } from './db';
 import { loggerOptions } from './logger';
 import { registerAnalysisRoutes } from './routes/analysis';
+import { registerClipRoutes } from './routes/clips';
 import { registerReviewRoutes } from './routes/review';
 import { registerRecordingRoutes } from './routes/recordings';
 import { registerStorageRoutes } from './routes/storage';
@@ -27,6 +28,8 @@ const DETAILED_CODES = new Set<AppErrorCode>([
   'DECISION_ELSEWHERE',
   'VERSION_CONFLICT',
   'PROPOSAL_NOT_REVIEWABLE',
+  'EXPORT_CONSENT_REQUIRED',
+  'DURATION_OUT_OF_RANGE',
 ]);
 
 const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
@@ -44,6 +47,9 @@ const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   PROPOSAL_NOT_REVIEWABLE: 409,
   AUDIO_TRACK_MISSING: 409,
   NOT_READY: 409,
+  PROPOSAL_NOT_ACCEPTED: 409,
+  EXPORT_CONSENT_REQUIRED: 422,
+  DURATION_OUT_OF_RANGE: 422,
   TOOL_MISSING: 503,
   INTERNAL: 500,
 };
@@ -98,6 +104,7 @@ export function buildApp({ config, db, model }: AppDeps): {
   registerTranscriptionRoutes(app, ctx, services);
   registerAnalysisRoutes(app, services);
   registerReviewRoutes(app, services);
+  registerClipRoutes(app, services);
   app.addHook('onClose', async () => {
     await services.runner.stop();
   });

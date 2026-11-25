@@ -6,6 +6,8 @@ import { JobRunner } from './jobs/runner';
 import { StorageService } from './storage/service';
 import { TranscriptionService } from './transcriptions/service';
 import { ReviewService } from './review/service';
+import { ExportAudioService } from './clips/export-audio';
+import { ClipProjectService } from './clips/service';
 
 export interface Services {
   runner: JobRunner;
@@ -14,6 +16,8 @@ export interface Services {
   transcriptions: TranscriptionService;
   analysis: AnalysisService;
   review: ReviewService;
+  exportAudio: ExportAudioService;
+  clips: ClipProjectService;
 }
 
 export interface ServiceOptions {
@@ -50,7 +54,9 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
     },
   );
   const review = new ReviewService(ctx, transcriptions, derivatives);
-  return { runner, derivatives, storage, transcriptions, analysis, review };
+  const exportAudio = new ExportAudioService(ctx);
+  const clips = new ClipProjectService(ctx, review, analysis, exportAudio);
+  return { runner, derivatives, storage, transcriptions, analysis, review, exportAudio, clips };
 }
 
 /** Au démarrage : traitements, transcriptions et analyses restés « en cours » deviennent interrompus. */

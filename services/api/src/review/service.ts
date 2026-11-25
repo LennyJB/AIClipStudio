@@ -7,7 +7,9 @@
  *  - une décision vaut pour tout son moment ; une proposition qui en hérite ne crée rien ;
  *  - chaque demande porte un `requestId` : rejouée, elle renvoie la réponse d'origine, même si
  *    l'état a changé depuis (y compris pour une demande sans effet) ;
- *  - tout ce qui est lu et écrit pour une demande l'est dans UNE transaction SQLite ;
+ *  - tout ce qui est lu et écrit pour une demande l'est dans UNE transaction SQLite, prise en
+ *    écriture dès son début (BEGIN IMMEDIATE) : une décision et la publication d'un export
+ *    (étape 6) sont ainsi totalement ordonnées, même entre processus (API et CLI) ;
  *  - rien n'est envoyé à Claude et aucune préférence n'est déduite ni activée.
  */
 import { createHash, randomUUID } from 'node:crypto';
@@ -140,59 +142,61 @@ export class ReviewService {
    * l'ordre (création, identifiant). Les appartenances existantes ne sont jamais recalculées.
    */
   ensureMoments(recordingId: string): number {
-    return this.ctx.db.transaction(() => {
-      const fresh = this.ctx.db
-        .prepare(
-          `SELECT p.id, p.punchline_segment_id, p.punchline_ms, p.src_start_ms, p.src_end_ms, p.created_at
+    return this.ctx.db
+      .transaction(() => {
+        const fresh = this.ctx.db
+          .prepare(
+            `SELECT p.id, p.punchline_segment_id, p.punchline_ms, p.src_start_ms, p.src_end_ms, p.created_at
            FROM clip_proposals p
            JOIN analysis_runs r ON r.id = p.run_id
            LEFT JOIN moment_members mm ON mm.proposal_id = p.id
            WHERE p.recording_id = ? AND p.merged_into_id IS NULL AND mm.proposal_id IS NULL
              AND r.status IN ('completed','budget_exhausted')`,
-        )
-        .all(recordingId) as {
-        id: string;
-        punchline_segment_id: number;
-        punchline_ms: number;
-        src_start_ms: number;
-        src_end_ms: number;
-        created_at: string;
-      }[];
-      if (!fresh.length) return 0;
-      const assignments = assignMoments(
-        this.repo.momentsOfRecording(recordingId),
-        fresh.map((p) => ({
-          id: p.id,
-          createdAt: p.created_at,
-          ref: {
-            punchlineSegmentId: p.punchline_segment_id,
-            punchlineMs: p.punchline_ms,
-            srcStartMs: p.src_start_ms,
-            srcEndMs: p.src_end_ms,
-          },
-        })),
-        () => randomUUID(),
-      );
-      for (const a of assignments) {
-        if (a.newMoment) {
-          this.repo.insertMoment({
-            id: a.newMoment.id,
-            recordingId,
+          )
+          .all(recordingId) as {
+          id: string;
+          punchline_segment_id: number;
+          punchline_ms: number;
+          src_start_ms: number;
+          src_end_ms: number;
+          created_at: string;
+        }[];
+        if (!fresh.length) return 0;
+        const assignments = assignMoments(
+          this.repo.momentsOfRecording(recordingId),
+          fresh.map((p) => ({
+            id: p.id,
+            createdAt: p.created_at,
+            ref: {
+              punchlineSegmentId: p.punchline_segment_id,
+              punchlineMs: p.punchline_ms,
+              srcStartMs: p.src_start_ms,
+              srcEndMs: p.src_end_ms,
+            },
+          })),
+          () => randomUUID(),
+        );
+        for (const a of assignments) {
+          if (a.newMoment) {
+            this.repo.insertMoment({
+              id: a.newMoment.id,
+              recordingId,
+              ruleVersion: MOMENT_RULE_VERSION,
+              refProposalId: a.proposalId,
+              ref: a.newMoment.ref,
+            });
+          }
+          this.repo.insertMember({
+            proposalId: a.proposalId,
+            momentId: a.momentId,
+            matchKind: a.kind,
+            score: a.score,
             ruleVersion: MOMENT_RULE_VERSION,
-            refProposalId: a.proposalId,
-            ref: a.newMoment.ref,
           });
         }
-        this.repo.insertMember({
-          proposalId: a.proposalId,
-          momentId: a.momentId,
-          matchKind: a.kind,
-          score: a.score,
-          ruleVersion: MOMENT_RULE_VERSION,
-        });
-      }
-      return assignments.length;
-    })();
+        return assignments.length;
+      })
+      .immediate();
   }
 
   /* -------------------------------- Lecture -------------------------------- */
@@ -426,101 +430,103 @@ export class ReviewService {
       expectedVersion: b.expectedVersion ?? null,
     });
 
-    return this.ctx.db.transaction(() => {
-      const replay = this.replay<DecisionResult>(b.requestId, hash);
-      if (replay) return replay;
+    return this.ctx.db
+      .transaction(() => {
+        const replay = this.replay<DecisionResult>(b.requestId, hash);
+        if (replay) return replay;
 
-      const p = this.reviewable(proposalId);
-      this.ensureMoments(p.recordingId);
-      const membership = this.repo.membership(p.id)!;
-      const own = this.repo.review(p.id);
-      if (b.expectedVersion !== undefined && b.expectedVersion !== (own?.version ?? 0)) {
-        throw new AppError(
-          'VERSION_CONFLICT',
-          'La décision a été modifiée entre-temps : rechargez la proposition',
-          { details: { current: this.item(p) } },
-        );
-      }
-      const before = this.effectiveView(p.id, membership.momentId);
-      const plan = planDecision({
-        proposalId: p.id,
-        target,
-        effective: before,
-        reevaluate: b.reevaluate === true,
-      });
-      if (plan.kind === 'refused') {
-        const where = before.source
-          ? `la proposition « ${before.source.title} »`
-          : 'une autre proposition';
-        throw new AppError(
-          plan.code,
-          plan.code === 'DECISION_ELSEWHERE'
-            ? `La décision actuelle a été prise sur ${where} : seule cette proposition peut l’annuler`
-            : `Ce passage a déjà été examiné sur ${where} : réévaluez-le explicitement pour changer d’avis`,
-          { details: { effective: before } },
-        );
-      }
-      if (plan.kind === 'noop') {
-        const response = {
-          outcome: 'noop' as const,
-          event: null,
-          ...this.stateOf(p),
-        };
+        const p = this.reviewable(proposalId);
+        this.ensureMoments(p.recordingId);
+        const membership = this.repo.membership(p.id)!;
+        const own = this.repo.review(p.id);
+        if (b.expectedVersion !== undefined && b.expectedVersion !== (own?.version ?? 0)) {
+          throw new AppError(
+            'VERSION_CONFLICT',
+            'La décision a été modifiée entre-temps : rechargez la proposition',
+            { details: { current: this.item(p) } },
+          );
+        }
+        const before = this.effectiveView(p.id, membership.momentId);
+        const plan = planDecision({
+          proposalId: p.id,
+          target,
+          effective: before,
+          reevaluate: b.reevaluate === true,
+        });
+        if (plan.kind === 'refused') {
+          const where = before.source
+            ? `la proposition « ${before.source.title} »`
+            : 'une autre proposition';
+          throw new AppError(
+            plan.code,
+            plan.code === 'DECISION_ELSEWHERE'
+              ? `La décision actuelle a été prise sur ${where} : seule cette proposition peut l’annuler`
+              : `Ce passage a déjà été examiné sur ${where} : réévaluez-le explicitement pour changer d’avis`,
+            { details: { effective: before } },
+          );
+        }
+        if (plan.kind === 'noop') {
+          const response = {
+            outcome: 'noop' as const,
+            event: null,
+            ...this.stateOf(p),
+          };
+          this.repo.insertRequest({
+            requestId: b.requestId,
+            requestHash: hash,
+            proposalId: p.id,
+            action: 'decision',
+            outcome: 'noop',
+            eventId: null,
+            response,
+          });
+          return { ...response, replayed: false };
+        }
+        const run = this.runs.getRun(p.runId)!;
+        const rec = this.recordings.get(p.recordingId)!;
+        const { event } = this.repo.applyDecision({
+          id: randomUUID(),
+          requestId: b.requestId,
+          type: plan.eventType,
+          recordingId: p.recordingId,
+          gameId: rec.gameId,
+          proposalId: p.id,
+          runId: p.runId,
+          momentId: membership.momentId,
+          previousStatus: plan.previousStatus,
+          next: plan.next,
+          reevaluatesEventId: plan.reevaluatesEventId,
+          snapshot: buildSnapshot({
+            tier: p.tier,
+            title: p.title,
+            categories: p.categories,
+            relevance: p.relevance,
+            reliability: p.reliability,
+            flags: p.flags,
+            srcStartMs: p.srcStartMs,
+            srcEndMs: p.srcEndMs,
+            punchlineMs: p.punchlineMs,
+            standalone: p.standalone,
+            promptVersion: run.promptVersion,
+            models: this.models(run.id, p.callId),
+            pipelineVersion: run.pipelineVersion,
+            memoryVersion: run.memoryVersion,
+          }),
+          source,
+        });
+        const response = { outcome: 'applied' as const, event, ...this.stateOf(p) };
         this.repo.insertRequest({
           requestId: b.requestId,
           requestHash: hash,
           proposalId: p.id,
           action: 'decision',
-          outcome: 'noop',
-          eventId: null,
+          outcome: 'applied',
+          eventId: event.id,
           response,
         });
         return { ...response, replayed: false };
-      }
-      const run = this.runs.getRun(p.runId)!;
-      const rec = this.recordings.get(p.recordingId)!;
-      const { event } = this.repo.applyDecision({
-        id: randomUUID(),
-        requestId: b.requestId,
-        type: plan.eventType,
-        recordingId: p.recordingId,
-        gameId: rec.gameId,
-        proposalId: p.id,
-        runId: p.runId,
-        momentId: membership.momentId,
-        previousStatus: plan.previousStatus,
-        next: plan.next,
-        reevaluatesEventId: plan.reevaluatesEventId,
-        snapshot: buildSnapshot({
-          tier: p.tier,
-          title: p.title,
-          categories: p.categories,
-          relevance: p.relevance,
-          reliability: p.reliability,
-          flags: p.flags,
-          srcStartMs: p.srcStartMs,
-          srcEndMs: p.srcEndMs,
-          punchlineMs: p.punchlineMs,
-          standalone: p.standalone,
-          promptVersion: run.promptVersion,
-          models: this.models(run.id, p.callId),
-          pipelineVersion: run.pipelineVersion,
-          memoryVersion: run.memoryVersion,
-        }),
-        source,
-      });
-      const response = { outcome: 'applied' as const, event, ...this.stateOf(p) };
-      this.repo.insertRequest({
-        requestId: b.requestId,
-        requestHash: hash,
-        proposalId: p.id,
-        action: 'decision',
-        outcome: 'applied',
-        eventId: event.id,
-        response,
-      });
-      return { ...response, replayed: false };
-    })();
+      })
+      .immediate();
   }
 
   /** Détache explicitement une proposition de son moment : elle fonde un nouveau moment. */
@@ -528,68 +534,70 @@ export class ReviewService {
     const b = parse(DetachBodySchema, body);
     const comment = b.comment?.trim() ? b.comment.trim() : null;
     const hash = sha({ action: 'detach', proposalId, comment });
-    return this.ctx.db.transaction(() => {
-      const replay = this.replay<DetachResult>(b.requestId, hash);
-      if (replay) return replay;
-      const p = this.reviewable(proposalId);
-      this.ensureMoments(p.recordingId);
-      const membership = this.repo.membership(p.id)!;
-      if (this.repo.members(membership.momentId).length === 1) {
-        const response = { outcome: 'noop' as const, change: null, ...this.stateOf(p) };
+    return this.ctx.db
+      .transaction(() => {
+        const replay = this.replay<DetachResult>(b.requestId, hash);
+        if (replay) return replay;
+        const p = this.reviewable(proposalId);
+        this.ensureMoments(p.recordingId);
+        const membership = this.repo.membership(p.id)!;
+        if (this.repo.members(membership.momentId).length === 1) {
+          const response = { outcome: 'noop' as const, change: null, ...this.stateOf(p) };
+          this.repo.insertRequest({
+            requestId: b.requestId,
+            requestHash: hash,
+            proposalId: p.id,
+            action: 'detach',
+            outcome: 'noop',
+            eventId: null,
+            response,
+          });
+          return { ...response, replayed: false };
+        }
+        const momentId = randomUUID();
+        this.repo.deleteMember(p.id);
+        this.repo.insertMoment({
+          id: momentId,
+          recordingId: p.recordingId,
+          ruleVersion: MOMENT_RULE_VERSION,
+          refProposalId: p.id,
+          ref: {
+            punchlineSegmentId: p.punchlineSegmentId,
+            punchlineMs: p.punchlineMs,
+            srcStartMs: p.srcStartMs,
+            srcEndMs: p.srcEndMs,
+          },
+        });
+        this.repo.insertMember({
+          proposalId: p.id,
+          momentId,
+          matchKind: 'detached',
+          score: 1,
+          ruleVersion: MOMENT_RULE_VERSION,
+        });
+        const change = {
+          id: randomUUID(),
+          requestId: b.requestId,
+          proposalId: p.id,
+          fromMomentId: membership.momentId,
+          toMomentId: momentId,
+          comment,
+          source,
+        };
+        this.repo.insertMomentChange(change);
+        const response = { outcome: 'applied' as const, change, ...this.stateOf(p) };
         this.repo.insertRequest({
           requestId: b.requestId,
           requestHash: hash,
           proposalId: p.id,
           action: 'detach',
-          outcome: 'noop',
+          outcome: 'applied',
           eventId: null,
           response,
         });
         return { ...response, replayed: false };
-      }
-      const momentId = randomUUID();
-      this.repo.deleteMember(p.id);
-      this.repo.insertMoment({
-        id: momentId,
-        recordingId: p.recordingId,
-        ruleVersion: MOMENT_RULE_VERSION,
-        refProposalId: p.id,
-        ref: {
-          punchlineSegmentId: p.punchlineSegmentId,
-          punchlineMs: p.punchlineMs,
-          srcStartMs: p.srcStartMs,
-          srcEndMs: p.srcEndMs,
-        },
-      });
-      this.repo.insertMember({
-        proposalId: p.id,
-        momentId,
-        matchKind: 'detached',
-        score: 1,
-        ruleVersion: MOMENT_RULE_VERSION,
-      });
-      const change = {
-        id: randomUUID(),
-        requestId: b.requestId,
-        proposalId: p.id,
-        fromMomentId: membership.momentId,
-        toMomentId: momentId,
-        comment,
-        source,
-      };
-      this.repo.insertMomentChange(change);
-      const response = { outcome: 'applied' as const, change, ...this.stateOf(p) };
-      this.repo.insertRequest({
-        requestId: b.requestId,
-        requestHash: hash,
-        proposalId: p.id,
-        action: 'detach',
-        outcome: 'applied',
-        eventId: null,
-        response,
-      });
-      return { ...response, replayed: false };
-    })();
+      })
+      .immediate();
   }
 
   private stateOf(p: ProposalDto) {

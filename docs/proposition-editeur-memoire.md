@@ -2,8 +2,9 @@
 
 > **Statut : architecture validée.** Les fondations (§ 10 : dérivés, file de traitements, modèle
 > temporel) sont implémentées ; la capture des retours (mémoire v1, couche 1) est implémentée à
-> l'étape 5 (`docs/validation-propositions.md`) ; l'éditeur et la suite de la mémoire restent à
-> faire (étapes 6 à 10).
+> l'étape 5 (`docs/validation-propositions.md`) ; le moteur de rendu est l'étape 6
+> (`docs/plan-etape-6.md`) ; l'éditeur complet est l'étape 7 ; la suite de la mémoire reste à
+> planifier. **Feuille de route renumérotée le 24/11/2026** (§ 5).
 > Date : 23 novembre 2026. Base : cahier des charges v1.2, plan technique v1.0, code des étapes 1 et 2.
 
 ## 1. Résumé
@@ -246,28 +247,31 @@ arrière si une préférence les dégrade.
 Le principe du plan technique est conservé : **valider le cerveau éditorial avant de construire
 le montage**. Les fondations de données sont posées tôt pour ne rien reconstruire.
 
-| Étape | Contenu                 | Changement                                                                                                                   |
-| ----- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| 1     | Initialisation          | ✅ terminée                                                                                                                  |
-| 2     | Import et audio         | ✅ terminée (+ ajout ultérieur des proxies, à l'étape 7)                                                                     |
-| 3     | Transcription           | inchangée                                                                                                                    |
-| 4     | Analyse éditoriale      | + propositions stockées dans un format convertible en projet de clip ; + `analysis_runs`                                     |
-| 5     | Interface de validation | + **raisons de refus**, + enregistrement des événements (mémoire v1 : capture)                                               |
-| 6     | Évaluation              | + **mémoire v1** : préférences manuelles, statistiques de sélection, injection dans le prompt, mesure de l'effet             |
-| 7     | Moteur de montage       | `timeline` + `render` : schéma du projet, composition Remotion, aperçu en lecture seule, export 9:16 en mode fidèle, proxies |
-| 8     | Éditeur v1              | timeline multipiste, début/fin, sous-titres, facecam/gameplay, volumes, historique et annulation                             |
-| 9     | Éditeur v2              | zooms, effets, transitions, images, memes, effets sonores, bibliothèque de ressources                                        |
-| 10    | Mémoire v2              | apprentissage à partir des corrections du montage (opérations → statistiques → suggestions de préférences)                   |
+| Étape       | Contenu                 | Changement                                                                                                                                                            |
+| ----------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1           | Initialisation          | ✅ terminée                                                                                                                                                           |
+| 2           | Import et audio         | ✅ terminée                                                                                                                                                           |
+| 3           | Transcription           | ✅ terminée                                                                                                                                                           |
+| 4           | Analyse éditoriale      | ✅ terminée (4a préparation locale, 4b Claude)                                                                                                                        |
+| 5           | Interface de validation | ✅ terminée : raisons de refus, événements (mémoire v1 : capture)                                                                                                     |
+| 6           | **Moteur de rendu**     | Remplace l'ancienne étape 7 « moteur de montage » : projet de clip, rendu **FFmpeg seul**, 9:16, sous-titres, cadrage, effets sobres, aperçu et export (6a, 6b, 6c)   |
+| 7           | **Éditeur complet**     | Regroupe les anciennes étapes 8 et 9 : timeline, outils de montage, aperçu interactif (Remotion réévalué à ce moment), historique et annulation sur le projet de clip |
+| à planifier | Évaluation + mémoire v1 | Ancienne étape 6 (préférences manuelles, statistiques, injection dans le prompt) : position à confirmer par le créateur                                               |
+| à planifier | Mémoire v2              | Ancienne étape 10 (apprentissage à partir des corrections du montage) : position à confirmer                                                                          |
+
+Renumérotation décidée par le créateur le 24/11/2026 (`docs/plan-etape-6.md` § 14). Les sections
+ci-dessus qui citent « l'étape 7 » pour le moteur de montage ou « l'étape 8 » pour l'éditeur
+renvoient à l'ancienne numérotation.
 
 ## 6. Choix techniques supplémentaires envisagés
 
-| Besoin                | Proposition                                                                                  | Justification                                                                                                                                                                                                                   |
-| --------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Aperçu et export      | **Remotion** (`@remotion/player`, `@remotion/renderer`)                                      | Déjà imposé par le cahier des charges ; même code pour l'aperçu et l'export. **Licence** : gratuite pour les particuliers et les petites structures selon les conditions publiées par Remotion, **à vérifier** avant l'étape 7. |
-| État de l'éditeur     | **Zustand + Immer**                                                                          | Léger, et Immer produit nativement les correctifs nécessaires à l'historique.                                                                                                                                                   |
-| Composant de timeline | Composant maison sur une base simple, ou bibliothèque existante                              | Décision à prendre à l'étape 8, après prototype.                                                                                                                                                                                |
-| Formes d'onde         | Pics calculés par FFmpeg, stockés en JSON                                                    | Affichage instantané, même pour un clip long.                                                                                                                                                                                   |
-| Mémoire               | SQLite + code déterministe ; Claude seulement pour résumer des commentaires en _suggestions_ | Transparence, coût maîtrisé, aucune décision silencieuse.                                                                                                                                                                       |
+| Besoin                | Proposition                                                                                  | Justification                                                                                                                                                                                                                                                                                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Aperçu et export      | **Remotion** (`@remotion/player`, `@remotion/renderer`)                                      | Déjà imposé par le cahier des charges ; même code pour l'aperçu et l'export. **Licence** : gratuite pour les particuliers et les petites structures selon les conditions publiées par Remotion, **à vérifier** avant l'étape 7. **Décision du 24/11/2026 : rendu FFmpeg seul à l'étape 6 ; Remotion réévalué à l'étape 7 pour l'aperçu interactif.** |
+| État de l'éditeur     | **Zustand + Immer**                                                                          | Léger, et Immer produit nativement les correctifs nécessaires à l'historique.                                                                                                                                                                                                                                                                        |
+| Composant de timeline | Composant maison sur une base simple, ou bibliothèque existante                              | Décision à prendre à l'étape 8, après prototype.                                                                                                                                                                                                                                                                                                     |
+| Formes d'onde         | Pics calculés par FFmpeg, stockés en JSON                                                    | Affichage instantané, même pour un clip long.                                                                                                                                                                                                                                                                                                        |
+| Mémoire               | SQLite + code déterministe ; Claude seulement pour résumer des commentaires en _suggestions_ | Transparence, coût maîtrisé, aucune décision silencieuse.                                                                                                                                                                                                                                                                                            |
 
 ## 7. Risques identifiés
 
