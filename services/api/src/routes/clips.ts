@@ -103,14 +103,22 @@ export function registerClipRoutes(app: FastifyInstance, services: Services) {
     return { renders: renders.list(id) };
   });
 
-  /** Image fixe de la disposition (masques compris), sans rendu vidéo. */
+  /**
+   * Image fixe de la disposition (masques compris), sans rendu vidéo. Une demande plus récente
+   * sur le même projet arrête la précédente (409 CANCELLED) ; au plus 2 en cours (409 CONFLICT).
+   */
   app.get('/api/clip-projects/:id/frame', async (req, reply) => {
     const { id } = parse(IdParams, req.params);
     const q = parse(
       z.object({ atEditMs: z.coerce.number().int().min(0).max(180_000).default(0) }).strict(),
       req.query ?? {},
     );
-    const jpg = await renders.frame(id, q.atEditMs);
+    // Client parti avant la réponse (requête abandonnée par le navigateur) : FFmpeg est arrêté.
+    const ctrl = new AbortController();
+    reply.raw.once('close', () => {
+      if (!reply.raw.writableEnded) ctrl.abort();
+    });
+    const jpg = await renders.frame(id, q.atEditMs, ctrl.signal);
     return reply
       .headers({
         'content-type': 'image/jpeg',

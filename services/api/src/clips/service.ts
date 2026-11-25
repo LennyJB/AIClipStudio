@@ -270,10 +270,23 @@ export class ClipProjectService {
   }
 
   /** Propositions acceptées d'un enregistrement (une par moment) et leur projet éventuel. */
+  /**
+   * Propositions acceptées (une par moment) et leur projet, puis les projets dont la décision
+   * effective n'est plus « acceptée » (lecture seule : rendus consultables, aucune modification).
+   */
   listForRecording(recordingId: string) {
     this.recording(recordingId);
     const l = this.review.list(recordingId, { status: 'all' });
     const seen = new Set<string>();
+    const listed = new Set<string>();
+    const summary = (id: string) => {
+      const r = this.repo.getProject(id)!;
+      return {
+        id: r.id,
+        currentRevision: r.currentRevision,
+        lastRender: this.repo.lastRender(r.id),
+      };
+    };
     const items = l.items
       .filter((i) => i.effective.status === 'accepted' && i.state !== 'merged')
       .sort((a, b) => (a.state === 'accepted' ? -1 : 0) - (b.state === 'accepted' ? -1 : 0))
@@ -289,6 +302,7 @@ export class ClipProjectService {
             ? i.effective.sourceProposalId
             : i.proposal.id;
         const project = this.repo.projectForProposal(target);
+        if (project) listed.add(project.id);
         return {
           proposal: {
             id: i.proposal.id,
@@ -299,9 +313,31 @@ export class ClipProjectService {
           },
           momentId: i.momentId,
           inherited: i.effective.inherited,
-          project: project ? { id: project.id, currentRevision: project.currentRevision } : null,
+          readOnly: false,
+          decision: 'accepted' as EffectiveDecisionView['status'],
+          project: project ? summary(project.id) : null,
         };
       });
+    // Projets existants dont la décision a changé : jamais modifiables, jamais retirés de la vue.
+    for (const pr of this.repo.projectsOfRecording(recordingId)) {
+      if (listed.has(pr.id)) continue;
+      const p = this.proposal(pr.proposalId);
+      const eff = this.guard.effective(p.id);
+      items.push({
+        proposal: {
+          id: p.id,
+          title: p.title,
+          tier: p.tier,
+          srcStartMs: p.srcStartMs,
+          srcEndMs: p.srcEndMs,
+        },
+        momentId: null,
+        inherited: eff.inherited,
+        readOnly: true,
+        decision: eff.status,
+        project: summary(pr.id),
+      });
+    }
     return { recordingId, run: l.run, items };
   }
 

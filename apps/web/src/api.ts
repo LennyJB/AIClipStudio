@@ -548,3 +548,278 @@ export const reviewApi = {
   audioUrl: (id: string, derivativeId: string) =>
     `/api/proposals/${id}/audio?v=${encodeURIComponent(derivativeId)}`,
 };
+
+/* ------------------------------------------------------------------ */
+/* Étape 6 : projets de clip, audio exporté et rendus                  */
+/* ------------------------------------------------------------------ */
+
+export type VoiceCategory = 'discord_voices' | 'game_voice_chat' | 'other_voices';
+export type DeclarationSubject = 'mix_composition' | 'game_composition' | 'mic_composition';
+export type Presence = 'present' | 'absent';
+export type CaptionRole = 'mic' | 'discord' | 'mix';
+export type LayoutPreset = 'facecam_top' | 'gameplay_crop' | 'blurred_fit';
+
+export type MissingRequirement =
+  | { kind: 'declaration'; subject: DeclarationSubject }
+  | { kind: 'consent'; subject: VoiceCategory };
+
+export interface TrackRef {
+  audioIndex: number;
+  role: string;
+}
+
+/** Décision du SERVEUR (allowedAudio) : l'interface l'affiche, elle ne la recalcule jamais. */
+export interface AudioDecision {
+  tracks: (TrackRef & { exportable: boolean; missing: MissingRequirement[]; reason: string })[];
+  mode: 'individual' | 'mix' | 'none';
+  selected: TrackRef[];
+  captionRoles: CaptionRole[];
+  missing: MissingRequirement[];
+}
+
+export interface ExportAudioEvent {
+  id: string;
+  kind: 'consent' | 'declaration';
+  subject: string;
+  action: 'granted' | 'revoked' | 'declared';
+  payload: Record<string, Presence> | null;
+  note: string | null;
+  source: string;
+  createdAt: string;
+}
+
+export interface ExportAudioView {
+  recordingId: string;
+  state: {
+    consents: Record<VoiceCategory, boolean>;
+    mixComposition: Record<string, Presence> | null;
+    gameComposition: Record<string, Presence> | null;
+    micComposition: Record<string, Presence> | null;
+  };
+  decision: AudioDecision;
+  history: ExportAudioEvent[];
+}
+
+export type ExportAudioBody =
+  | {
+      requestId: string;
+      kind: 'consent';
+      subject: VoiceCategory;
+      action: 'granted' | 'revoked';
+      note?: string;
+    }
+  | {
+      requestId: string;
+      kind: 'declaration';
+      subject: DeclarationSubject;
+      payload: Record<string, Presence>;
+      note?: string;
+    };
+
+export interface RenderSummary {
+  id: string;
+  kind: 'preview' | 'final';
+  status: RenderStatus;
+}
+
+export interface ClipListItem {
+  proposal: { id: string; title: string; tier: string; srcStartMs: number; srcEndMs: number };
+  momentId: string | null;
+  inherited: boolean;
+  /** Vrai : la décision effective n'est plus « acceptée » ; aucune modification possible. */
+  readOnly: boolean;
+  decision: 'pending' | 'accepted' | 'rejected';
+  project: { id: string; currentRevision: number; lastRender: RenderSummary | null } | null;
+}
+
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface CaptionStyle {
+  font: 'Montserrat ExtraBold' | 'Inter';
+  sizePx: number;
+  color: string;
+  highlightColor: string;
+  outlineColor: string;
+  outlinePx: number;
+  shadow: boolean;
+  position: 'top' | 'middle' | 'bottom_safe';
+  uppercase: boolean;
+  maxCharsPerLine: number;
+  maxLines: 1 | 2;
+  karaoke: boolean;
+  emphasizePunchline: boolean;
+}
+
+export interface ClipEffect {
+  id: string;
+  type: 'caption_emphasis' | 'punch_zoom' | 'reaction_hold';
+  params: Record<string, number>;
+  timing: { anchor: 'source'; srcStartMs: number; srcEndMs: number };
+  enabled: boolean;
+  origin: 'auto' | 'creator';
+  reason: string;
+  signals: Record<string, number>;
+}
+
+export interface ClipDocument {
+  origin: { proposalId: string; proposalBounds: { srcStartMs: number; srcEndMs: number } };
+  segments: { kind: string; srcStartMs: number; srcEndMs: number }[];
+  layout: {
+    preset: LayoutPreset;
+    facecamRect: Rect | null;
+    focusX: number;
+    facecamShare: number;
+    masks: { rect: Rect; label: string; mode: 'opaque' | 'off' }[];
+  };
+  captions: {
+    enabled: boolean;
+    sources: CaptionRole[];
+    style: CaptionStyle;
+    corrections: { itemId: string; originalText: string; correctedText: string }[];
+  };
+  effects: ClipEffect[];
+  audio: {
+    tracks: (TrackRef & { gainDb: number; enabled: boolean })[];
+    silent: boolean;
+    loudnorm: { enabled: boolean; targetLufs: -14 };
+  };
+  mode: 'fidele' | 'enrichi';
+  durationPolicy: { minMs: number; maxMs: number; outOfRangeConfirmedForRevision: number | null };
+}
+
+export interface DisplayCaption {
+  itemId: string;
+  speakerRole: CaptionRole;
+  originalText: string;
+  text: string;
+  corrected: boolean;
+  replacements: number;
+  editRanges: { editStartMs: number; editEndMs: number }[];
+}
+
+export interface ProjectView {
+  project: { id: string; proposalId: string; recordingId: string; currentRevision: number };
+  revision: number;
+  documentHash: string;
+  document: ClipDocument;
+  decision: { status: 'pending' | 'accepted' | 'rejected'; inherited: boolean; merged: boolean };
+  editable: boolean;
+  warnings: { code: string; message: string }[];
+  durationMs: number;
+  durationAccepted: boolean;
+  audio: AudioDecision;
+  captions: DisplayCaption[] | null;
+  captionsError: string | null;
+}
+
+/** Réglages acceptés par PATCH (sous-ensemble du schéma serveur, validé côté serveur). */
+export interface ProjectChanges {
+  layout?: { preset?: LayoutPreset; focusX?: number; facecamShare?: number };
+  masks?: { modes: { index: number; mode: 'opaque' | 'off' }[]; acknowledgeMaskRisk?: boolean };
+  captions?: { enabled?: boolean; sources?: CaptionRole[]; style?: Partial<CaptionStyle> };
+  corrections?: { itemId: string; text: string | null }[];
+  audio?: {
+    tracks?: { audioIndex: number; enabled?: boolean; gainDb?: number }[];
+    silent?: boolean;
+    loudnorm?: boolean;
+  };
+  effects?: { id: string; enabled: boolean }[];
+  bounds?: { startMs?: number; endMs?: number };
+  confirmDuration?: boolean;
+  mode?: 'fidele' | 'enrichi';
+}
+
+export type RenderStatus =
+  'queued' | 'running' | 'finalizing' | 'succeeded' | 'failed' | 'cancelled' | 'evicted';
+
+export interface RenderRow {
+  id: string;
+  projectId: string;
+  revision: number;
+  kind: 'preview' | 'final';
+  status: RenderStatus;
+  srtRelPath: string | null;
+  outputRelPath: string | null;
+  sizeBytes: number | null;
+  durationMs: number | null;
+  width: number | null;
+  height: number | null;
+  warnings: { code: string; message: string }[];
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface RenderView {
+  render: RenderRow;
+  progress: number;
+  decisionChangedSinceExport: boolean;
+}
+
+const patch = (body: unknown): RequestInit => ({
+  method: 'PATCH',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+export const clipsApi = {
+  list: (recordingId: string) =>
+    getJson<{ items: ClipListItem[] }>(`/api/recordings/${recordingId}/clips`),
+  exportAudio: (recordingId: string) =>
+    getJson<ExportAudioView>(`/api/recordings/${recordingId}/export-audio`),
+  recordExportAudio: (recordingId: string, body: ExportAudioBody) =>
+    getJson<ExportAudioView>(`/api/recordings/${recordingId}/export-audio`, send('POST', body)),
+  create: (proposalId: string, requestId: string) =>
+    getJson<ProjectView & { created: boolean }>(
+      `/api/proposals/${proposalId}/clip-project`,
+      send('POST', { requestId }),
+    ),
+  view: (projectId: string) => getJson<ProjectView>(`/api/clip-projects/${projectId}`),
+  patch: (
+    projectId: string,
+    body: { requestId: string; baseRevision: number; changes: ProjectChanges },
+  ) => getJson<ProjectView & { replayed: boolean }>(`/api/clip-projects/${projectId}`, patch(body)),
+  suggestEffects: (projectId: string, body: { requestId: string; baseRevision: number }) =>
+    getJson<{ revision: number; replayed: boolean; suggested: ClipEffect[] }>(
+      `/api/clip-projects/${projectId}/effects/suggest`,
+      send('POST', body),
+    ),
+  frameUrl: (projectId: string, atEditMs = 0) =>
+    `/api/clip-projects/${projectId}/frame?atEditMs=${Math.max(0, Math.round(atEditMs))}`,
+  renders: (projectId: string) =>
+    getJson<{ renders: RenderRow[] }>(`/api/clip-projects/${projectId}/renders`),
+  requestRender: (projectId: string, body: { requestId: string; kind: 'preview' | 'final' }) =>
+    getJson<{ render: RenderRow; created: boolean }>(
+      `/api/clip-projects/${projectId}/renders`,
+      send('POST', body),
+    ),
+  render: (renderId: string) => getJson<RenderView>(`/api/renders/${renderId}`),
+  cancelRender: (renderId: string) =>
+    getJson<unknown>(`/api/renders/${renderId}/cancel`, send('POST', {})),
+  videoUrl: (renderId: string) => `/api/renders/${renderId}/video`,
+  downloadUrl: (renderId: string) => `/api/renders/${renderId}/download`,
+  srtUrl: (renderId: string) => `/api/renders/${renderId}/subtitles.srt`,
+};
+
+/** Image fixe : réponse binaire ; erreurs JSON converties en ApiError. */
+export async function fetchFrame(url: string, signal: AbortSignal): Promise<Blob> {
+  const res = await fetch(url, { signal });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as {
+      error?: { message?: string; code?: string };
+    } | null;
+    throw new ApiError(
+      body?.error?.message ?? `Erreur HTTP ${res.status}`,
+      res.status,
+      body?.error?.code ?? null,
+      null,
+    );
+  }
+  return await res.blob();
+}

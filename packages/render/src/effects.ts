@@ -155,20 +155,28 @@ export function suggestEffects({ project: p, energy }: SuggestInput): Effect[] {
 }
 
 /**
- * Fusionne les effets proposés avec ceux du document : les effets du créateur sont conservés ;
- * un effet automatique que le créateur a désactivé RESTE désactivé.
+ * Fusionne les effets proposés avec ceux du document, SANS jamais changer un choix existant :
+ *  - un effet du créateur est conservé tel quel ;
+ *  - un effet automatique déjà présent garde son état (activé ou désactivé) ; s'il est proposé de
+ *    nouveau, seuls ses instants, paramètres, raison et mesures sont mis à jour ;
+ *  - un effet automatique déjà présent mais plus proposé est conservé tel quel (hors du clip, il
+ *    est ignoré au rendu) ;
+ *  - un NOUVEAU type d'effet arrive DÉSACTIVÉ : seul le créateur l'active.
  */
 export function mergeSuggestedEffects(
   current: readonly Effect[],
   suggested: readonly Effect[],
 ): Effect[] {
-  const disabled = new Set(
-    current.filter((e) => e.origin === 'auto' && !e.enabled).map((e) => e.type),
-  );
-  return [
-    ...current.filter((e) => e.origin === 'creator'),
-    ...suggested.map((e) => (disabled.has(e.type) ? { ...e, enabled: false } : e)),
-  ];
+  const fresh = new Map(suggested.map((e) => [e.type, e]));
+  const out: Effect[] = current.map((e) => {
+    if (e.origin !== 'auto') return e;
+    const s = fresh.get(e.type);
+    if (!s) return e;
+    fresh.delete(e.type);
+    return { ...s, id: e.id, enabled: e.enabled };
+  });
+  for (const s of fresh.values()) out.push({ ...s, enabled: false });
+  return out;
 }
 
 /** Effets effectivement appliqués : activés, et autorisés par le mode du projet. */

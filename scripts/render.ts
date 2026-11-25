@@ -102,7 +102,7 @@ async function main(): Promise<number> {
             i.project
               ? `projet ${i.project.id} (révision ${i.project.currentRevision})`
               : 'sans projet'
-          }${i.inherited ? '  [décision héritée]' : ''}`,
+          }${i.inherited ? '  [décision héritée]' : ''}${i.readOnly ? `  [lecture seule : décision ${i.decision}]` : ''}`,
         );
       }
       return 0;

@@ -243,3 +243,53 @@ ul.proposals > li {
 .filter {
   margin-right: 0.75rem;
 }
+
+/* Étape 6c : clips */
+.clip-list {
+  list-style: none;
+  padding: 0;
+}
+.clip-list > li {
+  margin: 0.75rem 0;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--neutral-bg);
+}
+.clip-editor {
+  margin-top: 0.75rem;
+}
+.readonly-banner {
+  border-left: 4px solid var(--warn);
+  padding-left: 0.75rem;
+}
+.audio-tracks,
+.consents,
+.effects,
+.captions {
+  list-style: none;
+  padding: 0;
+}
+.audio-tracks li,
+.consents li,
+.effects li,
+.captions li {
+  margin: 0.4rem 0;
+}
+.slider {
+  display: block;
+  margin: 0.4rem 0;
+}
+.frame img {
+  max-width: 270px;
+  height: auto;
+  border: 1px solid #d0d5dd;
+  margin-top: 0.5rem;
+}
+.style-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.4rem 1rem;
+}
+.render-player video {
+  max-width: 100%;
+  background: #000;
+}

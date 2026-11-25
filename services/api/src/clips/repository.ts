@@ -78,6 +78,16 @@ export class ClipRepository {
     ).map(project);
   }
 
+  /** Dernier rendu demandé pour un projet (aperçu ou final), ou null. */
+  lastRender(projectId: string): { id: string; kind: string; status: string } | null {
+    const r = this.db
+      .prepare(
+        'SELECT id, kind, status FROM clip_renders WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+      )
+      .get(projectId) as { id: string; kind: string; status: string } | undefined;
+    return r ?? null;
+  }
+
   revision(projectId: string, rev: number): RevisionRow | null {
     const r = this.db
       .prepare('SELECT * FROM clip_project_revisions WHERE project_id = ? AND revision = ?')

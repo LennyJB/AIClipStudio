@@ -15,12 +15,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import type { FastifyInstance } from 'fastify';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { FakeModel } from '@acs/editorial';
 import {
   SCENARIO_DISCORD,
@@ -729,4 +730,222 @@ describe.skipIf(!enabled)('Rendus des clips (API, étape 6b)', () => {
     );
     expect(revs.body.revisions.at(-1)!.source).toBe('system');
   }, 240_000);
+
+  /* ------------------------------ Étape 6c ------------------------------ */
+
+  interface ProjectBody {
+    revision: number;
+    documentHash: string;
+    editable: boolean;
+    document: {
+      audio: { tracks: { audioIndex: number; role: string; enabled: boolean }[] };
+      effects: { id: string; type: string; enabled: boolean; origin: string }[];
+    };
+    audio: { selected: { audioIndex: number; role: string }[] };
+    error?: { code: string };
+  }
+  const patch = (project: string, baseRevision: number, changes: Record<string, unknown>) =>
+    call<ProjectBody>('PATCH', `/api/clip-projects/${project}`, {
+      requestId: randomUUID(),
+      baseRevision,
+      changes,
+    });
+  const consent = (rec: string, action: 'granted' | 'revoked') =>
+    call('POST', `/api/recordings/${rec}/export-audio`, {
+      requestId: randomUUID(),
+      kind: 'consent',
+      subject: 'discord_voices',
+      action,
+    });
+
+  it('6c : liste avec lecture seule et dernier rendu ; ajout de piste selon l’autorisation du serveur', async () => {
+    const video = await setup();
+    const { rec, clip, project } = await prepare(video);
+    type ListBody = {
+      items: {
+        proposal: { id: string };
+        readOnly: boolean;
+        decision: string;
+        project: { id: string; lastRender: { id: string; kind: string; status: string } | null };
+      }[];
+    };
+    let l = (await call<ListBody>('GET', `/api/recordings/${rec.id}/clips`)).body;
+    let item = l.items.find((i) => i.project?.id === project)!;
+    expect(item).toMatchObject({ readOnly: false, decision: 'accepted' });
+    expect(item.project.lastRender).toBeNull();
+
+    // Discord (piste 1) : non autorisé ⇒ ajout refusé par le serveur.
+    let v = (await call<ProjectBody>('GET', `/api/clip-projects/${project}`)).body;
+    expect(v.document.audio.tracks.map((t) => t.audioIndex)).toEqual([0]);
+    expect(v.audio.selected.map((t) => t.audioIndex)).toEqual([0]);
+    let r = await patch(project, v.revision, {
+      audio: { tracks: [{ audioIndex: 1, enabled: true }] },
+    });
+    expect(r.status).toBe(422);
+    expect(r.body.error?.code).toBe('EXPORT_CONSENT_REQUIRED');
+    // Accord donné : la piste devient autorisée, l'ajout explicite est accepté.
+    await consent(rec.id, 'granted');
+    v = (await call<ProjectBody>('GET', `/api/clip-projects/${project}`)).body;
+    expect(v.audio.selected.map((t) => t.audioIndex)).toEqual([0, 1]);
+    r = await patch(project, v.revision, { audio: { tracks: [{ audioIndex: 1, enabled: true }] } });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.document.audio.tracks.map((t) => [t.audioIndex, t.enabled])).toEqual([
+      [0, true],
+      [1, true],
+    ]);
+    // Retrait, puis accord révoqué : réactivation refusée (décision relue sous verrou).
+    r = await patch(project, r.body.revision, {
+      audio: { tracks: [{ audioIndex: 1, enabled: false }] },
+    });
+    expect(r.status).toBe(200);
+    await consent(rec.id, 'revoked');
+    const refused = await patch(project, r.body.revision, {
+      audio: { tracks: [{ audioIndex: 1, enabled: true }] },
+    });
+    expect(refused.status).toBe(422);
+    expect(refused.body.error?.code).toBe('EXPORT_CONSENT_REQUIRED');
+
+    // Dernier rendu dans la liste ; décision changée ⇒ projet toujours listé, en lecture seule.
+    const p = await requestRender(project, 'preview');
+    await services.runner.idle();
+    l = (await call<ListBody>('GET', `/api/recordings/${rec.id}/clips`)).body;
+    item = l.items.find((i) => i.project?.id === project)!;
+    expect(item.project.lastRender).toEqual({
+      id: p.body.render.id,
+      kind: 'preview',
+      status: 'succeeded',
+    });
+    reject(clip);
+    l = (await call<ListBody>('GET', `/api/recordings/${rec.id}/clips`)).body;
+    item = l.items.find((i) => i.project?.id === project)!;
+    expect(item).toMatchObject({ readOnly: true, decision: 'rejected' });
+    expect(item.proposal.id).toBe(clip);
+    expect(l.items.filter((i) => i.project?.id === project)).toHaveLength(1);
+    expect((await call<ProjectBody>('GET', `/api/clip-projects/${project}`)).body.editable).toBe(
+      false,
+    );
+  }, 300_000);
+
+  it('6c : effets proposés désactivés, choix existants conservés, révisions antérieures intactes', async () => {
+    const video = await setup();
+    const { project } = await prepare(video);
+    let v = (await patch(project, 1, { mode: 'enrichi' })).body;
+    const suggest = (base: number) =>
+      call<{ revision: number; suggested: { id: string; enabled: boolean }[] }>(
+        'POST',
+        `/api/clip-projects/${project}/effects/suggest`,
+        { requestId: randomUUID(), baseRevision: base },
+      );
+    const s1 = await suggest(v.revision);
+    expect(s1.status).toBe(200);
+    expect(s1.body.suggested.length).toBeGreaterThan(0);
+    expect(s1.body.suggested.every((e) => !e.enabled)).toBe(true);
+    v = (await call<ProjectBody>('GET', `/api/clip-projects/${project}`)).body;
+    expect(v.document.effects.every((e) => !e.enabled)).toBe(true);
+    // Le créateur active le premier effet ; une nouvelle proposition ne change rien.
+    const chosen = v.document.effects[0]!.id;
+    v = (await patch(project, v.revision, { effects: [{ id: chosen, enabled: true }] })).body;
+    const hashBefore = v.documentHash;
+    const revBefore = v.revision;
+    const s2 = await suggest(v.revision);
+    expect(s2.status).toBe(200);
+    v = (await call<ProjectBody>('GET', `/api/clip-projects/${project}`)).body;
+    expect(v.document.effects.map((e) => [e.id, e.enabled])).toEqual(
+      v.document.effects.map((e) => [e.id, e.id === chosen]),
+    );
+    // Révision précédente jamais réécrite.
+    const old = db
+      .prepare(
+        'SELECT document_hash FROM clip_project_revisions WHERE project_id = ? AND revision = ?',
+      )
+      .get(project, revBefore) as { document_hash: string };
+    expect(old.document_hash).toBe(hashBefore);
+  }, 300_000);
+
+  it('6c : image fixe — demande remplacée, plafond global, client déconnecté (FFmpeg non mené à terme)', async () => {
+    const video = await setup();
+    const { rec, project } = await prepare(video);
+    // Second projet (moment secondaire) pour le plafond global.
+    const l = await call<{ items: { proposal: { id: string; tier: string } }[] }>(
+      'GET',
+      `/api/recordings/${rec.id}/proposals`,
+    );
+    const second = l.body.items.find((i) => i.proposal.tier !== 'clip')!.proposal.id;
+    await call('POST', `/api/proposals/${second}/decision`, {
+      requestId: randomUUID(),
+      decision: 'accepted',
+    });
+    const projectB = (
+      await call<{ project: { id: string } }>('POST', `/api/proposals/${second}/clip-project`, {
+        requestId: randomUUID(),
+      })
+    ).body.project.id;
+    expect(projectB).not.toBe(project);
+    const tmpDir = path.join(config.paths.processing, 'renders', 'tmp');
+    const images = () =>
+      existsSync(tmpDir) ? readdirSync(tmpDir).filter((d) => d.startsWith('image-')) : [];
+    const jpeg = (b: Buffer) => b.subarray(0, 2).toString('hex') === 'ffd8';
+
+    // 1. Deux demandes sur le même projet : la première est arrêtée, la seconde aboutit.
+    const first = services.renders.frame(project, 0);
+    const again = services.renders.frame(project, 1000);
+    await expect(first).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(jpeg(await again)).toBe(true);
+    expect(services.renders.activeFrameGenerations()).toBe(0);
+
+    // Générations bloquées juste avant FFmpeg (signal observé).
+    const gates: { id: string; signal: AbortSignal; open: () => void }[] = [];
+    services.renders.hooks.beforeFrameProcess = (id, signal) =>
+      new Promise<void>((open) => gates.push({ id, signal, open }));
+    try {
+      // 2. Le signal d'arrêt atteint FFmpeg : une génération remplacée n'est pas menée à terme.
+      const a = services.renders.frame(project, 0);
+      await vi.waitFor(() => expect(gates).toHaveLength(1));
+      const b = services.renders.frame(project, 0);
+      expect(gates[0]!.signal.aborted).toBe(true);
+      gates[0]!.open();
+      await expect(a).rejects.toMatchObject({ code: 'CANCELLED' });
+      await vi.waitFor(() => expect(gates).toHaveLength(2));
+      gates[1]!.open();
+      expect(jpeg(await b)).toBe(true);
+
+      // 3. Plafond global (2) : deux projets en cours ⇒ la limite est atteinte ; plafond 1 ⇒ refus.
+      const pa = services.renders.frame(project, 0);
+      const pb = services.renders.frame(projectB, 0);
+      await vi.waitFor(() => expect(gates).toHaveLength(4));
+      expect(services.renders.activeFrameGenerations()).toBe(2);
+      gates[2]!.open();
+      gates[3]!.open();
+      expect(jpeg(await pa)).toBe(true);
+      expect(jpeg(await pb)).toBe(true);
+      services.renders.maxFrameGenerations = 1;
+      const held = services.renders.frame(project, 0);
+      await vi.waitFor(() => expect(gates).toHaveLength(5));
+      const busy = await call<{ error: { code: string } }>(
+        'GET',
+        `/api/clip-projects/${projectB}/frame`,
+      );
+      expect(busy.status).toBe(409);
+      expect(busy.body.error.code).toBe('CONFLICT');
+      expect(gates).toHaveLength(5); // aucune génération lancée pour le refus
+      gates[4]!.open();
+      expect(jpeg(await held)).toBe(true);
+      services.renders.maxFrameGenerations = 2;
+
+      // 4. Client HTTP déconnecté avant la réponse : le serveur arrête la génération.
+      const address = await app.listen({ port: 0, host: '127.0.0.1' });
+      const req = http.get(`${address}/api/clip-projects/${project}/frame`);
+      req.on('error', () => undefined);
+      await vi.waitFor(() => expect(gates).toHaveLength(6), { timeout: 10_000 });
+      expect(gates[5]!.signal.aborted).toBe(false);
+      req.destroy();
+      await vi.waitFor(() => expect(gates[5]!.signal.aborted).toBe(true), { timeout: 10_000 });
+      gates[5]!.open();
+      await vi.waitFor(() => expect(services.renders.activeFrameGenerations()).toBe(0));
+      await vi.waitFor(() => expect(images()).toEqual([]));
+    } finally {
+      delete services.renders.hooks.beforeFrameProcess;
+      services.renders.maxFrameGenerations = 2;
+    }
+  }, 300_000);
 });
