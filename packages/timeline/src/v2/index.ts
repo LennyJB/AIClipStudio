@@ -6,3 +6,6 @@ export * from './invariants';
 export * from './keys';
 export * from './migrate';
 export * from './ops';
+export * from './history';
+export * from './rebase';
+export * from './scene';

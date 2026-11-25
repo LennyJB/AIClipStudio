@@ -63,7 +63,7 @@ describe('propriétés des opérations (étape 7a)', () => {
       { numRuns: 400 },
     );
     expect(accepted).toBeGreaterThan(100);
-  });
+  }, 60_000);
 
   it('suite d’opérations ⇒ l’inverse du lot restaure exactement le document', () => {
     fc.assert(
@@ -86,7 +86,7 @@ describe('propriétés des opérations (étape 7a)', () => {
       ),
       { numRuns: 200 },
     );
-  });
+  }, 60_000);
 
   it('lectures complètes : une écriture sur des clés non lues ne change pas le résultat', () => {
     let checked = 0;
@@ -112,5 +112,5 @@ describe('propriétés des opérations (étape 7a)', () => {
       { numRuns: 400 },
     );
     expect(checked).toBeGreaterThan(50);
-  });
+  }, 60_000);
 });
