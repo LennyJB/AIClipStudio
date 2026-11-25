@@ -6,7 +6,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { clipsApi, type ProjectView, type RenderRow, type RenderView } from '../../api';
-import { errorMessage, RENDER_STATUS_LABELS } from './messages';
+import { ROLE_LABELS } from '../../format';
+import { describeMissing, errorMessage, RENDER_STATUS_LABELS } from './messages';
 
 export const RENDER_POLL_MS = 1000;
 const ACTIVE = new Set(['queued', 'running', 'finalizing']);
@@ -36,7 +37,57 @@ function Player({ r, warn }: { r: RenderRow; warn: boolean }) {
   );
 }
 
-export function RenderSection({ view, saving }: { view: ProjectView; saving: boolean }) {
+/**
+ * Raisons qui empêchent un rendu, déduites des données du SERVEUR (mêmes règles que le plan de
+ * rendu). Indicatif : le serveur revérifie tout et son refus reste affiché s'il survient.
+ */
+export function renderBlockers(view: ProjectView, saving: boolean): string[] {
+  const out: string[] = [];
+  const d = view.document;
+  if (saving) out.push('modifications en cours d’enregistrement');
+  if (!view.durationAccepted) out.push('durée hors plage à confirmer');
+  const enabled = d.audio.tracks.filter((t) => t.enabled);
+  if (!d.audio.silent) {
+    const allowed = new Set(view.audio.selected.map((t) => t.audioIndex));
+    const refused = enabled.filter((t) => !allowed.has(t.audioIndex));
+    for (const t of refused) {
+      const v = view.audio.tracks.find((x) => x.audioIndex === t.audioIndex);
+      const why =
+        v && v.missing.length ? describeMissing(v.missing) : 'accord ou déclaration manquant';
+      out.push(
+        `piste ${ROLE_LABELS[t.role] ?? t.role} (${t.audioIndex}) activée mais plus autorisée : ${why} — retirez-la ou rétablissez l’autorisation`,
+      );
+    }
+    if (!enabled.length)
+      out.push('aucune piste audio active (ajoutez-en une ou choisissez l’export sans son)');
+  }
+  if (d.captions.enabled) {
+    const roles = new Set(view.audio.captionRoles);
+    const refusedRoles = d.captions.sources.filter((r) => !roles.has(r));
+    if (refusedRoles.length)
+      out.push(
+        `sous-titres ${refusedRoles.map((r) => CAPTION_SOURCE_LABELS[r] ?? r).join(', ')} plus autorisés — retirez cette source ou rétablissez l’autorisation`,
+      );
+  }
+  return out;
+}
+
+const CAPTION_SOURCE_LABELS: Record<string, string> = {
+  mic: 'Micro',
+  discord: 'Discord',
+  mix: 'Tout / Mix',
+};
+
+export function RenderSection({
+  view,
+  saving,
+  onRenderChanged,
+}: {
+  view: ProjectView;
+  saving: boolean;
+  /** Prévient la liste des clips : rendu créé, statut modifié ou annulé (dernier rendu). */
+  onRenderChanged?: (() => void) | undefined;
+}) {
   const projectId = view.project.id;
   const [renders, setRenders] = useState<RenderRow[]>([]);
   const [active, setActive] = useState<RenderView | null>(null);
@@ -44,6 +95,11 @@ export function RenderSection({ view, saving }: { view: ProjectView; saving: boo
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const alive = useRef(true);
+  const notify = useRef(onRenderChanged);
+  const lastStatus = useRef<string | null>(null);
+  useEffect(() => {
+    notify.current = onRenderChanged;
+  }, [onRenderChanged]);
 
   const apply = useCallback(async (r: { renders: RenderRow[] }) => {
     if (!alive.current) return;
@@ -83,6 +139,11 @@ export function RenderSection({ view, saving }: { view: ProjectView; saving: boo
         .render(activeId)
         .then((v) => {
           if (!alive.current) return;
+          // Statut modifié (en attente → en cours → terminé…) : la liste est prévenue.
+          if (lastStatus.current !== v.render.status) {
+            lastStatus.current = v.render.status;
+            notify.current?.();
+          }
           setActive(v);
           if (!ACTIVE.has(v.render.status)) void load();
         })
@@ -97,6 +158,8 @@ export function RenderSection({ view, saving }: { view: ProjectView; saving: boo
     try {
       const r = await clipsApi.requestRender(projectId, { requestId: crypto.randomUUID(), kind });
       setActive({ render: r.render, progress: 0, decisionChangedSinceExport: false });
+      lastStatus.current = r.render.status;
+      notify.current?.();
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -105,11 +168,7 @@ export function RenderSection({ view, saving }: { view: ProjectView; saving: boo
     }
   };
 
-  const blockers: string[] = [];
-  if (saving) blockers.push('modifications en cours d’enregistrement');
-  if (!view.durationAccepted) blockers.push('durée hors plage à confirmer');
-  if (!view.document.audio.silent && !view.document.audio.tracks.some((t) => t.enabled))
-    blockers.push('aucune piste audio active (ajoutez-en une ou choisissez l’export sans son)');
+  const blockers = renderBlockers(view, saving);
 
   const shown = renders.filter((r) => r.status === 'succeeded');
   return (
@@ -153,7 +212,10 @@ export function RenderSection({ view, saving }: { view: ProjectView; saving: boo
             onClick={() =>
               void clipsApi
                 .cancelRender(active.render.id)
-                .then(load)
+                .then(() => {
+                  notify.current?.();
+                  return load();
+                })
                 .catch((err: unknown) => setError(errorMessage(err)))
             }
           >

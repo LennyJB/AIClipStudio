@@ -24,6 +24,8 @@ export function ClipsPanel({ recordingId }: { recordingId: string }) {
       setError(errorMessage(err));
     }
   }, [recordingId]);
+  /** Relit la liste (dernier rendu à jour) quand le panneau de rendu le signale. */
+  const refreshList = useCallback(() => void load(), [load]);
 
   useEffect(() => {
     let alive = true;
@@ -83,7 +85,7 @@ export function ClipsPanel({ recordingId }: { recordingId: string }) {
                 )}{' '}
                 {i.inherited && <span className="badge">décision héritée</span>}{' '}
                 {i.project?.lastRender && (
-                  <span className="small">
+                  <span className="small" data-testid={`last-render-${i.proposal.id}`}>
                     dernier rendu : {i.project.lastRender.kind === 'final' ? 'export' : 'aperçu'}{' '}
                     {RENDER_STATUS_LABELS[i.project.lastRender.status] ??
                       i.project.lastRender.status}
@@ -109,7 +111,12 @@ export function ClipsPanel({ recordingId }: { recordingId: string }) {
                   )
                 )}
                 {pid && open === pid && (
-                  <ClipEditor key={pid} projectId={pid} refreshKey={audioVersion} />
+                  <ClipEditor
+                    key={pid}
+                    projectId={pid}
+                    refreshKey={audioVersion}
+                    onRenderChanged={refreshList}
+                  />
                 )}
               </li>
             );

@@ -57,6 +57,12 @@ Points importants :
   modifie jamais l'état (activé ou désactivé) des effets déjà présents. Les idées de Claude sont
   affichées en texte seulement.
 - **Corrections** : le texte d'origine reste consultable ; une correction s'annule.
+- **Avant un rendu** : « Générer l'aperçu » et « Exporter » sont désactivés, avec la raison,
+  si une piste activée n'est plus autorisée (accord révoqué, déclaration modifiée) ou si une source
+  de sous-titres choisie ne l'est plus. Retirez-la ou rétablissez l'autorisation. Le serveur reste
+  la référence : il revérifie tout au moment du rendu.
+- **Liste des clips** : l'état du dernier rendu se met à jour dès la création d'un rendu et à
+  chaque changement de statut, sans recharger la page.
 
 ## 4. Enregistrement des réglages
 

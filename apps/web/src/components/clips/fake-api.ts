@@ -337,7 +337,19 @@ export function installFakeApi(s: FakeState) {
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
     s.calls.push({ method, path: u.pathname, body, signal: init?.signal ?? null });
     const path = u.pathname;
-    if (path === `/api/recordings/${REC}/clips`) return json({ items: s.items });
+    if (path === `/api/recordings/${REC}/clips`) {
+      // Dernier rendu relu à chaque appel, comme le serveur (statut courant compris).
+      const items = s.items.map((i) => {
+        const last = i.project ? s.renders[i.project.id]?.[0] : undefined;
+        if (!i.project || !last) return i;
+        const status = s.renderProgress[last.id]?.status ?? last.status;
+        return {
+          ...i,
+          project: { ...i.project, lastRender: { id: last.id, kind: last.kind, status } },
+        };
+      });
+      return json({ items });
+    }
     if (path === `/api/recordings/${REC}/export-audio`) {
       if (method === 'POST') {
         const b = body as ExportAudioBody;
@@ -426,7 +438,7 @@ export function installFakeApi(s: FakeState) {
           kind: (body as { kind: 'preview' }).kind,
         });
         s.renders[id] = [r, ...(s.renders[id] ?? [])];
-        s.renderProgress['r-new'] = { progress: 0.4, status: 'running' };
+        s.renderProgress['r-new'] ??= { progress: 0.4, status: 'running' };
         return json({ render: r, created: true }, 202);
       }
     }

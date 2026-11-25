@@ -12,10 +12,12 @@ import {
   jpeg,
   PRJ,
   PRJ_RO,
+  projectView,
   REC,
   render as renderRow,
   type FakeState,
 } from './fake-api';
+import { renderBlockers } from './RenderSection';
 import { FRAME_DEBOUNCE_MS } from './useFrame';
 
 let s: FakeState;
@@ -455,5 +457,110 @@ describe('Rendus', () => {
     ).toBe(true);
     expect(within(editor).getByText(/aucune piste audio active/)).toBeTruthy();
     expect(s.views[PRJ_RO]).toBeDefined();
+  });
+});
+
+describe('Autorisations avant rendu (données du serveur)', () => {
+  const blocked = (editor: HTMLElement) => ({
+    preview: within(editor).getByRole('button', { name: 'Générer l’aperçu' }) as HTMLButtonElement,
+    final: within(editor).getByRole('button', {
+      name: 'Exporter (1080×1920)',
+    }) as HTMLButtonElement,
+  });
+
+  it('accord révoqué alors que la piste est encore activée : rendu désactivé, raison affichée', async () => {
+    // Discord autorisé et présent dans le projet.
+    s.views[PRJ] = {
+      ...s.views[PRJ]!,
+      audio: decision(true),
+      document: {
+        ...s.views[PRJ]!.document,
+        audio: {
+          ...s.views[PRJ]!.document.audio,
+          tracks: [
+            { audioIndex: 1, role: 'mic', gainDb: 0, enabled: true },
+            { audioIndex: 2, role: 'discord', gainDb: 0, enabled: true },
+          ],
+        },
+      },
+    };
+    s.exportAudio.state.consents.discord_voices = true;
+    s.exportAudio.decision = decision(true);
+    const editor = await openProject('p1');
+    expect(blocked(editor).preview.disabled).toBe(false);
+    // Révocation dans le bloc « Audio exporté » : le serveur ne sélectionne plus Discord.
+    s.views[PRJ] = { ...s.views[PRJ]!, audio: decision(false) };
+    s.exportAudio.decision = decision(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Révoquer l’accord' }));
+    expect(
+      await within(editor).findByText(
+        /piste Discord \(2\) activée mais plus autorisée : accord requis : voix Discord/,
+      ),
+    ).toBeTruthy();
+    expect(blocked(editor).preview.disabled).toBe(true);
+    expect(blocked(editor).final.disabled).toBe(true);
+    // Retrait de la piste : le rendu redevient possible.
+    fireEvent.click(
+      within(within(editor).getByTestId('track-2')).getByRole('button', { name: 'Retirer' }),
+    );
+    await waitFor(() => expect(blocked(editor).preview.disabled).toBe(false));
+    expect(s.calls.some((c) => c.method === 'POST' && c.path.endsWith('/renders'))).toBe(false);
+  });
+
+  it('source de sous-titres plus autorisée : rendu désactivé avec la raison', async () => {
+    s.views[PRJ] = {
+      ...s.views[PRJ]!,
+      document: {
+        ...s.views[PRJ]!.document,
+        captions: { ...s.views[PRJ]!.document.captions, sources: ['mic', 'discord'] },
+      },
+    };
+    const editor = await openProject('p1');
+    expect(within(editor).getByText(/sous-titres Discord plus autorisés/)).toBeTruthy();
+    expect(blocked(editor).preview.disabled).toBe(true);
+    expect(blocked(editor).final.disabled).toBe(true);
+  });
+
+  it('règles identiques au plan du serveur : export sans son ⇒ pistes ignorées ; sous-titres désactivés ⇒ sources ignorées', () => {
+    const base = projectView();
+    const unauthorized = {
+      ...base,
+      audio: { ...base.audio, selected: [] },
+      document: {
+        ...base.document,
+        captions: { ...base.document.captions, sources: ['discord' as const] },
+      },
+    };
+    expect(renderBlockers(unauthorized, false)).toHaveLength(2);
+    const silentNoCaptions = {
+      ...unauthorized,
+      document: {
+        ...unauthorized.document,
+        audio: { ...unauthorized.document.audio, silent: true },
+        captions: { ...unauthorized.document.captions, enabled: false },
+      },
+    };
+    expect(renderBlockers(silentNoCaptions, false)).toEqual([]);
+    expect(renderBlockers(base, false)).toEqual([]);
+  });
+});
+
+describe('Liste des clips à jour', () => {
+  it('dernier rendu actualisé à la création du rendu puis à chaque changement de statut', async () => {
+    const editor = await openProject('p1');
+    const row = () => screen.getByTestId('last-render-p1').textContent;
+    expect(row()).toMatch(/aperçu terminé/);
+    // Rendu en file d'attente : la liste est actualisée dès la création (avant tout suivi).
+    s.renderProgress['r-new'] = { progress: 0, status: 'queued' };
+    fireEvent.click(within(editor).getByRole('button', { name: 'Générer l’aperçu' }));
+    await waitFor(() => expect(row()).toMatch(/aperçu en attente/), { timeout: 500 });
+    s.renderProgress['r-new'] = { progress: 0.4, status: 'running' };
+    await waitFor(() => expect(row()).toMatch(/aperçu en cours/), { timeout: 3000 });
+    s.renderProgress['r-new'] = { progress: 1, status: 'succeeded' };
+    await waitFor(() => expect(row()).toMatch(/aperçu terminé/), { timeout: 3000 });
+    // La liste a bien été relue (aucun rechargement manuel de la page).
+    expect(
+      s.calls.filter((c) => c.path === `/api/recordings/${REC}/clips`).length,
+    ).toBeGreaterThanOrEqual(3);
   });
 });

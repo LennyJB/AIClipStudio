@@ -65,8 +65,11 @@ function SaveStatus({ p }: { p: ClipProjectState }) {
 export function ClipEditor({
   projectId,
   refreshKey,
+  onRenderChanged,
 }: {
   projectId: string;
+  /** Rendu créé ou statut modifié : la liste des clips relit le dernier rendu. */
+  onRenderChanged?: (() => void) | undefined;
   /** Change quand l'audio exporté change : la décision du serveur est relue. */
   refreshKey: number;
 }) {
@@ -129,7 +132,7 @@ export function ClipEditor({
       <CaptionsSection view={v} p={p} />
       <EffectsSection view={v} p={p} ideas={ideas} />
       <DurationSection view={v} p={p} />
-      <RenderSection view={v} saving={p.saving} />
+      <RenderSection view={v} saving={p.saving} onRenderChanged={onRenderChanged} />
     </div>
   );
 }
