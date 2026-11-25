@@ -9,6 +9,8 @@
  *   npm run render -- --declare-mix <recordingId> --discord present|absent
  *                      --game-voice-chat present|absent --other-voices present|absent [--note "…"]
  *   npm run render -- --declare-game <recordingId> --game-voice-chat present|absent [--note "…"]
+ *   npm run render -- --declare-mic <recordingId> --creator-voice present|absent
+ *                      --other-voices present|absent [--note "…"]
  *   npm run render -- <proposalId> --create [--layout facecam_top|gameplay_crop|blurred_fit]
  *                      [--captions on|off]
  *
@@ -31,6 +33,8 @@ const { values, positionals } = parseArgs({
     revoke: { type: 'string' },
     'declare-mix': { type: 'string' },
     'declare-game': { type: 'string' },
+    'declare-mic': { type: 'string' },
+    'creator-voice': { type: 'string' },
     discord: { type: 'string' },
     'game-voice-chat': { type: 'string' },
     'other-voices': { type: 'string' },
@@ -47,6 +51,7 @@ const USAGE =
   '        npm run render -- --consent <recordingId> --grant|--revoke <catégorie> [--note "…"]\n' +
   '        npm run render -- --declare-mix <recordingId> --discord … --game-voice-chat … --other-voices …\n' +
   '        npm run render -- --declare-game <recordingId> --game-voice-chat present|absent\n' +
+  '        npm run render -- --declare-mic <recordingId> --creator-voice present|absent --other-voices present|absent\n' +
   '        npm run render -- <proposalId> --create [--layout …] [--captions on|off]';
 
 const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
@@ -122,28 +127,47 @@ async function main(): Promise<number> {
       return 0;
     }
 
-    if (values['declare-mix'] || values['declare-game']) {
-      const recordingId = (values['declare-mix'] ?? values['declare-game'])!;
-      const payload = values['declare-mix']
-        ? {
+    const declared = values['declare-mix']
+      ? ({
+          recordingId: values['declare-mix'],
+          subject: 'mix_composition',
+          payload: {
             discord: values.discord,
             gameVoiceChat: values['game-voice-chat'],
             otherVoices: values['other-voices'],
-          }
-        : { gameVoiceChat: values['game-voice-chat'] };
+          },
+        } as const)
+      : values['declare-game']
+        ? ({
+            recordingId: values['declare-game'],
+            subject: 'game_composition',
+            payload: { gameVoiceChat: values['game-voice-chat'] },
+          } as const)
+        : values['declare-mic']
+          ? ({
+              recordingId: values['declare-mic'],
+              subject: 'mic_composition',
+              payload: {
+                creatorVoice: values['creator-voice'],
+                otherVoices: values['other-voices'],
+              },
+            } as const)
+          : null;
+    if (declared) {
+      // Valeurs manquantes ou invalides : refusées par le schéma (VALIDATION_FAILED), jamais supposées.
       exportAudio.record(
-        recordingId,
+        declared.recordingId,
         {
           requestId: randomUUID(),
           kind: 'declaration',
-          subject: values['declare-mix'] ? 'mix_composition' : 'game_composition',
-          payload,
+          subject: declared.subject,
+          payload: declared.payload,
           ...note,
         },
         'cli',
       );
       console.log('Déclaration enregistrée.');
-      printAudio(recordingId);
+      printAudio(declared.recordingId);
       return 0;
     }
 

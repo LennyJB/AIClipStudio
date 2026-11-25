@@ -72,7 +72,7 @@ const ctx = (over: Partial<PatchContext> = {}): PatchContext => ({
   now: '2026-11-24T10:00:00.000Z',
   words: [...MIC.words, ...DSC.words],
   allowedCaptionRoles: ['mic'],
-  allowedAudioIndexes: [1],
+  allowedAudioTracks: [{ audioIndex: 1, role: 'mic' }],
   ...over,
 });
 
@@ -265,9 +265,61 @@ describe('réglages (PATCH)', () => {
       applyRenderOptions(
         r.project,
         { audio: { tracks: [{ audioIndex: 1, enabled: true }] } },
-        ctx({ allowedAudioIndexes: [] }),
+        ctx({ allowedAudioTracks: [] }),
       ),
     ).toThrow(/non autorisée/);
+  });
+
+  it('piste devenue exportable après la création (micro déclaré) : ajout explicite possible', () => {
+    // Projet créé sans aucune piste (micro non déclaré à ce moment-là).
+    const empty = projectFromProposal(input({ audio: { tracks: [], captionRoles: [] } })).project;
+    expect(empty.audio.tracks).toEqual([]);
+    expect(empty.captions.sources).toEqual([]);
+    // Toujours non autorisé : refus.
+    expect(() =>
+      applyRenderOptions(
+        empty,
+        { audio: { tracks: [{ audioIndex: 1 }] } },
+        ctx({ allowedAudioTracks: [] }),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'EXPORT_CONSENT_REQUIRED' }));
+    // Déclaré depuis : la piste et ses sous-titres peuvent être ajoutés.
+    const r = applyRenderOptions(
+      empty,
+      { audio: { tracks: [{ audioIndex: 1 }] }, captions: { enabled: true, sources: ['mic'] } },
+      ctx(),
+    );
+    expect(r.project.audio.tracks).toEqual([
+      { audioIndex: 1, role: 'mic', gainDb: 0, enabled: true },
+    ]);
+    expect(r.project.captions.sources).toEqual(['mic']);
+  });
+
+  it('la piste « tout » n’est jamais superposée à des pistes séparées', () => {
+    const p = projectFromProposal(
+      input({ audio: { tracks: [{ audioIndex: 0, role: 'mix' }], captionRoles: ['mix'] } }),
+    ).project;
+    expect(() =>
+      applyRenderOptions(
+        p,
+        { audio: { tracks: [{ audioIndex: 1, enabled: true }] } },
+        ctx({ allowedAudioTracks: [{ audioIndex: 1, role: 'mic' }] }),
+      ),
+    ).toThrow(/jamais être superposée/);
+    // En désactivant « tout » dans la même demande, le passage aux pistes séparées est accepté.
+    const r = applyRenderOptions(
+      p,
+      {
+        audio: {
+          tracks: [
+            { audioIndex: 0, enabled: false },
+            { audioIndex: 1, enabled: true },
+          ],
+        },
+      },
+      ctx({ allowedAudioTracks: [{ audioIndex: 1, role: 'mic' }] }),
+    );
+    expect(r.project.audio.tracks.filter((t) => t.enabled).map((t) => t.role)).toEqual(['mic']);
   });
 
   it('corrections : texte d’origine conservé, tracé, annulable ; source intacte', () => {

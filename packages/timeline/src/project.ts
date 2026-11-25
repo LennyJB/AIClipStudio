@@ -609,6 +609,13 @@ export function projectWarnings(p: ClipProject, revision: number): ProjectWarnin
   if (!p.layout.framingProfile) {
     out.push({ code: 'FRAMING_NOT_VALIDATED', message: 'Aucun profil de cadrage validé' });
   }
+  if (!p.audio.silent && !p.audio.tracks.some((t) => t.enabled)) {
+    out.push({
+      code: 'AUDIO_UNAVAILABLE',
+      message:
+        'Aucune piste audio active : déclarez la composition des pistes ou donnez les accords nécessaires',
+    });
+  }
   if (p.layout.masks.some((m) => m.mode === 'off')) {
     out.push({
       code: 'MASKS_DISABLED',
@@ -701,9 +708,14 @@ export interface PatchContext {
   words: readonly WordSpan[];
   /** Rôles de sous-titres autorisés par la règle d'audio exporté au moment du changement. */
   allowedCaptionRoles: readonly CaptionRole[];
-  /** Index des pistes exportables au moment du changement. */
-  allowedAudioIndexes: readonly number[];
+  /**
+   * Pistes exportables au moment du changement (sélection de la règle d'audio exporté : jamais
+   * « tout » avec des pistes séparées). Seules elles peuvent être ajoutées ou réactivées.
+   */
+  allowedAudioTracks: readonly { audioIndex: number; role: AudioRole }[];
 }
+
+const MIX_LIKE: readonly AudioRole[] = ['mix', 'unknown'];
 
 /**
  * Applique des réglages et renvoie le nouveau document (immuable), un résumé lisible des
@@ -798,14 +810,21 @@ export function applyRenderOptions(
   if (patch.audio) {
     if (patch.audio.tracks) {
       for (const t of patch.audio.tracks) {
-        const cur = next.audio.tracks.find((x) => x.audioIndex === t.audioIndex);
+        const allowed = ctx.allowedAudioTracks.find((x) => x.audioIndex === t.audioIndex);
+        let cur = next.audio.tracks.find((x) => x.audioIndex === t.audioIndex);
         if (!cur) {
-          throw new ProjectError(
-            'EXPORT_CONSENT_REQUIRED',
-            `Piste ${t.audioIndex} non retenue pour l’export : elle ne peut pas être ajoutée ici`,
-          );
+          // Piste devenue exportable après la création (ex. micro déclaré) : ajout explicite.
+          if (!allowed) {
+            throw new ProjectError(
+              'EXPORT_CONSENT_REQUIRED',
+              `Piste ${t.audioIndex} non autorisée à l’export : elle ne peut pas être ajoutée`,
+            );
+          }
+          cur = { audioIndex: allowed.audioIndex, role: allowed.role, gainDb: 0, enabled: true };
+          next.audio.tracks.push(cur);
+          next.audio.tracks.sort((a, b) => a.audioIndex - b.audioIndex);
         }
-        if (t.enabled === true && !ctx.allowedAudioIndexes.includes(t.audioIndex)) {
+        if (t.enabled !== false && !allowed) {
           throw new ProjectError(
             'EXPORT_CONSENT_REQUIRED',
             `Piste ${t.audioIndex} non autorisée à l’export`,
@@ -813,6 +832,16 @@ export function applyRenderOptions(
         }
         if (t.enabled !== undefined) cur.enabled = t.enabled;
         if (t.gainDb !== undefined) cur.gainDb = t.gainDb;
+      }
+      const active = next.audio.tracks.filter((x) => x.enabled);
+      if (
+        active.some((x) => MIX_LIKE.includes(x.role)) &&
+        active.some((x) => !MIX_LIKE.includes(x.role))
+      ) {
+        throw new ProjectError(
+          'VALIDATION_FAILED',
+          'La piste « tout » ne peut jamais être superposée à des pistes séparées (voix doublées)',
+        );
       }
     }
     if (patch.audio.silent !== undefined) next.audio.silent = patch.audio.silent;

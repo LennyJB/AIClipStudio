@@ -11,6 +11,7 @@ import {
   allowedAudio,
   EMPTY_AUDIO_STATE,
   GameCompositionSchema,
+  MicCompositionSchema,
   MixCompositionSchema,
   VOICE_CATEGORIES,
   type AudioDecision,
@@ -48,6 +49,15 @@ export const ExportAudioBodySchema = z.union([
       kind: z.literal('declaration'),
       subject: z.literal('game_composition'),
       payload: GameCompositionSchema,
+      note: z.string().trim().max(500).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      requestId: z.uuid(),
+      kind: z.literal('declaration'),
+      subject: z.literal('mic_composition'),
+      payload: MicCompositionSchema,
       note: z.string().trim().max(500).optional(),
     })
     .strict(),
@@ -99,6 +109,8 @@ export function audioStateFromEvents(events: readonly ExportAudioEvent[]): Expor
       s.mixComposition = MixCompositionSchema.parse(e.payload);
     } else if (e.subject === 'game_composition') {
       s.gameComposition = GameCompositionSchema.parse(e.payload);
+    } else if (e.subject === 'mic_composition') {
+      s.micComposition = MicCompositionSchema.parse(e.payload);
     }
   }
   return s;

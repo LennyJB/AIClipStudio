@@ -88,11 +88,51 @@ describe.skipIf(!enabled)('CLI npm run render (étape 6a)', () => {
     expect(created.out).toMatch(/Projet créé/);
     expect(created.out).toMatch(/révision 2/);
     expect(created.out).toMatch(/disposition gameplay_crop/);
-    expect(created.out).toMatch(/audio mic/);
+    // Composition du micro non déclarée : aucun audio, avertissement explicite.
+    expect(created.out).toMatch(/audio aucun/);
+    expect(created.out).toMatch(/Aucune piste audio active/);
     expect((await cli('render', [P1, '--create'])).out).toMatch(/Projet existant/);
     expect((await cli('render', ['--list', REC])).out).toMatch(
       /« Le plan infaillible ».*révision 2/,
     );
+
+    // Micro : bloqué sans déclaration ; tiers présents ⇒ accord « autres voix ».
+    let audio = (await cli('render', ['--audio', REC])).out;
+    expect(audio).toMatch(/piste 0 \(mic\) : NON exportable — bloquée : composition du micro/);
+    expect(audio).toMatch(/Aucun audio exportable/);
+    const incomplete = await cli('render', ['--declare-mic', REC, '--other-voices', 'absent']);
+    expect(incomplete.code).toBe(1);
+    expect(incomplete.err).toMatch(/VALIDATION_FAILED/);
+    const thirds = await cli('render', [
+      '--declare-mic',
+      REC,
+      '--creator-voice',
+      'present',
+      '--other-voices',
+      'present',
+    ]);
+    expect(thirds.out).toMatch(
+      /piste 0 \(mic\) : NON exportable — bloquée : accord requis : autres voix de tiers/,
+    );
+    expect(
+      (await cli('render', ['--consent', REC, '--grant', 'other_voices', '--note', 'test'])).out,
+    ).toMatch(
+      /piste 0 \(mic\) : exportable — autorisée \(voix du créateur ; autres voix de tiers : accord donné\)/,
+    );
+    audio = (await cli('render', ['--consent', REC, '--revoke', 'other_voices'])).out;
+    expect(audio).toMatch(/piste 0 \(mic\) : NON exportable/);
+    expect(
+      (
+        await cli('render', [
+          '--declare-mic',
+          REC,
+          '--creator-voice',
+          'present',
+          '--other-voices',
+          'absent',
+        ])
+      ).out,
+    ).toMatch(/Export : mic ; sous-titres possibles : mic/);
 
     // Piste jeu : exclue tant que sa composition n'est pas déclarée.
     expect((await cli('render', ['--audio', REC])).out).toMatch(

@@ -46,10 +46,79 @@ describe('ExportAudioService', () => {
     expect(
       ok({ kind: 'declaration', subject: 'game_composition', payload: { discord: 'absent' } }),
     ).toBe(false);
+    // Micro : voix du créateur ET voix de tiers obligatoirement déclarées.
+    expect(
+      ok({
+        kind: 'declaration',
+        subject: 'mic_composition',
+        payload: { creatorVoice: 'present', otherVoices: 'absent' },
+      }),
+    ).toBe(true);
+    expect(
+      ok({ kind: 'declaration', subject: 'mic_composition', payload: { otherVoices: 'absent' } }),
+    ).toBe(false);
+    expect(
+      ok({
+        kind: 'declaration',
+        subject: 'mic_composition',
+        payload: { creatorVoice: 'present', otherVoices: 'inconnu' },
+      }),
+    ).toBe(false);
+    expect(ok({ kind: 'consent', subject: 'mic_composition', action: 'granted' })).toBe(false);
+  });
+
+  it('micro : bloqué sans déclaration ; tiers présents ⇒ accord « autres voix » ; révocable', () => {
+    const s = service();
+    const mic = () => s.view(REC).decision.tracks.find((t) => t.role === 'mic')!;
+    expect(mic().exportable).toBe(false);
+    expect(s.view(REC).decision.captionRoles).toEqual([]);
+    const declare = (otherVoices: 'present' | 'absent') =>
+      s.record(
+        REC,
+        {
+          requestId: randomUUID(),
+          kind: 'declaration',
+          subject: 'mic_composition',
+          payload: { creatorVoice: 'present', otherVoices },
+        },
+        'cli',
+      );
+    declare('present');
+    expect(mic().missing).toEqual([{ kind: 'consent', subject: 'other_voices' }]);
+    const consent = (action: 'granted' | 'revoked') =>
+      s.record(
+        REC,
+        { requestId: randomUUID(), kind: 'consent', subject: 'other_voices', action },
+        'cli',
+      );
+    consent('granted');
+    expect(mic().exportable).toBe(true);
+    expect(s.view(REC).decision.captionRoles).toEqual(['mic']);
+    consent('revoked');
+    expect(mic().exportable).toBe(false);
+    expect(s.view(REC).decision.captionRoles).toEqual([]);
+    // Redéclaration : plus de tiers ⇒ exportable sans accord ; le dernier événement fait foi.
+    declare('absent');
+    expect(mic().exportable).toBe(true);
+    expect(s.view(REC).state.micComposition).toEqual({
+      creatorVoice: 'present',
+      otherVoices: 'absent',
+    });
   });
 
   it('état = dernier événement par sujet ; « tout » exige déclaration ET accords', () => {
     const s = service();
+    expect(s.view(REC).decision.selected.map((t) => t.role)).toEqual([]);
+    s.record(
+      REC,
+      {
+        requestId: randomUUID(),
+        kind: 'declaration',
+        subject: 'mic_composition',
+        payload: { creatorVoice: 'present', otherVoices: 'absent' },
+      },
+      'cli',
+    );
     expect(s.view(REC).decision.selected.map((t) => t.role)).toEqual(['mic']);
     s.record(
       REC,
@@ -82,6 +151,7 @@ describe('ExportAudioService', () => {
     expect(v.decision.selected.map((t) => t.role)).toEqual(['mic', 'discord', 'game']);
     expect(v.state.gameComposition).toEqual({ gameVoiceChat: 'absent' });
     expect(v.history.map((h) => h.subject)).toEqual([
+      'mic_composition',
       'discord_voices',
       'game_composition',
       'game_composition',

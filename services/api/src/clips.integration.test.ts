@@ -88,6 +88,7 @@ interface View {
   document: {
     segments: { srcStartMs: number; srcEndMs: number }[];
     captions: {
+      enabled: boolean;
       sources: string[];
       items: { id: string; speakerRole: string; srcStartMs: number }[];
     };
@@ -154,6 +155,13 @@ const audioEvent = (recId: string, body: Record<string, unknown>) =>
     `/api/recordings/${recId}/export-audio`,
     { requestId: randomUUID(), ...body },
   );
+/** Déclare la composition du micro (sans elle, le micro n'est jamais exporté). */
+const declareMic = (recId: string, otherVoices: 'present' | 'absent' = 'absent') =>
+  audioEvent(recId, {
+    kind: 'declaration',
+    subject: 'mic_composition',
+    payload: { creatorVoice: 'present', otherVoices },
+  });
 const sha = (f: string) => createHash('sha256').update(readFileSync(f)).digest('hex');
 
 describe.skipIf(!enabled)('Projets de clip (API, étape 6a)', () => {
@@ -181,6 +189,7 @@ describe.skipIf(!enabled)('Projets de clip (API, étape 6a)', () => {
     expect((await create(clip)).body.error?.code).toBe('PROPOSAL_NOT_ACCEPTED');
 
     await decide(clip, 'accepted');
+    expect((await declareMic(rec.id)).status).toBe(200);
     r = await create(clip);
     expect(r.status).toBe(201);
     const v = r.body;
@@ -216,10 +225,75 @@ describe.skipIf(!enabled)('Projets de clip (API, étape 6a)', () => {
     expect(sha(video)).toBe(before);
   }, 120_000);
 
+  it('micro : composition inconnue ⇒ ni audio ni sous-titres ; voix de tiers ⇒ accord « autres voix »', async () => {
+    const video = await setup();
+    const { rec, clip } = await prepare(video);
+    await decide(clip, 'accepted');
+
+    // 1. Composition du micro inconnue : projet créé sans audio ni sous-titres, avec la raison.
+    const v = (await create(clip)).body;
+    expect(v.document.audio.tracks).toEqual([]);
+    expect(v.document.captions.sources).toEqual([]);
+    expect(v.captions).toEqual([]);
+    expect(v.document.captions.enabled).toBe(false);
+    expect(v.warnings.map((w) => w.code)).toContain('AUDIO_UNAVAILABLE');
+    let a = await call<{
+      decision: { mode: string; tracks: { role: string; exportable: boolean; reason: string }[] };
+    }>('GET', `/api/recordings/${rec.id}/export-audio`);
+    expect(a.body.decision.mode).toBe('none');
+    expect(a.body.decision.tracks.find((t) => t.role === 'mic')!.reason).toMatch(
+      /composition du micro .* non déclarée/,
+    );
+    // Ni la piste ni ses sous-titres ne peuvent être ajoutés.
+    for (const changes of [
+      { audio: { tracks: [{ audioIndex: 0 }] } },
+      { captions: { enabled: true, sources: ['mic'] } },
+    ]) {
+      const r = await patch(v.project.id, 1, changes);
+      expect(r.status, JSON.stringify(changes)).toBe(422);
+      expect(r.body.error?.code).toBe('EXPORT_CONSENT_REQUIRED');
+    }
+
+    // 2. Voix de tiers déclarées dans le micro : toujours bloqué sans l'accord « autres voix »,
+    //    même avec l'accord Discord.
+    await declareMic(rec.id, 'present');
+    await audioEvent(rec.id, { kind: 'consent', subject: 'discord_voices', action: 'granted' });
+    a = await call('GET', `/api/recordings/${rec.id}/export-audio`);
+    expect(a.body.decision.tracks.find((t) => t.role === 'mic')!.exportable).toBe(false);
+    expect(
+      (await patch(v.project.id, 1, { captions: { enabled: true, sources: ['mic'] } })).status,
+    ).toBe(422);
+
+    // 3. Accord « autres voix » donné : la piste et ses sous-titres peuvent être ajoutés.
+    await audioEvent(rec.id, { kind: 'consent', subject: 'other_voices', action: 'granted' });
+    const added = await patch(v.project.id, 1, {
+      audio: { tracks: [{ audioIndex: 0 }] },
+      captions: { enabled: true, sources: ['mic'] },
+    });
+    expect(added.status, JSON.stringify(added.body.error)).toBe(200);
+    expect(added.body.document.audio.tracks.map((t) => t.role)).toEqual(['mic']);
+    expect(added.body.captions!.length).toBeGreaterThan(0);
+    expect(added.body.captions!.every((c) => c.speakerRole === 'mic')).toBe(true);
+
+    // 4. Accord révoqué : les sous-titres du micro disparaissent de l'affichage, et la piste ne
+    //    peut plus être réactivée.
+    await audioEvent(rec.id, { kind: 'consent', subject: 'other_voices', action: 'revoked' });
+    const after = (await call<View>('GET', `/api/clip-projects/${v.project.id}`)).body;
+    expect(after.captions).toEqual([]);
+    expect(after.audio.selected.map((t) => t.role)).toEqual(['discord']);
+    await patch(v.project.id, 2, { audio: { tracks: [{ audioIndex: 0, enabled: false }] } });
+    const re = await patch(v.project.id, 3, {
+      audio: { tracks: [{ audioIndex: 0, enabled: true }] },
+    });
+    expect(re.status).toBe(422);
+    expect(re.body.error?.code).toBe('EXPORT_CONSENT_REQUIRED');
+  }, 120_000);
+
   it('audio exporté : accord Discord tracé, idempotent, révocable ; la piste « tout » jamais autorisée par lui', async () => {
     const video = await setup();
     const { rec, clip } = await prepare(video);
     await decide(clip, 'accepted');
+    await declareMic(rec.id);
     const v = (await create(clip)).body;
 
     let a = await call<{
@@ -300,14 +374,15 @@ describe.skipIf(!enabled)('Projets de clip (API, étape 6a)', () => {
       'GET',
       `/api/recordings/${rec.id}/export-audio`,
     );
-    expect(hist.body.history.map((h) => h.action)).toEqual(['granted', 'revoked']);
+    expect(hist.body.history.map((h) => h.action)).toEqual(['declared', 'granted', 'revoked']);
     expect(() => db.prepare('DELETE FROM export_audio_events').run()).toThrow(/ajout seul/);
   }, 120_000);
 
   it('réglages : révisions immuables, conflit de version, rejeu, bornes ±10 s, corrections tracées', async () => {
     const video = await setup();
-    const { clip } = await prepare(video);
+    const { rec, clip } = await prepare(video);
     await decide(clip, 'accepted');
+    await declareMic(rec.id);
     const v = (await create(clip)).body;
     const id = v.project.id;
     const start = v.document.segments[0]!.srcStartMs;

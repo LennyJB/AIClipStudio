@@ -242,9 +242,11 @@ CREATE TABLE export_audio_events (
                   -- consentements (catégories de voix de tiers)
                   'discord_voices','game_voice_chat','other_voices',
                   -- déclarations de composition (faits sur une piste)
-                  'mix_composition','game_composition')),
+                  'mix_composition','game_composition','mic_composition')),
   action        TEXT NOT NULL CHECK (action IN ('granted','revoked','declared')),
-  payload_json  TEXT,                           -- déclarations : { discord, gameVoiceChat, otherVoices }
+  payload_json  TEXT,                           -- déclarations : « tout » { discord, gameVoiceChat,
+                                                -- otherVoices } ; jeu { gameVoiceChat } ;
+                                                -- micro { creatorVoice, otherVoices }
                                                 -- chaque valeur ∈ 'present' | 'absent' (jamais « inconnu »)
   note          TEXT,                           -- ex. « accord oral de A et B le 12/11 »
   request_id    TEXT NOT NULL UNIQUE,
@@ -390,7 +392,10 @@ Deux notions distinctes, par **enregistrement**, explicites, tracées dans
 - **Déclarations de composition** (faits sur une piste, saisis par le créateur) :
   - `mix_composition` : pour la piste `mix` (ou la piste unique d'un MP4 de secours, ou une piste
     `unknown`) : `{ discord, gameVoiceChat, otherVoices }`, chaque valeur `present` ou `absent` ;
-  - `game_composition` : pour la piste `game` : `{ gameVoiceChat }`.
+  - `game_composition` : pour la piste `game` : `{ gameVoiceChat }` ;
+  - `mic_composition` : pour la piste `mic` : `{ creatorVoice, otherVoices }` — la voix du
+    créateur (informative, jamais soumise à accord) est distinguée des voix de tiers captées par
+    le micro (personne dans la pièce, retour des haut-parleurs, voix de synthèse).
 
 Règles (fonction pure `allowedAudio()`, §7.5) :
 
@@ -405,9 +410,12 @@ Règles (fonction pure `allowedAudio()`, §7.5) :
    déclarée ; `gameVoiceChat: absent` l'autorise ; `present` exige `game_voice_chat`.
    L'interface propose de reprendre la déclaration du dernier enregistrement du même jeu, mais
    cela reste une action explicite et tracée pour l'enregistrement concerné.
-4. La piste `mic` est considérée comme la voix du créateur. L'interface rappelle qu'un retour
-   des haut-parleurs (Discord entendu sans casque) peut y faire entendre des tiers ; ce cas
-   relève d'une vérification humaine et figure dans la liste des tests manuels.
+4. **Micro** (correction de revue de la PR 6a) : la piste `mic` n'est **pas** présumée ne
+   contenir que la voix du créateur. Elle est exclue tant que `mic_composition` n'a pas été
+   déclarée ; `otherVoices: absent` l'autorise ; `otherVoices: present` exige l'accord
+   `other_voices` (ni `discord_voices` ni `game_voice_chat` ne suffisent). Un projet créé avant
+   la déclaration n'a ni audio ni sous-titres du micro ; une fois la piste autorisée, elle
+   s'ajoute explicitement par un réglage (jamais automatiquement).
 5. Les sous-titres suivent les mêmes règles que l'audio : aucune ligne issue d'une piste non
    exportable (par exemple une transcription faite sur la `mix`) n'est affichée.
 6. Révoquer un consentement ou modifier une déclaration change `plan_hash` : un rendu antérieur
@@ -698,12 +706,12 @@ d'autre. `exports/.staging/` n'est jamais servi.
 Sélection par `allowedAudio(tracks, audioState)` (`packages/render/src/audio.ts`, pure, testée
 de façon exhaustive), selon les règles du §6.4 :
 
-| Piste                          | Catégories de tiers possibles                                      | Exportable si                                                                                                                                     |
-| ------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mic`                          | aucune (voix du créateur ; rappel sur le retour des haut-parleurs) | toujours                                                                                                                                          |
-| `discord`                      | Discord                                                            | consentement `discord_voices`                                                                                                                     |
-| `game`                         | chat vocal du jeu                                                  | `game_composition` déclarée **et** (`gameVoiceChat: absent` **ou** consentement `game_voice_chat`)                                                |
-| `mix`, piste unique, `unknown` | Discord, chat vocal du jeu, autres voix                            | `mix_composition` déclarée **et** consentement pour **chaque** catégorie déclarée `present` (`discord_voices`, `game_voice_chat`, `other_voices`) |
+| Piste                          | Catégories de tiers possibles                                            | Exportable si                                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mic`                          | autres voix de tiers (la voix du créateur n'est jamais soumise à accord) | `mic_composition` déclarée **et** (`otherVoices: absent` **ou** consentement `other_voices`)                                                      |
+| `discord`                      | Discord                                                                  | consentement `discord_voices`                                                                                                                     |
+| `game`                         | chat vocal du jeu                                                        | `game_composition` déclarée **et** (`gameVoiceChat: absent` **ou** consentement `game_voice_chat`)                                                |
+| `mix`, piste unique, `unknown` | Discord, chat vocal du jeu, autres voix                                  | `mix_composition` déclarée **et** consentement pour **chaque** catégorie déclarée `present` (`discord_voices`, `game_voice_chat`, `other_voices`) |
 
 Choix de la combinaison :
 
@@ -784,6 +792,10 @@ npm run render -- --declare-game <recordingId> --game-voice-chat present|absent
 ```
 
 ```bash
+npm run render -- --declare-mic <recordingId> --creator-voice present|absent --other-voices present|absent
+```
+
+```bash
 npm run render -- <proposalId> --create [--layout facecam_top|gameplay_crop|blurred_fit] [--captions on|off]
 ```
 
@@ -803,7 +815,7 @@ sur une fixture générée, avec le FFmpeg installé.
 - Liste des propositions **acceptées** : titre, durée, état du projet et du dernier rendu ;
   projets dont la décision a changé affichés en lecture seule.
 - Bloc « Audio exporté » de l'enregistrement : pour chaque piste, son statut (exportable ou non)
-  et la raison ; déclarations de composition de la piste Tout et de la piste Jeu (choix
+  et la raison ; déclarations de composition des pistes Tout, Jeu et Micro (choix
   « présent » / « absent » obligatoires, pas de valeur par défaut) ; consentements par catégorie
   (Discord, chat vocal du jeu, autres voix) avec note ; historique ; révocation.
 - Panneau d'un clip (sans timeline) :

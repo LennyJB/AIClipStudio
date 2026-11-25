@@ -5,7 +5,9 @@
  *
  * Règle unique : une piste n'est exportable que si CHAQUE catégorie de voix de tiers qu'elle peut
  * contenir est soit déclarée absente, soit couverte par le consentement correspondant. Une
- * composition non déclarée est traitée comme « peut tout contenir ».
+ * composition non déclarée est traitée comme « peut tout contenir ». Cela vaut pour TOUTES les
+ * pistes, micro compris : le micro peut capter des tiers (personne dans la pièce, retour des
+ * haut-parleurs, voix de synthèse) ; sa composition doit donc être déclarée elle aussi.
  */
 import type { CaptionRole } from '@acs/timeline';
 import { z } from 'zod';
@@ -24,8 +26,16 @@ export const MixCompositionSchema = z
   .object({ discord: presence, gameVoiceChat: presence, otherVoices: presence })
   .strict();
 export const GameCompositionSchema = z.object({ gameVoiceChat: presence }).strict();
+/**
+ * Micro : la voix du créateur (informative, jamais soumise à accord) est distinguée des voix de
+ * tiers captées par le micro (soumises à l'accord `other_voices`).
+ */
+export const MicCompositionSchema = z
+  .object({ creatorVoice: presence, otherVoices: presence })
+  .strict();
 export type MixComposition = z.infer<typeof MixCompositionSchema>;
 export type GameComposition = z.infer<typeof GameCompositionSchema>;
+export type MicComposition = z.infer<typeof MicCompositionSchema>;
 
 export interface ExportAudioState {
   consents: Record<VoiceCategory, boolean>;
@@ -33,12 +43,15 @@ export interface ExportAudioState {
   mixComposition: MixComposition | null;
   /** Déclaration pour la piste jeu, null si absente. */
   gameComposition: GameComposition | null;
+  /** Déclaration pour la piste micro, null si absente (piste bloquée). */
+  micComposition: MicComposition | null;
 }
 
 export const EMPTY_AUDIO_STATE: ExportAudioState = {
   consents: { discord_voices: false, game_voice_chat: false, other_voices: false },
   mixComposition: null,
   gameComposition: null,
+  micComposition: null,
 };
 
 export type TrackRoleIn = 'mic' | 'discord' | 'game' | 'mix' | 'unknown';
@@ -49,7 +62,7 @@ export interface TrackIn {
 }
 
 export type MissingRequirement =
-  | { kind: 'declaration'; subject: 'mix_composition' | 'game_composition' }
+  | { kind: 'declaration'; subject: 'mix_composition' | 'game_composition' | 'mic_composition' }
   | { kind: 'consent'; subject: VoiceCategory };
 
 export interface TrackVerdict {
@@ -82,7 +95,16 @@ function categoriesFor(
 ): { needs: VoiceCategory[]; missingDeclaration: MissingRequirement | null } {
   switch (role) {
     case 'mic':
-      return { needs: [], missingDeclaration: null };
+      if (!s.micComposition) {
+        return {
+          needs: ['other_voices'],
+          missingDeclaration: { kind: 'declaration', subject: 'mic_composition' },
+        };
+      }
+      return {
+        needs: s.micComposition.otherVoices === 'present' ? ['other_voices'] : [],
+        missingDeclaration: null,
+      };
     case 'discord':
       return { needs: ['discord_voices'], missingDeclaration: null };
     case 'game':
@@ -128,26 +150,41 @@ export function trackVerdict(t: TrackIn, s: ExportAudioState): TrackVerdict {
     exportable,
     missing,
     reason: exportable
-      ? needs.length
-        ? `autorisée (${needs.map((n) => CATEGORY_LABELS[n]).join(', ')} : accord donné)`
-        : t.role === 'mic'
-          ? 'voix du créateur'
-          : 'aucune voix de tiers déclarée'
+      ? exportableReason(t.role, needs, s)
       : `bloquée : ${describeMissing(missing)}`,
   };
+}
+
+function exportableReason(role: TrackRoleIn, needs: readonly VoiceCategory[], s: ExportAudioState) {
+  const thirdParties = needs.length
+    ? `${needs.map((n) => CATEGORY_LABELS[n]).join(', ')} : accord donné`
+    : 'aucune voix de tiers déclarée';
+  if (role === 'mic') {
+    const creator =
+      s.micComposition?.creatorVoice === 'present' ? 'voix du créateur' : 'sans voix du créateur';
+    return `autorisée (${creator} ; ${thirdParties})`;
+  }
+  return needs.length ? `autorisée (${thirdParties})` : thirdParties;
 }
 
 export function describeMissing(missing: readonly MissingRequirement[]): string {
   return missing
     .map((m) =>
       m.kind === 'declaration'
-        ? m.subject === 'mix_composition'
-          ? 'composition de la piste « tout » non déclarée'
-          : 'présence du chat vocal dans la piste jeu non déclarée'
+        ? DECLARATION_LABELS[m.subject]
         : `accord requis : ${CATEGORY_LABELS[m.subject]}`,
     )
     .join(' ; ');
 }
+
+const DECLARATION_LABELS: Record<
+  Extract<MissingRequirement, { kind: 'declaration' }>['subject'],
+  string
+> = {
+  mix_composition: 'composition de la piste « tout » non déclarée',
+  game_composition: 'présence du chat vocal dans la piste jeu non déclarée',
+  mic_composition: 'composition du micro (voix du créateur, voix de tiers) non déclarée',
+};
 
 const INDIVIDUAL: readonly TrackRoleIn[] = ['mic', 'discord', 'game'];
 

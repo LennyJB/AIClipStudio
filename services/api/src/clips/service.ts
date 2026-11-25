@@ -475,7 +475,7 @@ export class ClipProjectService {
             now: new Date().toISOString(),
             words,
             allowedCaptionRoles: audio.captionRoles,
-            allowedAudioIndexes: audio.selected.map((t) => t.audioIndex),
+            allowedAudioTracks: audio.selected,
           });
         } catch (err) {
           fromProjectError(err);

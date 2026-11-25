@@ -59,6 +59,13 @@ describe('migration 7 (projets de clip)', () => {
     const ins = audioEvent(db);
     ins.run('e1', 'consent', 'discord_voices', 'granted', null, 'q1');
     ins.run('e2', 'declaration', 'mix_composition', 'declared', '{"discord":"present"}', 'q2');
+    ins.run('e2m', 'declaration', 'mic_composition', 'declared', '{"otherVoices":"absent"}', 'q2m');
+    expect(() => ins.run('e3m', 'consent', 'mic_composition', 'granted', null, 'q3m')).toThrow(
+      /CHECK/,
+    );
+    expect(() => ins.run('e4m', 'declaration', 'mic_composition', 'declared', null, 'q4m')).toThrow(
+      /CHECK/,
+    );
     // Incohérences refusées par la base.
     expect(() => ins.run('e3', 'consent', 'mix_composition', 'granted', null, 'q3')).toThrow(
       /CHECK/,

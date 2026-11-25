@@ -717,7 +717,7 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'clip_projects',
     // Étape 6a : projets de clip et persistance. Ajouts uniquement (docs/plan-etape-6.md §5.2).
     //  - export_audio_events : consentements (voix de tiers) et déclarations de composition des
-    //    pistes, par enregistrement, en ajout seul. Distincts de l'accord « texte Discord envoyé à
+    //    pistes (« tout », jeu, micro), par enregistrement, en ajout seul. Distincts de l'accord « texte Discord envoyé à
     //    Claude » (migration 4) : finalités différentes.
     //  - source_integrity_manifests : ensemble d'octets protégé d'une fenêtre source (§6.5).
     //  - clip_projects / clip_project_revisions : document du projet, révisions immuables. La
@@ -731,7 +731,7 @@ export const MIGRATIONS: readonly Migration[] = [
         kind          TEXT NOT NULL CHECK (kind IN ('consent','declaration')),
         subject       TEXT NOT NULL CHECK (subject IN (
                         'discord_voices','game_voice_chat','other_voices',
-                        'mix_composition','game_composition')),
+                        'mix_composition','game_composition','mic_composition')),
         action        TEXT NOT NULL CHECK (action IN ('granted','revoked','declared')),
         payload_json  TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),
         note          TEXT CHECK (note IS NULL OR length(note) <= 500),
@@ -742,7 +742,7 @@ export const MIGRATIONS: readonly Migration[] = [
                   AND subject IN ('discord_voices','game_voice_chat','other_voices')
                   AND action IN ('granted','revoked') AND payload_json IS NULL)
             OR (kind = 'declaration'
-                  AND subject IN ('mix_composition','game_composition')
+                  AND subject IN ('mix_composition','game_composition','mic_composition')
                   AND action = 'declared' AND payload_json IS NOT NULL))
       );
       CREATE INDEX export_audio_events_recording_idx ON export_audio_events(recording_id, seq);
