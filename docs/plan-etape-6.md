@@ -1061,3 +1061,29 @@ Précisions apportées pendant l'implémentation de la PR 6a, sans changer les d
   6b avec les autres variables de rendu, la valeur utilisée étant de toute façon enregistrée dans
   chaque manifeste.
 - **Annulation des rendus depuis la revue** et `doctor --render` : en 6b, avec les rendus.
+
+---
+
+## 18. Écarts de mise en œuvre (PR 6b)
+
+Précisions apportées pendant l'implémentation de la PR 6b, sans changer les décisions du § 14 :
+
+- **Chemins en base** : `staging_rel_path`, `output_rel_path` et `srt_rel_path` sont relatifs au
+  dossier `storage/` (comme les autres chemins de la base), par exemple
+  `exports/2026-11-25_titre_3f2a9c1e/clip.mp4` ou `processing/renders/previews/<id>/clip.mp4`.
+- **Effets** : proposés à la demande (`POST /api/clip-projects/:id/effects/suggest`,
+  `npm run render -- <id> --suggest-effects`) dans une révision « système » ; jamais ajoutés sans
+  cette action. L'indice d'énergie est calculé localement sur la piste micro, même non exportée :
+  rien n'en sort du poste.
+- **Zoom** : filtre `zoompan` (une image par image d'entrée) avec montée et descente de 0,25 s ;
+  testé au pixel.
+- **Idempotence des rendus** : par empreinte du plan (document, accords, confidentialité,
+  intégrité, version du moteur) ; la même demande renvoie le rendu existant.
+- **Annulation par la revue** : après la transaction de décision (et non dans la même), car
+  l'annulation d'un processus n'est pas transactionnelle ; la garantie reste la publication sous
+  verrou.
+- **CLI** : `--enable-allowed-audio` ajoute explicitement les pistes et sous-titres autorisés au
+  moment de la commande (projet créé avant une déclaration) ; le CLI attend la fin du rendu
+  (Ctrl+C l'annule).
+- **Image fixe** : renvoyée directement (JPEG), sans être stockée.
+- **Sorties** : `render.json` ne contient ni chemin absolu, ni texte de transcription.

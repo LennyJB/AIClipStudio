@@ -154,6 +154,7 @@ npm run dev
 | `npm run analyze -- <id> --continue`   | Requêtes Opus relues : lance l'analyse approfondie mise en pause                                      |
 | `npm run analyze -- <id> --requests`   | Requêtes réelles de la dernière analyse (`--window N` : contenu exact)                                |
 | `npm run review -- <id>`               | Revue des propositions : liste, `--accept`, `--reject --reason`, `--reset`, `--detach`, `--export`    |
+| `npm run render -- <propositionId> …`  | Projet de clip et rendu 9:16 : `--create`, `--preview`, `--final`, accords et déclarations audio      |
 | `npm run doctor -- --claude`           | Clé et modèles Claude accessibles (aucune génération)                                                 |
 | `npm run analysis-settings -- <id>`    | Confidentialité : accord Discord, facecam                                                             |
 | `npm run framing -- <commande>`        | Cadrage des images : `list`, `preview`, `validate`, `clear`                                           |
@@ -362,6 +363,23 @@ envoyé à Claude et aucune préférence n'est activée. Guide :
 npm run review -- <id>                                   # propositions à examiner
 npm run review -- --reject <propositionId> --reason chute_coupee --comment "…"
 npm run review -- --export > retours.jsonl               # journal pour l'étape 6
+```
+
+## Clips verticaux (étape 6)
+
+Une proposition **acceptée** devient un projet de clip, puis un rendu vertical 9:16 (aperçu
+basse définition ou export final 1080×1920) : cadrage gameplay / facecam, zones sensibles
+masquées, sous-titres incrustés (corrigeables, noms pseudonymisés), volume normalisé à −14 LUFS
+(désactivable), fréquence d'images de la source plafonnée à 60 i/s. Aucune voix de tiers n'est
+exportée sans accord explicite de l'enregistrement, micro compris. Aucune publication : l'export
+s'arrête au dossier `storage/exports/`. Plan et règles : [`docs/plan-etape-6.md`](docs/plan-etape-6.md).
+
+```bash
+npm run render -- --declare-mic <id> --creator-voice present --other-voices absent
+npm run render -- <propositionId> --create --layout facecam_top
+npm run render -- <propositionId> --preview --enable-allowed-audio   # aperçu (processing/)
+npm run render -- <propositionId> --final                            # export (storage/exports/)
+npm run doctor -- --render                                           # filtres, polices, intégrité
 ```
 
 ---
