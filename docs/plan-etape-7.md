@@ -1058,9 +1058,13 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   v1, puis enregistrés comme entrée `system` du journal sous forme d'une restauration clé par clé
   vérifiée (`diffToRestore`). Ils sont annulables depuis l'éditeur comme les autres entrées. La
   confirmation de désactivation d'un masque est transmise telle quelle.
-- **Rendu** : la demande crée d'abord un point de contrôle ; si le projet change entre ce point
-  et la construction du plan, `VERSION_CONFLICT` (aucun rendu ne référence un état sans révision
-  immuable). La publication et la récupération comparent la **version courante** du journal.
+- **Rendu** : la demande crée d'abord un point de contrôle. Dans la transaction d'insertion
+  (`BEGIN IMMEDIATE`), **avant toute réutilisation ou création**, la version du plan doit égaler la
+  **version courante** du journal ; sinon `VERSION_CONFLICT` immédiat, rien n'est mis en file ni
+  écrit. L'existence de la révision du plan ne suffit pas : une révision antérieure reste en base
+  après une modification concurrente. Si la version courante n'a pas de révision immuable (projet
+  modifié entre le point de contrôle et la construction du plan), même refus. La publication et la
+  récupération comparent aussi la version courante du journal.
 - **Empreinte attendue** (`expectedHash`) : comparée seulement quand le lot est construit sur la
   version courante. Un lot réappliqué (`rebased: true`) renvoie la nouvelle empreinte, que
   l'interface doit reprendre.

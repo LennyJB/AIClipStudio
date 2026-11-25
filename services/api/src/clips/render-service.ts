@@ -159,6 +159,8 @@ export interface RenderTestHooks {
   beforeRecoveryLock?: (renderId: string) => void | Promise<void>;
   afterRename?: (renderId: string) => void;
   beforeCommit?: (renderId: string) => void;
+  /** Demande de rendu : après la construction du plan, juste avant la transaction d'insertion. */
+  beforeRequestLock?: (projectId: string) => void | Promise<void>;
   /** Image fixe : juste avant le lancement de FFmpeg (signal d'arrêt transmis). */
   beforeFrameProcess?: (projectId: string, signal: AbortSignal) => void | Promise<void>;
 }
@@ -333,10 +335,22 @@ export class RenderService {
     this.clips.edits.checkpoint(projectId);
     const built = await this.build(projectId, b.kind);
     await this.assertDiskSpace(built.plan);
+    await this.hooks.beforeRequestLock?.(projectId);
 
     const result = this.ctx.db
       .transaction(() => {
         this.clips.guard.assertAccepted(row.proposalId);
+        // Sous le verrou, AVANT toute réutilisation ou création : le plan doit avoir été construit
+        // sur la version courante du journal. Une révision antérieure peut toujours exister
+        // (clip_project_revisions est immuable) : son existence ne prouve pas qu'elle est à jour.
+        const head = this.clips.edits.headVersion(projectId);
+        if (head !== built.revision) {
+          throw new AppError(
+            'VERSION_CONFLICT',
+            'Le projet a été modifié pendant la préparation du rendu : réessayez',
+            { details: { currentRevision: head, planRevision: built.revision } },
+          );
+        }
         const existing = this.ctx.db
           .prepare(
             `SELECT * FROM clip_renders WHERE plan_hash = ? AND kind = ?
@@ -344,13 +358,14 @@ export class RenderService {
           )
           .get(built.planHash, b.kind) as Record<string, unknown> | undefined;
         if (existing) return { id: existing.id as string, created: false };
-        // Projet modifié entre le point de contrôle et la construction du plan : refus explicite
-        // (aucun rendu ne référence un état sans révision immuable).
+        // Projet modifié entre le point de contrôle et la construction du plan : la version
+        // courante n'a pas de révision immuable ; refus explicite (aucun rendu ne référence un
+        // état sans révision immuable).
         if (!this.clips.repo.revision(projectId, built.revision)) {
           throw new AppError(
             'VERSION_CONFLICT',
             'Le projet a été modifié pendant la préparation du rendu : réessayez',
-            { details: { currentRevision: this.clips.edits.headVersion(projectId) } },
+            { details: { currentRevision: head, planRevision: built.revision } },
           );
         }
         const id = randomUUID();
