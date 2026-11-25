@@ -57,7 +57,17 @@ export interface FreezeSegment {
   editDurMs: number;
 }
 
-export type Segment = SourceSegment | FreezeSegment;
+/**
+ * Vide (suppression « sans décalage », étape 7) : le temps montage avance, sans AUCUN temps
+ * source. Image = fond de la mise en page ; son = silence sur les pistes de l'enregistrement.
+ */
+export interface GapSegment {
+  id: string;
+  kind: 'gap';
+  editDurMs: number;
+}
+
+export type Segment = SourceSegment | FreezeSegment | GapSegment;
 
 const msInt = z.number().int().nonnegative();
 
@@ -84,9 +94,9 @@ export const SegmentSchema = z.discriminatedUnion('kind', [
 
 /** Durée d'un segment en temps montage. */
 export function segmentEditDuration(seg: Segment): number {
-  return seg.kind === 'freeze'
-    ? seg.editDurMs
-    : Math.round((seg.srcEndMs - seg.srcStartMs) / seg.speed);
+  return seg.kind === 'source'
+    ? Math.round((seg.srcEndMs - seg.srcStartMs) / seg.speed)
+    : seg.editDurMs;
 }
 
 export interface PlacedSegment {
@@ -145,7 +155,12 @@ export function validateSegments(
     if (ids.has(s.id)) push('DUPLICATE_ID', `Identifiant en double : ${s.id}`);
     ids.add(s.id);
 
-    const times = s.kind === 'source' ? [s.srcStartMs, s.srcEndMs] : [s.srcAtMs, s.editDurMs];
+    const times =
+      s.kind === 'source'
+        ? [s.srcStartMs, s.srcEndMs]
+        : s.kind === 'freeze'
+          ? [s.srcAtMs, s.editDurMs]
+          : [s.editDurMs];
     if (times.some((t) => !Number.isInteger(t) || t < 0)) {
       push('NOT_INTEGER', 'Les temps doivent être des millisecondes entières positives');
       continue;
@@ -158,7 +173,7 @@ export function validateSegments(
       if (sourceDurationMs != null && s.srcEndMs > sourceDurationMs) {
         push('OUT_OF_SOURCE', 'Le segment dépasse la fin de l’enregistrement');
       }
-    } else if (sourceDurationMs != null && s.srcAtMs >= sourceDurationMs) {
+    } else if (s.kind === 'freeze' && sourceDurationMs != null && s.srcAtMs >= sourceDurationMs) {
       push('OUT_OF_SOURCE', 'L’image figée est au-delà de la fin de l’enregistrement');
     }
     if (segmentEditDuration(s) < 1) push('ZERO_DURATION', 'Durée de montage nulle');
@@ -171,6 +186,7 @@ export function validateSegments(
 /* ------------------------------------------------------------------ */
 
 export interface SourcePosition {
+  kind: 'source';
   srcMs: SourceMs;
   segmentId: string;
   /** Vrai pendant un arrêt sur image. */
@@ -190,18 +206,34 @@ function findPlacedAt(placed: readonly PlacedSegment[], t: number): PlacedSegmen
   return null;
 }
 
+/** Position dans un vide (`gap`) : AUCUN temps source n'y correspond. */
+export interface GapPosition {
+  kind: 'gap';
+  segmentId: string;
+}
+
 /**
- * Temps montage → temps source. Renvoie null hors du clip ([0, durée[).
- * Pendant un arrêt sur image, renvoie l'image figée (`frozen: true`).
+ * Temps montage → position. Type de retour EXACT :
+ *  - `null`                        : hors du clip (t < 0 ou t ≥ durée totale), uniquement ;
+ *  - `{ kind: 'gap', segmentId }`  : dans un vide ; il n'existe aucun temps source ;
+ *  - `{ kind: 'source', … }`       : dans un segment source, ou pendant un arrêt sur image
+ *                                    (`frozen: true`, `srcMs` = image figée).
+ * Un appelant qui a besoin d'un temps source doit donc traiter explicitement les trois cas.
  */
-export function editToSource(segments: readonly Segment[], t: EditMs): SourcePosition | null {
+export function editToSource(
+  segments: readonly Segment[],
+  t: EditMs,
+): SourcePosition | GapPosition | null {
   const p = findPlacedAt(placeSegments(segments), t);
   if (!p) return null;
   const seg = p.segment;
-  if (seg.kind === 'freeze') return { srcMs: seg.srcAtMs, segmentId: seg.id, frozen: true };
+  if (seg.kind === 'gap') return { kind: 'gap', segmentId: seg.id };
+  if (seg.kind === 'freeze') {
+    return { kind: 'source', srcMs: seg.srcAtMs, segmentId: seg.id, frozen: true };
+  }
   const offset = Math.round((t - p.editStartMs) * seg.speed);
   const src = Math.min(seg.srcStartMs + offset, seg.srcEndMs - 1);
-  return { srcMs: src as SourceMs, segmentId: seg.id, frozen: false };
+  return { kind: 'source', srcMs: src as SourceMs, segmentId: seg.id, frozen: false };
 }
 
 export interface EditPosition {
@@ -259,6 +291,8 @@ export function sourceRangeToEditRanges(
   const out: EditRange[] = [];
   for (const p of placeSegments(segments)) {
     const seg = p.segment;
+    // Un vide ne montre aucun contenu source : rien n'y est placé.
+    if (seg.kind === 'gap') continue;
     if (seg.kind === 'freeze') {
       if (seg.srcAtMs >= start && seg.srcAtMs < end) {
         out.push({
@@ -358,7 +392,10 @@ export function moveSegment(segments: readonly Segment[], id: string, toIndex: n
 export function updateSegment(
   segments: readonly Segment[],
   id: string,
-  patch: Partial<Omit<SourceSegment, 'id' | 'kind'>> | Partial<Omit<FreezeSegment, 'id' | 'kind'>>,
+  patch:
+    | Partial<Omit<SourceSegment, 'id' | 'kind'>>
+    | Partial<Omit<FreezeSegment, 'id' | 'kind'>>
+    | Partial<Omit<GapSegment, 'id' | 'kind'>>,
 ): Segment[] {
   let found = false;
   const next = segments.map((s) => {

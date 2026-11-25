@@ -386,6 +386,9 @@ Dans l'interface, la section **Clips** (sous « Revue des propositions ») perme
 opérations sans ligne de commande : audio exporté, cadrage, sous-titres, effets, durée, aperçu et
 export. Guide : [`docs/rendu-clips.md`](docs/rendu-clips.md).
 
+L'éditeur vidéo avec timeline (étape 7) est en cours de réalisation : plan validé dans
+[`docs/plan-etape-7.md`](docs/plan-etape-7.md).
+
 ---
 
 ## Architecture

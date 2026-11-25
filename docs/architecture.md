@@ -380,3 +380,14 @@ Guide : `docs/rendu-clips.md`. Plan : `docs/plan-etape-6.md` (§ 10 et § 19).
 | Image fixe : abandon côté client, arrêt effectif de FFmpeg côté serveur (déconnexion, demande plus récente), plafond de 2 générations, réponses obsolètes ignorées                    | Pas d'accumulation de FFmpeg inutiles ; l'image affichée est toujours la dernière demandée |
 | Effets uniquement à la demande, nouveaux effets désactivés, états existants jamais modifiés                                                                                           | Tout effet résulte d'une action explicite du créateur                                      |
 | Lecture seule stricte quand la décision n'est plus acceptée ; exports antérieurs consultables avec avertissement                                                                      | La revue reste la source de vérité ; aucun export n'est perdu                              |
+
+## 15. Éditeur avec timeline, étape 7 (PR 7a : modèle et opérations)
+
+Plan : `docs/plan-etape-7.md` (§ 14 pour les précisions de mise en œuvre).
+
+| Décision                                                                                                                                                                                     | Raison                                                                                                   |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Projet de clip v2 (`@acs/timeline/v2`) : segments source, arrêt sur image et vide ; fenêtre éditable liée à un manifeste d'intégrité ; masques toujours opaques ; `blur_region` simple effet | Une seule source de vérité pour l'éditeur, l'aperçu et l'export ; aucune règle de l'étape 6 affaiblie    |
+| Opérations typées, lectures et écritures par clé d'état, préconditions, inverse `restore` conditionnel, invariants après chaque opération                                                    | Le même réducteur sur l'interface et le serveur ; annuler sûr et exact, jamais de correction silencieuse |
+| Historique linéaire par projet déduit du journal ; réapplication automatique seulement si l'indépendance est démontrée dans les deux sens et que les deux ordres donnent le même document    | Annuler fiable après rechargement et entre onglets ; aucune perte, aucun écrasement                      |
+| Géométrie et description de scène pures, partagées par le moteur FFmpeg et l'aperçu                                                                                                          | Ce qui est vu dans l'éditeur correspond à l'export                                                       |
