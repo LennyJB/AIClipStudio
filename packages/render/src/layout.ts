@@ -48,7 +48,6 @@ const num = (n: number) => {
   return Number(n.toFixed(4)).toString();
 };
 
-
 const crop = (r: PixelRect) => `crop=${r.w}:${r.h}:${r.x}:${r.y}`;
 
 /** Expression de facteur de zoom : montée et descente de 0,25 s, plateau au facteur demandé. */

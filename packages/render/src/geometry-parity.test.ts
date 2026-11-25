@@ -9,14 +9,12 @@ import { presetLayers, toPixelRect, type PresetLayoutInput } from '@acs/timeline
 import { buildVideoGraph } from './layout';
 
 const unit = fc.double({ min: 0, max: 1, noNaN: true });
-const arbRect = fc
-  .tuple(unit, unit, unit, unit)
-  .map(([x, y, w, h]) => ({
-    x: x * 0.8,
-    y: y * 0.8,
-    w: 0.05 + w * (1 - x * 0.8 - 0.05),
-    h: 0.05 + h * (1 - y * 0.8 - 0.05),
-  }));
+const arbRect = fc.tuple(unit, unit, unit, unit).map(([x, y, w, h]) => ({
+  x: x * 0.8,
+  y: y * 0.8,
+  w: 0.05 + w * (1 - x * 0.8 - 0.05),
+  h: 0.05 + h * (1 - y * 0.8 - 0.05),
+}));
 const arbSize = fc.record({
   width: fc.integer({ min: 160, max: 3840 }).map((n) => n * 2),
   height: fc.integer({ min: 90, max: 2160 }).map((n) => n * 2),
