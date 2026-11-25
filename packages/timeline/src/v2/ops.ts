@@ -695,6 +695,8 @@ function plan(d: ClipProjectV2, op: Operation): Plan {
 /* ------------------------------------------------------------------ */
 
 export interface AppliedOp {
+  /** Opération appliquée, telle que validée par le schéma (enregistrée dans le journal). */
+  op: Operation;
   doc: ClipProjectV2;
   /** Clés lues (dépendances structurelles comprises). */
   reads: StateKey[];
@@ -777,6 +779,7 @@ export function applyOperation(
   }
   const next = parsed.data;
   return {
+    op,
     doc: next,
     reads: [...p.reads].sort(),
     writes: [...p.writes.keys()].sort(),

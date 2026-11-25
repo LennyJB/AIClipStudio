@@ -55,7 +55,8 @@ import { parse } from '../routes/validation';
 import { TranscriptionRepository } from '../transcriptions/repository';
 import type { ExportAudioService } from './export-audio';
 import { DecisionGuard, type EffectiveDecisionView } from './guard';
-import { ClipRepository, type ProjectRow, type RevisionRow } from './repository';
+import { EditService } from './edits';
+import { ClipRepository, type ProjectRow } from './repository';
 
 export const CreateProjectBodySchema = z.object({ requestId: z.uuid() }).strict();
 
@@ -113,6 +114,8 @@ function fromProjectError(err: unknown): never {
 export class ClipProjectService {
   readonly repo: ClipRepository;
   readonly guard: DecisionGuard;
+  /** Journal d'édition (étape 7b) : source de la version courante de chaque projet. */
+  readonly edits: EditService;
   private readonly proposals: ProposalRepository;
   private readonly runs: AnalysisRepository;
   private readonly recordings: RecordingRepository;
@@ -130,6 +133,13 @@ export class ClipProjectService {
     this.runs = new AnalysisRepository(ctx.db);
     this.recordings = new RecordingRepository(ctx.db);
     this.transcripts = new TranscriptionRepository(ctx.db);
+    this.edits = new EditService(ctx.db, this.repo, this.guard, (recordingId) => {
+      const d = this.exportAudio.decisionFor(this.recording(recordingId));
+      return {
+        allowedAudioIndexes: d.selected.map((t) => t.audioIndex),
+        allowedCaptionRoles: [...d.captionRoles],
+      };
+    });
   }
 
   /* ------------------------------- Lecture ------------------------------- */
@@ -152,15 +162,14 @@ export class ClipProjectService {
     return p;
   }
 
-  current(row: ProjectRow): { rev: RevisionRow; doc: ClipProject } {
-    const rev = this.repo.revision(row.id, row.currentRevision)!;
-    let doc: ClipProject;
-    try {
-      doc = migrateProject(rev.document);
-    } catch (err) {
-      fromProjectError(err);
-    }
-    return { rev, doc };
+  /**
+   * Document courant, en projection v1 EXACTE (interface 6c, moteur de l'étape 6) : version =
+   * numéro de la dernière entrée du journal. Refus explicite (EDITOR_REQUIRED) si le document
+   * utilise une fonction de l'éditeur (étape 7).
+   */
+  current(row: ProjectRow): { rev: { revision: number; documentHash: string }; doc: ClipProject } {
+    const h = this.edits.headV1(row.id);
+    return { rev: { revision: h.version, documentHash: h.hash }, doc: h.doc };
   }
 
   /** Mots horodatés de l'analyse de la proposition, dans [fromMs, toMs[, par locuteur. */
@@ -254,19 +263,35 @@ export class ClipProjectService {
     };
   }
 
+  /**
+   * Versions du projet : révisions d'origine (étape 6) puis entrées du journal (étape 7b). Les
+   * points de contrôle ne sont pas des versions supplémentaires (même contenu qu'une entrée).
+   */
   revisions(projectId: string) {
     this.projectRow(projectId);
-    return this.repo.revisions(projectId).map((r) => {
-      const doc = r.document as ClipProject;
-      return {
-        revision: r.revision,
-        documentHash: r.documentHash,
-        changeSummary: r.changeSummary,
-        source: r.source,
-        createdAt: r.createdAt,
-        corrections: doc.captions?.corrections ?? [],
-      };
-    });
+    const base = this.repo
+      .revisions(projectId)
+      .filter((r) => !r.requestId.startsWith('checkpoint-'))
+      .map((r) => {
+        const doc = r.document as ClipProject;
+        return {
+          revision: r.revision,
+          documentHash: r.documentHash,
+          changeSummary: r.changeSummary,
+          source: r.source,
+          createdAt: r.createdAt,
+          corrections: doc.captions?.corrections ?? [],
+        };
+      });
+    const journal = this.edits.repo.range(projectId, 0).map((e) => ({
+      revision: e.seq,
+      documentHash: e.hashAfter,
+      changeSummary: e.summary,
+      source: e.kind === 'system' && e.source === 'system' ? 'system' : e.source,
+      createdAt: e.createdAt,
+      corrections: this.edits.docAt(projectId, e.seq).doc.captions.corrections,
+    }));
+    return [...base, ...journal].sort((a, b) => a.revision - b.revision);
   }
 
   /** Propositions acceptées d'un enregistrement (une par moment) et leur projet éventuel. */
@@ -283,7 +308,7 @@ export class ClipProjectService {
       const r = this.repo.getProject(id)!;
       return {
         id: r.id,
-        currentRevision: r.currentRevision,
+        currentRevision: this.edits.headVersion(r.id),
         lastRender: this.repo.lastRender(r.id),
       };
     };
@@ -451,6 +476,7 @@ export class ClipProjectService {
         if (again) return again.id;
         this.repo.insertManifest(manifestId, rec.id, manifest);
         this.repo.insertProject({ id: projectId, proposalId: p.id, recordingId: rec.id });
+        this.edits.initHead(projectId);
         this.repo.insertRevision({
           projectId,
           revision: 1,
@@ -488,50 +514,41 @@ export class ClipProjectService {
         ).spans
       : [];
 
+    let replayed = false;
     this.ctx.db
       .transaction(() => {
-        // Sous le verrou d'écriture : décision et révision courante relues.
+        // Sous le verrou d'écriture : décision relue, version attendue, entrée « system » du
+        // journal (projection v1 exacte, transformée par les règles de l'étape 6).
         this.guard.assertAccepted(row.proposalId);
-        const cur = this.repo.getProject(projectId)!;
-        if (cur.currentRevision !== b.baseRevision) {
-          throw new AppError(
-            'VERSION_CONFLICT',
-            'Le projet a été modifié entre-temps : rechargez-le',
-            {
-              details: { currentRevision: cur.currentRevision },
-            },
-          );
-        }
-        const { doc } = this.current(cur);
-        const audio = this.exportAudio.decisionFor(this.recording(cur.recordingId));
-        const next = cur.currentRevision + 1;
-        let r: ReturnType<typeof applyRenderOptions>;
-        try {
-          r = applyRenderOptions(doc, b.changes, {
-            nextRevision: next,
-            now: new Date().toISOString(),
-            words,
-            allowedCaptionRoles: audio.captionRoles,
-            allowedAudioTracks: audio.selected,
-          });
-        } catch (err) {
-          fromProjectError(err);
-        }
-        const json = canonicalJson(r.project);
-        this.repo.insertRevision({
+        const audio = this.exportAudio.decisionFor(this.recording(row.recordingId));
+        replayed = this.edits.appendSystemLocked(
           projectId,
-          revision: next,
-          schemaVersion: PROJECT_SCHEMA_VERSION,
-          documentJson: json,
-          documentHash: sha256(json),
-          changeSummary: r.summary.join(' ; ').slice(0, 500) || null,
-          requestId: b.requestId,
+          row.recordingId,
+          {
+            requestId: b.requestId,
+            baseVersion: b.baseRevision,
+            ...(b.changes.masks?.acknowledgeMaskRisk ? { acknowledgeMaskRisk: true } : {}),
+          },
           source,
-        });
-        this.repo.setCurrentRevision(projectId, next);
+          (doc, next) => {
+            let r: ReturnType<typeof applyRenderOptions>;
+            try {
+              r = applyRenderOptions(doc, b.changes, {
+                nextRevision: next,
+                now: new Date().toISOString(),
+                words,
+                allowedCaptionRoles: audio.captionRoles,
+                allowedAudioTracks: audio.selected,
+              });
+            } catch (err) {
+              fromProjectError(err);
+            }
+            return { project: r.project, summary: r.summary.join(' ; ') || null };
+          },
+        ).replayed;
       })
       .immediate();
-    return { ...(await this.view(projectId)), replayed: false };
+    return { ...(await this.view(projectId)), replayed };
   }
 
   /**
@@ -544,44 +561,25 @@ export class ClipProjectService {
     req: { requestId: string; baseRevision: number },
     mutate: (doc: ClipProject) => { project: ClipProject; summary: string },
   ): { revision: number; replayed: boolean } {
-    const prior = this.repo.revisionByRequest(projectId, req.requestId);
-    if (prior) return { revision: prior.revision, replayed: true };
     return this.ctx.db
       .transaction(() => {
         const cur = this.projectRow(projectId);
         this.guard.assertAccepted(cur.proposalId);
-        if (cur.currentRevision !== req.baseRevision) {
-          throw new AppError(
-            'VERSION_CONFLICT',
-            'Le projet a été modifié entre-temps : rechargez-le',
-            {
-              details: { currentRevision: cur.currentRevision },
-            },
-          );
-        }
-        const { doc } = this.current(cur);
-        let next: ClipProject;
-        let summary: string;
-        try {
-          ({ project: next, summary } = mutate(doc));
-          next = migrateProject(next);
-        } catch (err) {
-          fromProjectError(err);
-        }
-        const json = canonicalJson(next);
-        const revision = cur.currentRevision + 1;
-        this.repo.insertRevision({
+        const r = this.edits.appendSystemLocked(
           projectId,
-          revision,
-          schemaVersion: PROJECT_SCHEMA_VERSION,
-          documentJson: json,
-          documentHash: sha256(json),
-          changeSummary: summary.slice(0, 500),
-          requestId: req.requestId,
-          source: 'system',
-        });
-        this.repo.setCurrentRevision(projectId, revision);
-        return { revision, replayed: false };
+          cur.recordingId,
+          { requestId: req.requestId, baseVersion: req.baseRevision },
+          'system',
+          (doc) => {
+            try {
+              const out = mutate(doc);
+              return { project: migrateProject(out.project), summary: out.summary };
+            } catch (err) {
+              fromProjectError(err);
+            }
+          },
+        );
+        return { revision: r.version, replayed: r.replayed };
       })
       .immediate();
   }

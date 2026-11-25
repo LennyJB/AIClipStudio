@@ -328,6 +328,9 @@ export class RenderService {
     void source;
     const row = this.clips.projectRow(projectId);
     this.clips.guard.assertAccepted(row.proposalId);
+    // Point de contrôle à la version courante : un rendu référence toujours une révision
+    // immuable complète (clé étrangère clip_renders → clip_project_revisions).
+    this.clips.edits.checkpoint(projectId);
     const built = await this.build(projectId, b.kind);
     await this.assertDiskSpace(built.plan);
 
@@ -341,6 +344,15 @@ export class RenderService {
           )
           .get(built.planHash, b.kind) as Record<string, unknown> | undefined;
         if (existing) return { id: existing.id as string, created: false };
+        // Projet modifié entre le point de contrôle et la construction du plan : refus explicite
+        // (aucun rendu ne référence un état sans révision immuable).
+        if (!this.clips.repo.revision(projectId, built.revision)) {
+          throw new AppError(
+            'VERSION_CONFLICT',
+            'Le projet a été modifié pendant la préparation du rendu : réessayez',
+            { details: { currentRevision: this.clips.edits.headVersion(projectId) } },
+          );
+        }
         const id = randomUUID();
         this.ctx.db
           .prepare(
@@ -614,7 +626,7 @@ export class RenderService {
           const decision = this.clips.guard.effective(project.proposalId);
           if (decision.status !== 'accepted' || decision.merged) {
             refusal = new AppError('PROPOSAL_NOT_ACCEPTED', 'La décision a changé : export annulé');
-          } else if (project.currentRevision !== r.revision) {
+          } else if (this.clips.edits.headVersion(project.id) !== r.revision) {
             refusal = new AppError('VERSION_CONFLICT', 'Le projet a été modifié pendant le rendu');
           } else if (this.audioStateHash(project.recordingId) !== audioStateHash) {
             refusal = new AppError(
@@ -758,7 +770,7 @@ export class RenderService {
               'PROPOSAL_NOT_ACCEPTED',
               'Décision changée avant la publication',
             );
-          } else if (!refusal && project.currentRevision !== r.revision) {
+          } else if (!refusal && this.clips.edits.headVersion(project.id) !== r.revision) {
             refusal = new AppError('VERSION_CONFLICT', 'Projet modifié avant la publication');
           } else if (
             !refusal &&

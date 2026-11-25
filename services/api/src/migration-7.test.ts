@@ -49,7 +49,7 @@ describe('migration 7 (projets de clip)', () => {
     db.prepare(RUN).run();
     db.prepare(PROPOSAL).run('p1');
     const before = db.prepare('SELECT * FROM clip_proposals').all();
-    expect(migrate(db, MIGRATIONS)).toEqual([7]);
+    expect(migrate(db, MIGRATIONS.slice(0, 7))).toEqual([7]);
     expect(db.prepare('SELECT * FROM clip_proposals').all()).toEqual(before);
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });

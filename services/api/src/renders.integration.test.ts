@@ -853,13 +853,15 @@ describe.skipIf(!enabled)('Rendus des clips (API, étape 6b)', () => {
     expect(v.document.effects.map((e) => [e.id, e.enabled])).toEqual(
       v.document.effects.map((e) => [e.id, e.id === chosen]),
     );
-    // Révision précédente jamais réécrite.
-    const old = db
-      .prepare(
-        'SELECT document_hash FROM clip_project_revisions WHERE project_id = ? AND revision = ?',
-      )
-      .get(project, revBefore) as { document_hash: string };
-    expect(old.document_hash).toBe(hashBefore);
+    // Version précédente jamais réécrite (étape 7b : versions = révisions d'origine + journal en
+    // ajout seul ; empreinte de la version inchangée).
+    const versions = await call<{ revisions: { revision: number; documentHash: string }[] }>(
+      'GET',
+      `/api/clip-projects/${project}/revisions`,
+    );
+    expect(versions.body.revisions.find((r) => r.revision === revBefore)?.documentHash).toBe(
+      hashBefore,
+    );
   }, 300_000);
 
   it('6c : image fixe — demande remplacée, plafond global, client déconnecté (FFmpeg non mené à terme)', async () => {
