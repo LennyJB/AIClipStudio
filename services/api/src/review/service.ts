@@ -119,6 +119,8 @@ export interface DetachResult extends Omit<DecisionResult, 'event'> {
 const sha = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 
 export class ReviewService {
+  /** Appelé après un changement de décision (ids des propositions du moment concerné). */
+  onDecisionChanged: ((proposalIds: string[]) => void) | null = null;
   readonly repo: ReviewRepository;
   private readonly proposals: ProposalRepository;
   private readonly runs: AnalysisRepository;
@@ -430,7 +432,7 @@ export class ReviewService {
       expectedVersion: b.expectedVersion ?? null,
     });
 
-    return this.ctx.db
+    const result = this.ctx.db
       .transaction(() => {
         const replay = this.replay<DecisionResult>(b.requestId, hash);
         if (replay) return replay;
@@ -527,6 +529,20 @@ export class ReviewService {
         return { ...response, replayed: false };
       })
       .immediate();
+    if (result.outcome === 'applied' && !result.replayed) this.notifyChange(proposalId);
+    return result;
+  }
+
+  /** Signale un changement de décision effective pour tout le moment de la proposition. */
+  private notifyChange(proposalId: string) {
+    if (!this.onDecisionChanged) return;
+    const m = this.repo.membership(proposalId);
+    const ids = m ? this.repo.members(m.momentId).map((x) => x.proposalId) : [];
+    try {
+      this.onDecisionChanged([...new Set([proposalId, ...ids])]);
+    } catch (err) {
+      this.ctx.log.error({ err }, 'Annulation des rendus après décision : échec (ignoré)');
+    }
   }
 
   /** Détache explicitement une proposition de son moment : elle fonde un nouveau moment. */
@@ -534,7 +550,8 @@ export class ReviewService {
     const b = parse(DetachBodySchema, body);
     const comment = b.comment?.trim() ? b.comment.trim() : null;
     const hash = sha({ action: 'detach', proposalId, comment });
-    return this.ctx.db
+    const before = this.repo.membership(proposalId);
+    const result = this.ctx.db
       .transaction(() => {
         const replay = this.replay<DetachResult>(b.requestId, hash);
         if (replay) return replay;
@@ -598,6 +615,15 @@ export class ReviewService {
         return { ...response, replayed: false };
       })
       .immediate();
+    if (result.outcome === 'applied' && !result.replayed) {
+      // L'ancien moment et le nouveau peuvent changer de décision effective.
+      this.notifyChange(proposalId);
+      if (before) {
+        const others = this.repo.members(before.momentId).map((x) => x.proposalId);
+        if (others.length) this.notifyChange(others[0]!);
+      }
+    }
+    return result;
   }
 
   private stateOf(p: ProposalDto) {

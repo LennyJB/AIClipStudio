@@ -146,13 +146,13 @@ export class ClipProjectService {
     return p;
   }
 
-  private projectRow(id: string): ProjectRow {
+  projectRow(id: string): ProjectRow {
     const p = this.repo.getProject(id);
     if (!p) throw new AppError('NOT_FOUND', 'Projet de clip introuvable');
     return p;
   }
 
-  private current(row: ProjectRow): { rev: RevisionRow; doc: ClipProject } {
+  current(row: ProjectRow): { rev: RevisionRow; doc: ClipProject } {
     const rev = this.repo.revision(row.id, row.currentRevision)!;
     let doc: ClipProject;
     try {
@@ -192,7 +192,7 @@ export class ClipProjectService {
     return { byRole: [...byRole.entries()].map(([role, words]) => ({ role, words })), spans };
   }
 
-  private async pseudonymizer(): Promise<(t: string) => { text: string; replacements: number }> {
+  async pseudonymizer(): Promise<(t: string) => { text: string; replacements: number }> {
     const { file } = await this.analysis.privacy();
     const p = createPseudonymizer(file as PrivacyFile | null);
     return (t) => {
@@ -338,6 +338,7 @@ export class ClipProjectService {
       filePath: src.sourcePath,
       windowStartMs: win.startMs,
       windowEndMs: win.endMs,
+      probeBytes: this.ctx.config.render.probeBytes,
     });
     // Le fichier n'a pas changé pendant le calcul (sinon le manifeste ne prouverait rien).
     if ((await fingerprintFile(src.sourcePath)).hash !== src.fingerprint) {
@@ -495,6 +496,58 @@ export class ClipProjectService {
       })
       .immediate();
     return { ...(await this.view(projectId)), replayed: false };
+  }
+
+  /**
+   * Révision produite par le système (ex. effets proposés par le moteur de rendu) : mêmes
+   * garanties qu'un réglage du créateur (décision revérifiée sous verrou, version attendue,
+   * idempotence, document validé).
+   */
+  writeSystemRevision(
+    projectId: string,
+    req: { requestId: string; baseRevision: number },
+    mutate: (doc: ClipProject) => { project: ClipProject; summary: string },
+  ): { revision: number; replayed: boolean } {
+    const prior = this.repo.revisionByRequest(projectId, req.requestId);
+    if (prior) return { revision: prior.revision, replayed: true };
+    return this.ctx.db
+      .transaction(() => {
+        const cur = this.projectRow(projectId);
+        this.guard.assertAccepted(cur.proposalId);
+        if (cur.currentRevision !== req.baseRevision) {
+          throw new AppError(
+            'VERSION_CONFLICT',
+            'Le projet a été modifié entre-temps : rechargez-le',
+            {
+              details: { currentRevision: cur.currentRevision },
+            },
+          );
+        }
+        const { doc } = this.current(cur);
+        let next: ClipProject;
+        let summary: string;
+        try {
+          ({ project: next, summary } = mutate(doc));
+          next = migrateProject(next);
+        } catch (err) {
+          fromProjectError(err);
+        }
+        const json = canonicalJson(next);
+        const revision = cur.currentRevision + 1;
+        this.repo.insertRevision({
+          projectId,
+          revision,
+          schemaVersion: PROJECT_SCHEMA_VERSION,
+          documentJson: json,
+          documentHash: sha256(json),
+          changeSummary: summary.slice(0, 500),
+          requestId: req.requestId,
+          source: 'system',
+        });
+        this.repo.setCurrentRevision(projectId, revision);
+        return { revision, replayed: false };
+      })
+      .immediate();
   }
 
   /* ------------------------------ Intégrité ------------------------------ */

@@ -21,7 +21,8 @@ export type JobType =
   | 'compute_waveform'
   | 'transcribe_recording'
   | 'prepare_analysis'
-  | 'run_analysis';
+  | 'run_analysis'
+  | 'render_clip';
 
 /**
  * File d'exécution :

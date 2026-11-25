@@ -8,6 +8,7 @@ import { TranscriptionService } from './transcriptions/service';
 import { ReviewService } from './review/service';
 import { ExportAudioService } from './clips/export-audio';
 import { ClipProjectService } from './clips/service';
+import { RenderService } from './clips/render-service';
 
 export interface Services {
   runner: JobRunner;
@@ -18,6 +19,7 @@ export interface Services {
   review: ReviewService;
   exportAudio: ExportAudioService;
   clips: ClipProjectService;
+  renders: RenderService;
 }
 
 export interface ServiceOptions {
@@ -44,19 +46,38 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
   const derivatives = new DerivativeService(ctx, () => runner);
   const transcriptions = new TranscriptionService(ctx, () => runner, derivatives);
   const analysis = new AnalysisService(ctx, () => runner, derivatives, modelProvider);
+  const review = new ReviewService(ctx, transcriptions, derivatives);
+  const exportAudio = new ExportAudioService(ctx);
+  const clips = new ClipProjectService(ctx, review, analysis, exportAudio);
+  const renders = new RenderService(ctx, clips, exportAudio, () => runner);
   const runner: JobRunner = new JobRunner(
     ctx,
-    { ...derivatives.handlers(), ...transcriptions.handlers(), ...analysis.handlers() },
+    {
+      ...derivatives.handlers(),
+      ...transcriptions.handlers(),
+      ...analysis.handlers(),
+      ...renders.handlers(),
+    },
     {
       onSucceeded: async () => {
         await storage.enforceCacheBudget();
       },
     },
   );
-  const review = new ReviewService(ctx, transcriptions, derivatives);
-  const exportAudio = new ExportAudioService(ctx);
-  const clips = new ClipProjectService(ctx, review, analysis, exportAudio);
-  return { runner, derivatives, storage, transcriptions, analysis, review, exportAudio, clips };
+  // Une décision de revue qui change annule les rendus en attente ou en cours du moment
+  // (économie de calcul ; la garantie reste la publication sous verrou).
+  review.onDecisionChanged = (proposalIds) => renders.cancelForProposals(proposalIds);
+  return {
+    runner,
+    derivatives,
+    storage,
+    transcriptions,
+    analysis,
+    review,
+    exportAudio,
+    clips,
+    renders,
+  };
 }
 
 /** Au démarrage : traitements, transcriptions et analyses restés « en cours » deviennent interrompus. */
@@ -64,4 +85,5 @@ export function recoverServices(s: Services) {
   s.runner.recover();
   s.transcriptions.recover();
   s.analysis.recover();
+  s.renders.recover();
 }
