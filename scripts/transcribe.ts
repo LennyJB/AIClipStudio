@@ -79,6 +79,7 @@ async function main() {
       ROLE[rec!.audioTracks.find((t) => t.audioIndex === i)?.role ?? ''] ?? `piste ${i + 1}`;
     const services = createServices(ctx);
     recoverServices(services);
+    await services.renders.recoverFinalizing();
 
     if (values.compare) {
       const { comparisons } = services.transcriptions.list(rec.id);

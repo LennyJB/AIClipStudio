@@ -356,20 +356,189 @@ describe.skipIf(!enabled)('Rendus des clips (API, étape 6b)', () => {
 
     // a) Arrêt entre le renommage et le COMMIT, décision toujours acceptée : validé.
     setFinalizing();
-    expect(services.renders.recover()).toMatchObject({ published: 1 });
+    expect(await services.renders.recoverFinalizing()).toMatchObject({ published: 1 });
     expect(status()).toBe('succeeded');
     // b) Arrêt avant le renommage (fichiers en attente seulement) : publication reprise.
     renameSync(dest, staging);
     setFinalizing();
-    expect(services.renders.recover()).toMatchObject({ published: 1 });
+    expect(await services.renders.recoverFinalizing()).toMatchObject({ published: 1 });
     expect(existsSync(dest)).toBe(true);
     // c) Arrêt entre le renommage et le COMMIT, décision refusée entre-temps (CLI) : retiré.
     setFinalizing();
     reject(clip);
-    expect(services.renders.recover()).toMatchObject({ withdrawn: 1 });
+    expect(await services.renders.recoverFinalizing()).toMatchObject({ withdrawn: 1 });
     expect(existsSync(dest)).toBe(false);
     expect(status()).toBe('failed');
   }, 300_000);
+
+  it('récupération : un accord retiré (ou la confidentialité modifiée) après le passage en « finalizing » empêche TOUTE publication', async () => {
+    const video = await setup();
+    const { rec, project } = await prepare(video);
+    const audio = (body: Record<string, unknown>) =>
+      call('POST', `/api/recordings/${rec.id}/export-audio`, { requestId: randomUUID(), ...body });
+    const discord = (action: 'granted' | 'revoked') =>
+      audio({ kind: 'consent', subject: 'discord_voices', action });
+    const mic = (otherVoices: 'present' | 'absent') =>
+      audio({
+        kind: 'declaration',
+        subject: 'mic_composition',
+        payload: { creatorVoice: 'present', otherVoices },
+      });
+    const rev = () =>
+      (
+        db.prepare('SELECT current_revision AS r FROM clip_projects WHERE id = ?').get(project) as {
+          r: number;
+        }
+      ).r;
+    const patch = (changes: Record<string, unknown>) =>
+      call('PATCH', `/api/clip-projects/${project}`, {
+        requestId: randomUUID(),
+        baseRevision: rev(),
+        changes,
+      });
+
+    // Clip avec micro + Discord, sous-titres micro + Discord (accord Discord donné).
+    await discord('granted');
+    expect(
+      (
+        await patch({
+          audio: { tracks: [{ audioIndex: 1 }] },
+          captions: { enabled: true, sources: ['mic', 'discord'] },
+        })
+      ).status,
+    ).toBe(200);
+
+    /** Rendu final réussi, puis état reconstitué d'un arrêt pendant la publication. */
+    const crashed = async (where: 'apres-renommage' | 'avant-renommage') => {
+      const r = await requestRender(project, 'final');
+      expect(r.status, JSON.stringify(r.body)).toBe(202);
+      await services.runner.idle();
+      const row = db.prepare('SELECT * FROM clip_renders WHERE id = ?').get(r.body.render.id) as {
+        id: string;
+        status: string;
+        staging_rel_path: string;
+        output_rel_path: string;
+      };
+      expect(row.status).toBe('succeeded');
+      const dest = path.dirname(path.join(config.paths.storage, row.output_rel_path));
+      const staging = path.join(config.paths.storage, row.staging_rel_path);
+      if (where === 'avant-renommage') renameSync(dest, staging);
+      db.prepare(`UPDATE clip_renders SET status = 'finalizing' WHERE id = ?`).run(row.id);
+      return { id: row.id, dest, staging };
+    };
+    const after = (c: { id: string; dest: string; staging: string }) => ({
+      ...(db
+        .prepare('SELECT status, error_code FROM clip_renders WHERE id = ?')
+        .get(c.id) as object),
+      dest: existsSync(c.dest),
+      staging: existsSync(c.staging),
+    });
+
+    // 1. Micro : des tiers sont désormais déclarés dans le micro, sans accord « autres voix ».
+    let c = await crashed('apres-renommage');
+    await mic('present');
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 0,
+      withdrawn: 1,
+    });
+    expect(after(c)).toEqual({
+      status: 'failed',
+      error_code: 'EXPORT_CONSENT_REQUIRED',
+      dest: false,
+      staging: false,
+    });
+    await mic('absent');
+
+    // 2. Discord (audio et sous-titres) : accord retiré, arrêt AVANT le renommage.
+    c = await crashed('avant-renommage');
+    await discord('revoked');
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 0,
+      withdrawn: 1,
+    });
+    expect(after(c)).toEqual({
+      status: 'failed',
+      error_code: 'EXPORT_CONSENT_REQUIRED',
+      dest: false,
+      staging: false,
+    });
+    await discord('granted');
+
+    // 3. Sous-titres Discord seuls (piste Discord désactivée) : accord retiré ⇒ jamais publié.
+    expect((await patch({ audio: { tracks: [{ audioIndex: 1, enabled: false }] } })).status).toBe(
+      200,
+    );
+    c = await crashed('apres-renommage');
+    await discord('revoked');
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 0,
+      withdrawn: 1,
+    });
+    expect(after(c)).toEqual({
+      status: 'failed',
+      error_code: 'EXPORT_CONSENT_REQUIRED',
+      dest: false,
+      staging: false,
+    });
+    expect(
+      String(
+        (
+          db.prepare('SELECT error_message FROM clip_renders WHERE id = ?').get(c.id) as {
+            error_message: string;
+          }
+        ).error_message,
+      ),
+    ).toMatch(/Sous-titres non autorisés|Accords/u);
+    await discord('granted');
+
+    // 4. Fichier de confidentialité modifié depuis le rendu ⇒ jamais publié.
+    c = await crashed('apres-renommage');
+    writeFileSync(
+      config.analysis.privacyFile,
+      JSON.stringify({
+        schemaVersion: 1,
+        pseudonyms: [{ names: ['Théo', 'Teo'], label: 'Coéquipier 1' }],
+      }),
+    );
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 0,
+      withdrawn: 1,
+    });
+    expect(after(c)).toEqual({
+      status: 'failed',
+      error_code: 'VERSION_CONFLICT',
+      dest: false,
+      staging: false,
+    });
+
+    // 5. Contenu en attente altéré alors que tout est valide ⇒ quarantaine (jamais publié, jamais supprimé).
+    c = await crashed('avant-renommage');
+    writeFileSync(path.join(c.staging, 'clip.mp4'), 'altéré');
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 0,
+      quarantined: 1,
+    });
+    expect(after(c)).toMatchObject({
+      status: 'failed',
+      error_code: 'RENDER_FAILED',
+      dest: false,
+      staging: false,
+    });
+    expect(
+      existsSync(path.join(config.paths.exports, '.staging', 'quarantine', c.id, 'clip.mp4')),
+    ).toBe(true);
+
+    // 6. Témoin : rien n'a changé ⇒ publié.
+    c = await crashed('apres-renommage');
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 1,
+      withdrawn: 0,
+    });
+    expect(after(c)).toEqual({ status: 'succeeded', error_code: null, dest: true, staging: false });
+    // Seul le témoin est un export ; aucun résidu hors quarantaine dans la zone d'attente.
+    expect(exportDirs()).toEqual([path.basename(c.dest)]);
+    expect(readdirSync(path.join(config.paths.exports, '.staging')).sort()).toEqual(['quarantine']);
+  }, 600_000);
 
   it('nettoyage : un aperçu est évincé ; ni un rendu actif, ni un export final ne sont touchés', async () => {
     const video = await setup();

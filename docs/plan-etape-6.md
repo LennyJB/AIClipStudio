@@ -1087,3 +1087,13 @@ Précisions apportées pendant l'implémentation de la PR 6b, sans changer les d
   (Ctrl+C l'annule).
 - **Image fixe** : renvoyée directement (JPEG), sans être stockée.
 - **Sorties** : `render.json` ne contient ni chemin absolu, ni texte de transcription.
+- **Récupération des rendus `finalizing` (correctif de revue)** : avant toute publication au
+  redémarrage, le plan est recalculé à partir de l'état ACTUEL (document, accords et
+  déclarations audio, fichier de confidentialité, intégrité, version du moteur) et doit avoir
+  exactement l'empreinte du rendu ; puis, sous le verrou, décision, révision et état audio sont
+  revérifiés. Un accord retiré, une déclaration modifiée, des sous-titres devenus non autorisés
+  ou un fichier de confidentialité changé empêchent la publication : les fichiers sont supprimés
+  (ils n'ont jamais été un export) et la ligne passe à `failed` avec la raison
+  (`EXPORT_CONSENT_REQUIRED`, `VERSION_CONFLICT`, `PROPOSAL_NOT_ACCEPTED`) ; un contenu altéré
+  alors que tout est valide est mis en quarantaine. Cette récupération est attendue au démarrage
+  du serveur et du CLI avant tout autre travail.

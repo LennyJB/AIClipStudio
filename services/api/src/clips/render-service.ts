@@ -146,6 +146,7 @@ interface Built {
   audioStateHash: string;
   title: string;
   manifestSha: string;
+  privacyHash: string | null;
 }
 
 /** Points d'arrêt injectables (tests de concurrence et de récupération uniquement). */
@@ -291,6 +292,7 @@ export class RenderService {
       audioStateHash,
       title,
       manifestSha: manifest.sha256,
+      privacyHash: privacy,
     };
   }
 
@@ -488,7 +490,12 @@ export class RenderService {
           out.durationMs,
           out.width,
           out.height,
-          JSON.stringify({ ffmpeg: await this.ffmpegVersion(), engine: RENDER_ENGINE_VERSION }),
+          JSON.stringify({
+            ffmpeg: await this.ffmpegVersion(),
+            engine: RENDER_ENGINE_VERSION,
+            // État exact utilisé pour ce rendu : relu par la récupération pour expliquer un refus.
+            guard: { audioStateHash: built.audioStateHash, privacyHash: built.privacyHash },
+          }),
           renderId,
         );
       hctx.reportProgress(0.97);
@@ -638,12 +645,8 @@ export class RenderService {
 
   /* ------------------------------ Récupération ------------------------------ */
 
-  /**
-   * Au démarrage (après `runner.recover()`) : rendus en cours sans travail actif ⇒ échec et
-   * nettoyage ; rendus `finalizing` ⇒ traités un par un sous verrou (plan §6.7).
-   */
-  recover(): { failed: number; published: number; withdrawn: number } {
-    const stats = { failed: 0, published: 0, withdrawn: 0 };
+  /** Au démarrage (après `runner.recover()`) : rendus en cours sans travail actif ⇒ échec. */
+  recoverStale(): number {
     const stale = (
       this.ctx.db
         .prepare(
@@ -659,8 +662,33 @@ export class RenderService {
       });
       rmSync(this.workDir(r.id), { recursive: true, force: true });
       rmSync(this.stagingDir(r.id, r.kind), { recursive: true, force: true });
-      stats.failed++;
     }
+    if (stale.length) this.ctx.log.warn({ count: stale.length }, 'Rendus interrompus au démarrage');
+    return stale.length;
+  }
+
+  /**
+   * Récupération des rendus `finalizing` (arrêt entre la transaction A et la fin de la
+   * publication), à ATTENDRE au démarrage avant tout autre travail (plan §6.7).
+   *
+   * Rien n'est publié sans que TOUT ce qui a permis le rendu soit encore vrai :
+   *  1. le plan est recalculé à partir de l'état ACTUEL (document, accords et déclarations audio,
+   *     fichier de confidentialité, intégrité de la source, version du moteur) et son empreinte
+   *     doit être IDENTIQUE à celle du rendu — un accord retiré, une déclaration changée, des
+   *     sous-titres qui ne sont plus autorisés ou un fichier de confidentialité modifié l'empêchent ;
+   *  2. sous le verrou d'écriture : décision effective acceptée, même révision, et état audio
+   *     inchangé depuis le recalcul (aucun retrait d'accord ne peut s'intercaler) ;
+   *  3. l'empreinte de la vidéo correspond à celle enregistrée.
+   * Sinon : le fichier n'a jamais été un export (sa ligne n'a jamais été `succeeded`) ; il est
+   * SUPPRIMÉ (accord retiré, décision ou plan changés) ou mis en QUARANTAINE (contenu inattendu
+   * alors que tout le reste est valide), et la ligne passe à `failed` avec la raison précise.
+   */
+  async recoverFinalizing(): Promise<{
+    published: number;
+    withdrawn: number;
+    quarantined: number;
+  }> {
+    const stats = { published: 0, withdrawn: 0, quarantined: 0 };
     const finalizing = (
       this.ctx.db.prepare(`SELECT * FROM clip_renders WHERE status = 'finalizing'`).all() as Record<
         string,
@@ -671,21 +699,65 @@ export class RenderService {
       const staging = toAbs(this.paths.storage, r.stagingRelPath!);
       const video = toAbs(this.paths.storage, r.outputRelPath!);
       const dest = path.dirname(video);
-      const destVideoSha = existsSync(video) ? sha(readFileSync(video)) : null;
+      const destVideoSha = existsSync(video) ? await fileSha256(video) : null;
+      const stored = this.storedGuard(r.id);
+
+      // 1. Plan recalculé à partir de l'état actuel (asynchrone : confidentialité, sous-titres).
+      let refusal: AppError | null = null;
+      let fresh: Built | null = null;
+      try {
+        fresh = await this.build(r.projectId, r.kind);
+        if (fresh.planHash !== r.planHash) refusal = this.explainPlanChange(stored, fresh);
+      } catch (err) {
+        refusal = isAppError(err)
+          ? err
+          : new AppError('RENDER_FAILED', 'Plan de rendu impossible à recalculer');
+      }
+
+      // 2. Décision sous verrou, puis publication ou retrait.
       this.ctx.db
         .transaction(() => {
           const project = this.clips.projectRow(r.projectId);
           const d = this.clips.guard.effective(project.proposalId);
-          const valid =
-            d.status === 'accepted' && !d.merged && project.currentRevision === r.revision;
+          if (!refusal && (d.status !== 'accepted' || d.merged)) {
+            refusal = new AppError(
+              'PROPOSAL_NOT_ACCEPTED',
+              'Décision changée avant la publication',
+            );
+          } else if (!refusal && project.currentRevision !== r.revision) {
+            refusal = new AppError('VERSION_CONFLICT', 'Projet modifié avant la publication');
+          } else if (
+            !refusal &&
+            fresh &&
+            this.audioStateHash(project.recordingId) !== fresh.audioStateHash
+          ) {
+            refusal = new AppError(
+              'EXPORT_CONSENT_REQUIRED',
+              'Accords ou déclarations audio modifiés pendant la récupération',
+            );
+          }
           const stagingExists = existsSync(staging);
           const destExists = existsSync(dest);
+          const remove = (dir: string) => {
+            // Jamais devenu un export : retiré (renommé hors de la zone visible, puis supprimé).
+            const tmp = path.join(this.paths.exports, '.staging', `${r.id}.retire`);
+            mkdirSync(path.dirname(tmp), { recursive: true });
+            renameSync(dir, tmp);
+            rmSync(tmp, { recursive: true, force: true });
+          };
+          if (refusal) {
+            if (destExists) remove(dest);
+            if (stagingExists) rmSync(staging, { recursive: true, force: true });
+            this.setStatus(r.id, 'failed', { code: refusal.code, message: refusal.message });
+            stats.withdrawn++;
+            return;
+          }
           if (destExists) {
-            if (valid && destVideoSha === r.outputSha256) {
+            if (destVideoSha === r.outputSha256) {
               this.setStatus(r.id, 'succeeded');
               stats.published++;
-            } else if (valid) {
-              // Contenu inattendu : mis en quarantaine, jamais supprimé automatiquement.
+            } else {
+              // Contenu inattendu alors que tout est valide : quarantaine, jamais supprimé.
               const q = path.join(this.paths.exports, '.staging', 'quarantine', r.id);
               mkdirSync(path.dirname(q), { recursive: true });
               renameSync(dest, q);
@@ -693,42 +765,79 @@ export class RenderService {
                 code: 'RENDER_FAILED',
                 message: 'Empreinte inattendue : mis en quarantaine',
               });
-            } else {
-              // Jamais devenu un export (ligne jamais `succeeded`) : retiré.
-              renameSync(dest, path.join(path.dirname(staging), `${r.id}.retire`));
-              rmSync(path.join(path.dirname(staging), `${r.id}.retire`), {
-                recursive: true,
-                force: true,
-              });
-              this.setStatus(r.id, 'failed', {
-                code: 'PROPOSAL_NOT_ACCEPTED',
-                message: 'Décision changée avant la publication',
-              });
-              stats.withdrawn++;
+              stats.quarantined++;
             }
             if (stagingExists) rmSync(staging, { recursive: true, force: true });
-          } else if (stagingExists && valid) {
+          } else if (stagingExists) {
+            const stagedSha = existsSync(path.join(staging, 'clip.mp4'))
+              ? sha(readFileSync(path.join(staging, 'clip.mp4')))
+              : null;
+            if (stagedSha !== r.outputSha256) {
+              const q = path.join(this.paths.exports, '.staging', 'quarantine', r.id);
+              mkdirSync(path.dirname(q), { recursive: true });
+              renameSync(staging, q);
+              this.setStatus(r.id, 'failed', {
+                code: 'RENDER_FAILED',
+                message: 'Empreinte inattendue : mis en quarantaine',
+              });
+              stats.quarantined++;
+              return;
+            }
             mkdirSync(path.dirname(dest), { recursive: true });
             renameSync(staging, dest);
             this.setStatus(r.id, 'succeeded');
             stats.published++;
           } else {
-            if (stagingExists) rmSync(staging, { recursive: true, force: true });
             this.setStatus(r.id, 'failed', {
-              code: valid ? 'RENDER_FAILED' : 'PROPOSAL_NOT_ACCEPTED',
-              message: valid
-                ? 'Fichiers du rendu introuvables'
-                : 'Décision changée avant la publication',
+              code: 'RENDER_FAILED',
+              message: 'Fichiers du rendu introuvables',
             });
-            if (!valid) stats.withdrawn++;
           }
         })
         .immediate();
     }
-    if (stats.failed || stats.published || stats.withdrawn) {
-      this.ctx.log.warn(stats, 'Rendus récupérés au démarrage');
-    }
+    if (finalizing.length) this.ctx.log.warn(stats, 'Rendus en publication récupérés au démarrage');
     return stats;
+  }
+
+  private storedGuard(renderId: string): { audioStateHash?: string; privacyHash?: string | null } {
+    const row = this.ctx.db
+      .prepare('SELECT toolchain_json FROM clip_renders WHERE id = ?')
+      .get(renderId) as { toolchain_json: string | null } | undefined;
+    try {
+      return (
+        (
+          JSON.parse(row?.toolchain_json ?? '{}') as {
+            guard?: { audioStateHash?: string; privacyHash?: string | null };
+          }
+        ).guard ?? {}
+      );
+    } catch {
+      return {};
+    }
+  }
+
+  /** Raison lisible d'un plan qui ne correspond plus à celui du rendu. */
+  private explainPlanChange(
+    stored: { audioStateHash?: string; privacyHash?: string | null },
+    fresh: Built,
+  ): AppError {
+    if (stored.audioStateHash !== undefined && stored.audioStateHash !== fresh.audioStateHash) {
+      return new AppError(
+        'EXPORT_CONSENT_REQUIRED',
+        'Accords ou déclarations audio modifiés depuis le rendu : non publié',
+      );
+    }
+    if (stored.privacyHash !== undefined && stored.privacyHash !== fresh.privacyHash) {
+      return new AppError(
+        'VERSION_CONFLICT',
+        'Fichier de confidentialité modifié depuis le rendu : non publié',
+      );
+    }
+    return new AppError(
+      'VERSION_CONFLICT',
+      'Projet ou source modifiés depuis le rendu : non publié',
+    );
   }
 
   /* ------------------------------- Annulation ------------------------------- */

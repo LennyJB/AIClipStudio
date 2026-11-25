@@ -85,5 +85,7 @@ export function recoverServices(s: Services) {
   s.runner.recover();
   s.transcriptions.recover();
   s.analysis.recover();
-  s.renders.recover();
+  // Les rendus « en publication » sont récupérés de façon asynchrone : `recoverFinalizing()`
+  // doit être attendu avant tout autre travail (serveur et CLI).
+  s.renders.recoverStale();
 }

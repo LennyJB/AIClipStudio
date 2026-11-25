@@ -10,6 +10,9 @@ async function main() {
   await ensureStorageLayout(config.paths);
   const db = openDatabase(config.paths.database, undefined, { storageDir: config.paths.storage });
   const { app, services } = buildApp({ config, db });
+  // Rendus interrompus en pleine publication : revérifiés (décision, accords, confidentialité,
+  // plan) AVANT d'accepter la moindre requête.
+  await services.renders.recoverFinalizing();
   // Après recover() (dans buildApp) : aucun traitement n'est actif, les .part sont obsolètes.
   await services.storage.removeStaleTempFiles();
 
