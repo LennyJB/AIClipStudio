@@ -313,6 +313,44 @@ describe('effets contextuels', () => {
     expect(activeEffects(fidele).map((e) => e.type)).toEqual(['caption_emphasis']);
   });
 
+  it('fusion : un nouveau type d’effet arrive désactivé ; aucun choix existant n’est modifié', () => {
+    const p = applyRenderOptions(base(), { mode: 'enrichi' }, ctx()).project;
+    const fx = suggestEffects({ project: p, energy: env(0.05, 125_500) });
+    expect(fx.length).toBeGreaterThanOrEqual(2);
+    // Projet sans effet : toutes les propositions arrivent désactivées.
+    const first = mergeSuggestedEffects([], fx);
+    expect(first.map((e) => e.enabled)).toEqual(fx.map(() => false));
+    // Le créateur active le premier ; une nouvelle proposition le garde activé, l'autre désactivé.
+    const chosen = first.map((e, i) => (i === 0 ? { ...e, enabled: true } : e));
+    const again = mergeSuggestedEffects(chosen, fx);
+    expect(again.map((e) => [e.type, e.enabled])).toEqual(chosen.map((e) => [e.type, e.enabled]));
+    // Effet actif hérité de la 6b (enabled: true) : conservé actif.
+    const legacy = mergeSuggestedEffects(fx, fx);
+    expect(legacy.map((e) => e.enabled)).toEqual(fx.map(() => true));
+  });
+
+  it('fusion : effet du créateur intact ; effet plus proposé conservé ; instants mis à jour', () => {
+    const p = applyRenderOptions(base(), { mode: 'enrichi' }, ctx()).project;
+    const fx = suggestEffects({ project: p, energy: env(0.05, 125_500) });
+    const creator = { ...fx[0]!, id: 'creator-1', origin: 'creator' as const, enabled: true };
+    const stale = { ...fx[0]!, type: 'reaction_hold' as const, id: 'auto-reaction_hold' };
+    const current = [creator, { ...fx[0]!, enabled: true }, stale];
+    const moved = fx.map((e) =>
+      e.type === fx[0]!.type
+        ? {
+            ...e,
+            timing: { ...e.timing, srcStartMs: e.timing.srcStartMs + 100 },
+          }
+        : e,
+    ) as typeof fx;
+    const merged = mergeSuggestedEffects(current, moved.slice(0, 1));
+    expect(merged[0]).toEqual(creator);
+    expect(merged[1]!.enabled).toBe(true);
+    expect(merged[1]!.timing).toEqual(moved[0]!.timing);
+    expect(merged[2]).toEqual(stale);
+    expect(merged).toHaveLength(3);
+  });
+
   it('enveloppe RMS : silence = 0, signal plein = ~0,707', () => {
     const sine = new Int16Array(800);
     for (let i = 0; i < 800; i++) sine[i] = Math.round(32767 * Math.sin((2 * Math.PI * i) / 16));

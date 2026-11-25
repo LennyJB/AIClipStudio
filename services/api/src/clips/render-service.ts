@@ -121,6 +121,9 @@ const toRow = (r: Record<string, unknown>): RenderRow => ({
 });
 
 const sha = (v: string | Buffer) => createHash('sha256').update(v).digest('hex');
+/** Plafond de générations d'image fixe simultanées (tous projets). */
+export const MAX_FRAME_GENERATIONS = 2;
+
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
 
 async function fileSha256(file: string): Promise<string> {
@@ -156,6 +159,8 @@ export interface RenderTestHooks {
   beforeRecoveryLock?: (renderId: string) => void | Promise<void>;
   afterRename?: (renderId: string) => void;
   beforeCommit?: (renderId: string) => void;
+  /** Image fixe : juste avant le lancement de FFmpeg (signal d'arrêt transmis). */
+  beforeFrameProcess?: (projectId: string, signal: AbortSignal) => void | Promise<void>;
 }
 
 export class RenderService {
@@ -954,13 +959,44 @@ export class RenderService {
     return `${path.basename(path.dirname(r.outputRelPath ?? 'clip'))}.mp4`;
   }
 
-  /** Image fixe de la disposition (même graphe que le rendu, sans sous-titres ni zoom). */
-  async frame(projectId: string, atEditMs: number): Promise<Buffer> {
-    const built = await this.build(projectId, 'preview');
+  /** Générations d'image fixe en cours : au plus une par projet (la plus récente l'emporte). */
+  private readonly frames = new Map<string, AbortController>();
+  /** Plafond global (modifiable par les tests uniquement). */
+  maxFrameGenerations = MAX_FRAME_GENERATIONS;
+
+  /**
+   * Image fixe de la disposition (même graphe que le rendu, sans sous-titres ni zoom).
+   *
+   * Annulation EFFECTIVE côté serveur (docs/plan-etape-6.md §19) :
+   *  - `signal` (déconnexion du client) arrête FFmpeg ;
+   *  - une demande plus récente sur le même projet arrête la précédente (`CANCELLED`) ;
+   *  - au plus MAX_FRAME_GENERATIONS projets génèrent une image en même temps : au-delà, refus
+   *    immédiat (`CONFLICT`), jamais de file d'attente.
+   * L'arrêt n'est pas instantané : un FFmpeg remplacé peut survivre brièvement à son ordre d'arrêt.
+   */
+  async frame(projectId: string, atEditMs: number, signal?: AbortSignal): Promise<Buffer> {
+    this.clips.projectRow(projectId);
+    const previous = this.frames.get(projectId);
+    if (!previous && this.frames.size >= this.maxFrameGenerations) {
+      throw new AppError(
+        'CONFLICT',
+        'Génération d’image déjà en cours pour d’autres clips : réessayez dans un instant',
+        { details: { reason: 'frame_busy' } },
+      );
+    }
+    const ctrl = new AbortController();
+    this.frames.set(projectId, ctrl);
+    previous?.abort();
+    const onClientAbort = () => ctrl.abort();
+    if (signal?.aborted) ctrl.abort();
+    signal?.addEventListener('abort', onClientAbort, { once: true });
     const work = path.join(this.paths.processing, 'renders', 'tmp', `image-${randomUUID()}`);
-    await mkdir(work, { recursive: true });
     try {
+      const built = await this.build(projectId, 'preview');
+      if (ctrl.signal.aborted) throw new AppError('CANCELLED', 'Image remplacée ou abandonnée');
+      await mkdir(work, { recursive: true });
       const out = path.join(work, 'image.jpg');
+      await this.hooks.beforeFrameProcess?.(projectId, ctrl.signal);
       await runFrame({
         ffmpegPath: this.ctx.config.tools.ffmpeg,
         plan: built.plan,
@@ -969,11 +1005,22 @@ export class RenderService {
         workDir: work,
         fontsDir: FONTS_DIR,
         atEditMs,
+        signal: ctrl.signal,
       });
       return await readFile(out);
+    } catch (err) {
+      if (ctrl.signal.aborted) throw new AppError('CANCELLED', 'Image remplacée ou abandonnée');
+      throw err;
     } finally {
+      signal?.removeEventListener('abort', onClientAbort);
+      if (this.frames.get(projectId) === ctrl) this.frames.delete(projectId);
       await rm(work, { recursive: true, force: true });
     }
+  }
+
+  /** Nombre de générations d'image en cours (tests et diagnostic). */
+  activeFrameGenerations(): number {
+    return this.frames.size;
   }
 
   /* -------------------------------- Effets -------------------------------- */
@@ -1034,11 +1081,18 @@ export class RenderService {
     const rec = this.recordings.get(row.recordingId)!;
     const src = this.recordings.getSource(row.recordingId)!;
     const energy = doc.mode === 'enrichi' ? await this.micEnergy(doc, rec, src.sourcePath) : null;
-    const suggested = suggestEffects({ project: doc, energy });
-    const res = this.clips.writeSystemRevision(projectId, b, (d) => ({
-      project: { ...d, effects: mergeSuggestedEffects(d.effects, suggested) },
-      summary: `effets proposés : ${suggested.map((e) => e.type).join(', ') || 'aucun'}`,
-    }));
+    const proposed = suggestEffects({ project: doc, energy });
+    const types = new Set(proposed.map((e) => e.type));
+    let suggested: typeof proposed = [];
+    const res = this.clips.writeSystemRevision(projectId, b, (d) => {
+      // Aucun choix existant n'est modifié ; un nouveau type d'effet arrive désactivé.
+      const effects = mergeSuggestedEffects(d.effects, proposed);
+      suggested = effects.filter((e) => e.origin === 'auto' && types.has(e.type));
+      return {
+        project: { ...d, effects },
+        summary: `effets proposés : ${proposed.map((e) => e.type).join(', ') || 'aucun'}`,
+      };
+    });
     return { ...res, suggested };
   }
 }
