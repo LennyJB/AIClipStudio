@@ -16,6 +16,7 @@
  *  track:<audioIndex>    piste audio de l'enregistrement
  *  audio.config          export sans son, normalisation
  *  mode                  fidèle / enrichi
+ *  durationPolicy        plage de durée et confirmation hors plage
  */
 import { canonicalJson } from '../project';
 import type { ClipProjectV2 } from './schema';
@@ -79,6 +80,8 @@ export function getKey(d: Doc, key: StateKey): unknown {
         return { silent: d.audio.silent, loudnorm: d.audio.loudnorm };
       case 'mode':
         return d.mode;
+      case 'durationPolicy':
+        return d.durationPolicy;
     }
   } else if (k in ENTITY_PREFIXES) {
     return ENTITY_PREFIXES[k as EntityPrefix](d).find((e) => e.id === arg);
@@ -134,6 +137,9 @@ export function setKey(d: Doc, key: StateKey, value: unknown): void {
       case 'mode':
         d.mode = value as Doc['mode'];
         return;
+      case 'durationPolicy':
+        d.durationPolicy = value as Doc['durationPolicy'];
+        return;
     }
   } else if (k === 'layoutOverride') {
     d.layout.overrides = upsert(d.layout.overrides, arg, value as never);
@@ -186,6 +192,27 @@ export function setKey(d: Doc, key: StateKey, value: unknown): void {
 export function keyFingerprint(d: Doc, key: StateKey): string | null {
   const v = getKey(d, key);
   return v === undefined ? null : canonicalJson(v);
+}
+
+/** Toutes les clés d'état présentes dans un document (pour comparer deux documents). */
+export function allKeys(d: Doc): StateKey[] {
+  return [
+    'segments',
+    'window',
+    'layout',
+    'captions.config',
+    'audio.config',
+    'mode',
+    'durationPolicy',
+    ...d.layout.overrides.map((e) => `layoutOverride:${e.id}`),
+    ...d.masks.map((e) => `mask:${e.id}`),
+    ...d.captions.items.map((e) => `caption:${e.id}`),
+    ...d.captions.manual.map((e) => `manual:${e.id}`),
+    ...d.effects.map((e) => `effect:${e.id}`),
+    ...d.overlays.map((e) => `overlay:${e.id}`),
+    ...d.audio.sfx.map((e) => `sfx:${e.id}`),
+    ...d.audio.tracks.map((t) => `track:${t.audioIndex}`),
+  ];
 }
 
 /** Clés qui touchent aux masques ou à l'audio : jamais réappliquées automatiquement (§6.3). */
