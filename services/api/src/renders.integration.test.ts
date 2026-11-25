@@ -540,6 +540,136 @@ describe.skipIf(!enabled)('Rendus des clips (API, étape 6b)', () => {
     expect(readdirSync(path.join(config.paths.exports, '.staging')).sort()).toEqual(['quarantine']);
   }, 600_000);
 
+  it('confidentialité modifiée ENTRE le recalcul du plan et la publication : jamais publié (récupération et rendu normal)', async () => {
+    const video = await setup();
+    const { rec, project } = await prepare(video);
+    const original = readFileSync(config.analysis.privacyFile);
+    const touchPrivacy = () =>
+      writeFileSync(
+        config.analysis.privacyFile,
+        JSON.stringify({
+          schemaVersion: 1,
+          pseudonyms: [{ names: ['Théo', 'Théodore'], label: 'Coéquipier 1' }],
+        }),
+      );
+    const crashed = async (where: 'apres-renommage' | 'avant-renommage') => {
+      const r = await requestRender(project, 'final');
+      expect(r.status, JSON.stringify(r.body)).toBe(202);
+      await services.runner.idle();
+      const row = db.prepare('SELECT * FROM clip_renders WHERE id = ?').get(r.body.render.id) as {
+        id: string;
+        staging_rel_path: string;
+        output_rel_path: string;
+      };
+      const dest = path.dirname(path.join(config.paths.storage, row.output_rel_path));
+      const staging = path.join(config.paths.storage, row.staging_rel_path);
+      if (where === 'avant-renommage') renameSync(dest, staging);
+      db.prepare(`UPDATE clip_renders SET status = 'finalizing' WHERE id = ?`).run(row.id);
+      return { id: row.id, dest, staging };
+    };
+    const state = (c: { id: string; dest: string; staging: string }) => ({
+      ...(db
+        .prepare('SELECT status, error_code, error_message FROM clip_renders WHERE id = ?')
+        .get(c.id) as object),
+      dest: existsSync(c.dest),
+      staging: existsSync(c.staging),
+    });
+
+    // 1. Récupération, arrêt après le renommage : le plan recalculé est identique, puis le fichier
+    //    change juste avant la transaction ⇒ refus SOUS LE VERROU, fichier retiré.
+    let c = await crashed('apres-renommage');
+    let plansChecked = 0;
+    services.renders.hooks.beforeRecoveryLock = () => {
+      plansChecked++;
+      touchPrivacy();
+    };
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 0,
+      withdrawn: 1,
+    });
+    expect(plansChecked).toBe(1);
+    expect(state(c)).toMatchObject({
+      status: 'failed',
+      error_code: 'VERSION_CONFLICT',
+      error_message: expect.stringMatching(/confidentialité modifié pendant la récupération/u),
+      dest: false,
+      staging: false,
+    });
+    writeFileSync(config.analysis.privacyFile, original);
+
+    // 2. Même course, arrêt AVANT le renommage : zone d'attente supprimée, jamais publiée.
+    c = await crashed('avant-renommage');
+    services.renders.hooks.beforeRecoveryLock = touchPrivacy;
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 0,
+      withdrawn: 1,
+    });
+    expect(state(c)).toMatchObject({
+      status: 'failed',
+      error_code: 'VERSION_CONFLICT',
+      dest: false,
+      staging: false,
+    });
+    writeFileSync(config.analysis.privacyFile, original);
+
+    // 3. Même course pour les accords audio (déjà revérifiés sous verrou) : micro devenu non autorisé.
+    c = await crashed('apres-renommage');
+    services.renders.hooks.beforeRecoveryLock = () =>
+      void services.exportAudio.record(
+        rec.id,
+        {
+          requestId: randomUUID(),
+          kind: 'declaration',
+          subject: 'mic_composition',
+          payload: { creatorVoice: 'present', otherVoices: 'present' },
+        },
+        'cli',
+      );
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 0,
+      withdrawn: 1,
+    });
+    expect(state(c)).toMatchObject({
+      status: 'failed',
+      error_code: 'EXPORT_CONSENT_REQUIRED',
+      dest: false,
+    });
+    services.exportAudio.record(
+      rec.id,
+      {
+        requestId: randomUUID(),
+        kind: 'declaration',
+        subject: 'mic_composition',
+        payload: { creatorVoice: 'present', otherVoices: 'absent' },
+      },
+      'cli',
+    );
+
+    // 4. Rendu normal : fichier modifié après la dernière vérification asynchrone, avant le verrou.
+    services.renders.hooks = { beforePublishLock: touchPrivacy };
+    const r = await requestRender(project, 'final');
+    await services.runner.idle();
+    expect(
+      db.prepare('SELECT status, error_code FROM clip_renders WHERE id = ?').get(r.body.render.id),
+    ).toEqual({
+      status: 'failed',
+      error_code: 'VERSION_CONFLICT',
+    });
+    writeFileSync(config.analysis.privacyFile, original);
+
+    // 5. Témoin : point d'arrêt sans modification ⇒ publié.
+    services.renders.hooks = {};
+    c = await crashed('apres-renommage');
+    services.renders.hooks.beforeRecoveryLock = () => undefined;
+    expect(await services.renders.recoverFinalizing()).toMatchObject({
+      published: 1,
+      withdrawn: 0,
+    });
+    expect(state(c)).toMatchObject({ status: 'succeeded', dest: true, staging: false });
+    services.renders.hooks = {};
+    expect(exportDirs()).toEqual([path.basename(c.dest)]);
+  }, 600_000);
+
   it('nettoyage : un aperçu est évincé ; ni un rendu actif, ni un export final ne sont touchés', async () => {
     const video = await setup();
     const { project } = await prepare(video);

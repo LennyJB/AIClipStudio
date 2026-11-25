@@ -1097,3 +1097,7 @@ Précisions apportées pendant l'implémentation de la PR 6b, sans changer les d
   (`EXPORT_CONSENT_REQUIRED`, `VERSION_CONFLICT`, `PROPOSAL_NOT_ACCEPTED`) ; un contenu altéré
   alors que tout est valide est mis en quarantaine. Cette récupération est attendue au démarrage
   du serveur et du CLI avant tout autre travail.
+- **Confidentialité relue sous le verrou (correctif de revue)** : dans la récupération comme dans
+  la publication normale, l'empreinte du fichier de confidentialité est relue de façon synchrone
+  DANS la transaction, juste avant tout renommage, et comparée à celle du rendu. Un fichier
+  modifié entre le recalcul du plan et la publication ⇒ fichier retiré et `VERSION_CONFLICT`.

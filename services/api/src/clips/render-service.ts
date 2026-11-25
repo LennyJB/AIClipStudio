@@ -152,6 +152,8 @@ interface Built {
 /** Points d'arrêt injectables (tests de concurrence et de récupération uniquement). */
 export interface RenderTestHooks {
   beforePublishLock?: (renderId: string) => void | Promise<void>;
+  /** Récupération : après le recalcul du plan, juste avant la transaction de publication. */
+  beforeRecoveryLock?: (renderId: string) => void | Promise<void>;
   afterRename?: (renderId: string) => void;
   beforeCommit?: (renderId: string) => void;
 }
@@ -294,6 +296,16 @@ export class RenderService {
       manifestSha: manifest.sha256,
       privacyHash: privacy,
     };
+  }
+
+  /**
+   * Empreinte du fichier de confidentialité, lue de façon SYNCHRONE : utilisable dans une
+   * transaction SQLite, juste avant le renommage vers la destination.
+   */
+  private privacyHashSync(): string | null {
+    const p = this.ctx.config.analysis.privacyFile;
+    if (!existsSync(p)) return null;
+    return sha(readFileSync(p));
   }
 
   private async clipsPrivacyHash(): Promise<string | null> {
@@ -508,7 +520,7 @@ export class RenderService {
         );
       }
       await this.hooks.beforePublishLock?.(renderId);
-      await this.publish(renderId, built.audioStateHash);
+      await this.publish(renderId, built.audioStateHash, built.privacyHash);
       hctx.reportProgress(1);
       return { renderId, status: this.get(renderId).status };
     } catch (err) {
@@ -579,7 +591,12 @@ export class RenderService {
    * tenu, puis `succeeded`. Une décision de revue (qui prend le même verrou) est donc ordonnée
    * strictement avant ou après : jamais d'export pour une proposition déjà refusée.
    */
-  private async publish(renderId: string, audioStateHash: string, attempt = 1): Promise<void> {
+  private async publish(
+    renderId: string,
+    audioStateHash: string,
+    privacyHash: string | null,
+    attempt = 1,
+  ): Promise<void> {
     const r = this.get(renderId);
     const staging = toAbs(this.paths.storage, r.stagingRelPath!);
     const dest = path.dirname(toAbs(this.paths.storage, r.outputRelPath!));
@@ -598,6 +615,12 @@ export class RenderService {
             refusal = new AppError(
               'EXPORT_CONSENT_REQUIRED',
               'Les accords ou déclarations audio ont changé pendant le rendu',
+            );
+          } else if (this.privacyHashSync() !== privacyHash) {
+            // Dernière lecture, sous le verrou, juste avant le renommage.
+            refusal = new AppError(
+              'VERSION_CONFLICT',
+              'Fichier de confidentialité modifié pendant le rendu : non publié',
             );
           }
           if (refusal) {
@@ -631,7 +654,7 @@ export class RenderService {
       const transient = !renamed && attempt < 3 && !(isAppError(err) && err.code === 'CONFLICT');
       if (transient && !isAppError(err)) {
         await new Promise((res) => setTimeout(res, 250 * attempt));
-        return this.publish(renderId, audioStateHash, attempt + 1);
+        return this.publish(renderId, audioStateHash, privacyHash, attempt + 1);
       }
       throw isAppError(err)
         ? err
@@ -714,6 +737,12 @@ export class RenderService {
           : new AppError('RENDER_FAILED', 'Plan de rendu impossible à recalculer');
       }
 
+      await this.hooks.beforeRecoveryLock?.(r.id);
+      // Empreinte de confidentialité attendue : celle du rendu (enregistrée au passage en
+      // « finalizing »), à défaut celle du plan recalculé (identique si le plan l'est).
+      const expectedPrivacy =
+        stored.privacyHash !== undefined ? stored.privacyHash : (fresh?.privacyHash ?? null);
+
       // 2. Décision sous verrou, puis publication ou retrait.
       this.ctx.db
         .transaction(() => {
@@ -734,6 +763,13 @@ export class RenderService {
             refusal = new AppError(
               'EXPORT_CONSENT_REQUIRED',
               'Accords ou déclarations audio modifiés pendant la récupération',
+            );
+          } else if (!refusal && this.privacyHashSync() !== expectedPrivacy) {
+            // Relu sous le verrou, juste avant tout renommage : un fichier de confidentialité
+            // modifié après le recalcul du plan ne laisse jamais publier un ancien rendu.
+            refusal = new AppError(
+              'VERSION_CONFLICT',
+              'Fichier de confidentialité modifié pendant la récupération : non publié',
             );
           }
           const stagingExists = existsSync(staging);
