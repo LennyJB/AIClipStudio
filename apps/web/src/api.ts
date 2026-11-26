@@ -94,7 +94,7 @@ export class ApiError extends Error {
   }
 }
 
-async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
+export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const body = (await res.json().catch(() => null)) as
     (T & { error?: { message?: string; code?: string; details?: unknown } }) | null;
@@ -228,7 +228,7 @@ export interface AnalysisManifest {
   triage: { scope: string; chunks: { index: number; startMs: number; endMs: number }[] };
 }
 
-const send = (method: 'POST' | 'PUT', body: unknown): RequestInit => ({
+export const send = (method: 'POST' | 'PUT', body: unknown): RequestInit => ({
   method,
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify(body),
