@@ -149,7 +149,8 @@ export function entryLabel(
 
 export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi<EditorState> {
   const clientId = deps.uuid();
-  const channel = deps.channel(`acs-editor-${projectId}`);
+  // Canal et relecture créés à chaque chargement, fermés par `dispose` (montage double de React).
+  let channel: BroadcastLike | null = null;
   let poll: unknown = null;
   let undoAfterSend = false;
   let disposed = false;
@@ -358,6 +359,11 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
       entries: [],
 
       async load() {
+        disposed = false;
+        channel?.close();
+        channel = deps.channel(`acs-editor-${projectId}`);
+        if (poll !== null) deps.clearInterval(poll);
+        poll = null;
         try {
           const server = await fetchServer();
           const drafts = await deps.drafts.load(projectId);
@@ -381,6 +387,7 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
           set({ status: 'error', error: message(err) });
           return;
         }
+        if (disposed) return;
         if (channel) {
           channel.onmessage = (e) => {
             const m = e.data as { type?: string; version?: number } | null;
@@ -537,7 +544,9 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
       dispose() {
         disposed = true;
         if (poll !== null) deps.clearInterval(poll);
+        poll = null;
         channel?.close();
+        channel = null;
       },
     };
   });

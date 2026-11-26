@@ -19,7 +19,7 @@ import {
   type EditMs,
   type Timing,
 } from '@acs/timeline';
-import type { EditorDocument, EditorMedia } from '../api';
+import type { EditorDocument, EditorMedia, EditorTexts } from '../api';
 import { moveGesture, retimeCaption, setEffect, trimGesture, type Gesture } from '../actions';
 import {
   moveTargetIndex,
@@ -60,12 +60,14 @@ interface Props {
   editable: boolean;
   media: EditorMedia | null;
   session: EditorMediaSession | null;
+  /** Textes affichés (pseudonymisés) du serveur : seuls textes montrés dans la timeline. */
+  texts: EditorTexts | null;
   onGesture: (g: Gesture) => void;
 }
 
 const asTiming = (t: unknown) => t as Timing;
 
-export function Timeline({ doc, server, ui, editable, media, session, onGesture }: Props) {
+export function Timeline({ doc, server, ui, editable, media, session, texts, onGesture }: Props) {
   const pxPerSec = useStore(ui, (s) => s.pxPerSec);
   const playhead = useStore(ui, (s) => s.playheadMs);
   const selection = useStore(ui, (s) => s.selection);
@@ -349,64 +351,73 @@ export function Timeline({ doc, server, ui, editable, media, session, onGesture 
           </div>
 
           <div className="tl-row" aria-label="Piste des sous-titres">
-            {doc.captions.items.map((it) => {
-              const ov = doc.captions.overrides.find((x) => x.id === it.id);
-              const g = ghost(it.id, 'caption') as Extract<Drag, { kind: 'caption' }> | null;
-              const ranges = timingRanges(doc, {
-                anchor: 'source',
-                srcStartMs: (ov?.srcStartMs ?? it.srcStartMs) as never,
-                srcEndMs: (ov?.srcEndMs ?? it.srcEndMs) as never,
-              });
-              return ranges.map((r, k) => {
-                let left = msToPx(r.editStartMs, pxPerSec);
-                let w = msToPx(r.editEndMs - r.editStartMs, pxPerSec);
-                if (g?.edge === 'start') {
-                  left += g.dx;
-                  w -= g.dx;
-                } else if (g?.edge === 'end') w += g.dx;
-                return (
-                  <div
-                    key={`${it.id}-${k}`}
-                    role="button"
-                    tabIndex={0}
-                    data-testid={`caption-${it.id}`}
-                    className={`tl-item tl-caption role-${it.speakerRole}${r.frozen ? ' frozen' : ''}${isSel('caption', it.id) ? ' selected' : ''}`}
-                    style={{ left, width: Math.max(4, w) }}
-                    onPointerDown={() => select({ kind: 'caption', id: it.id })}
-                  >
-                    <span className="tl-text">{it.words.map((w) => w.text).join(' ')}</span>
-                    {editable && (
-                      <>
-                        <span
-                          className="tl-handle start"
-                          onPointerDown={(e) =>
-                            start(e, {
-                              kind: 'caption',
-                              id: it.id,
-                              edge: 'start',
-                              x0: e.clientX,
-                              dx: 0,
-                            })
-                          }
-                        />
-                        <span
-                          className="tl-handle end"
-                          onPointerDown={(e) =>
-                            start(e, {
-                              kind: 'caption',
-                              id: it.id,
-                              edge: 'end',
-                              x0: e.clientX,
-                              dx: 0,
-                            })
-                          }
-                        />
-                      </>
-                    )}
-                  </div>
-                );
-              });
-            })}
+            {doc.captions.items
+              // Sources choisies ET autorisées aujourd'hui : une voix non autorisée n'apparaît pas.
+              .filter(
+                (it) =>
+                  doc.captions.sources.includes(it.speakerRole) &&
+                  server.audio.captionRoles.includes(it.speakerRole),
+              )
+              .map((it) => {
+                const ov = doc.captions.overrides.find((x) => x.id === it.id);
+                const g = ghost(it.id, 'caption') as Extract<Drag, { kind: 'caption' }> | null;
+                const ranges = timingRanges(doc, {
+                  anchor: 'source',
+                  srcStartMs: (ov?.srcStartMs ?? it.srcStartMs) as never,
+                  srcEndMs: (ov?.srcEndMs ?? it.srcEndMs) as never,
+                });
+                return ranges.map((r, k) => {
+                  let left = msToPx(r.editStartMs, pxPerSec);
+                  let w = msToPx(r.editEndMs - r.editStartMs, pxPerSec);
+                  if (g?.edge === 'start') {
+                    left += g.dx;
+                    w -= g.dx;
+                  } else if (g?.edge === 'end') w += g.dx;
+                  return (
+                    <div
+                      key={`${it.id}-${k}`}
+                      role="button"
+                      tabIndex={0}
+                      data-testid={`caption-${it.id}`}
+                      className={`tl-item tl-caption role-${it.speakerRole}${r.frozen ? ' frozen' : ''}${isSel('caption', it.id) ? ' selected' : ''}`}
+                      style={{ left, width: Math.max(4, w) }}
+                      onPointerDown={() => select({ kind: 'caption', id: it.id })}
+                    >
+                      <span className="tl-text">
+                        {texts?.items.find((x) => x.itemId === it.id)?.text ?? '…'}
+                      </span>
+                      {editable && (
+                        <>
+                          <span
+                            className="tl-handle start"
+                            onPointerDown={(e) =>
+                              start(e, {
+                                kind: 'caption',
+                                id: it.id,
+                                edge: 'start',
+                                x0: e.clientX,
+                                dx: 0,
+                              })
+                            }
+                          />
+                          <span
+                            className="tl-handle end"
+                            onPointerDown={(e) =>
+                              start(e, {
+                                kind: 'caption',
+                                id: it.id,
+                                edge: 'end',
+                                x0: e.clientX,
+                                dx: 0,
+                              })
+                            }
+                          />
+                        </>
+                      )}
+                    </div>
+                  );
+                });
+              })}
             {doc.captions.manual.flatMap((m) =>
               timingRanges(doc, {
                 anchor: 'source',
@@ -424,7 +435,7 @@ export function Timeline({ doc, server, ui, editable, media, session, onGesture 
                   }}
                   onPointerDown={() => select({ kind: 'caption', id: m.id })}
                 >
-                  <span className="tl-text">✎ {m.text}</span>
+                  <span className="tl-text">✎ {texts?.manual[m.id] ?? '…'}</span>
                 </div>
               )),
             )}

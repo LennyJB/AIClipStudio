@@ -379,6 +379,7 @@ function Editor({ projectId, onClose, drafts, deps }: EditorPageProps & { drafts
         editable={editable}
         media={media}
         session={session}
+        texts={s.texts}
         onGesture={gesture}
       />
 

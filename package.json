@@ -28,17 +28,18 @@
     "analysis-settings": "tsx scripts/analysis-settings.ts",
     "framing": "tsx scripts/analysis-settings.ts framing",
     "test": "vitest run",
-    "test:unit": "vitest run --project unit",
+    "test:unit": "vitest run --project unit --project web",
     "test:integration": "vitest run --project integration",
     "test:migrations": "vitest run --project unit services/api/src/migration services/api/src/db.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "tsc -p tsconfig.json && npm run typecheck --workspaces --if-present",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tests/e2e/tsconfig.json && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "smoke": "tsx scripts/smoke-api.ts",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build:web && npm run smoke"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build:web && npm run smoke",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
