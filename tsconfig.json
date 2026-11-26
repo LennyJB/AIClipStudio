@@ -1,12 +1,5 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": [
-    "scripts/**/*.ts",
-    "tests/**/*.ts",
-    "vitest.config.ts",
-    "eslint.config.js"
-  ],
-  "exclude": [
-    "tests/e2e/**"
-  ]
+  "include": ["scripts/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "eslint.config.js"],
+  "exclude": ["tests/e2e/**"]
 }

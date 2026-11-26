@@ -215,6 +215,81 @@ test('conflit : geste construit sur une ancienne tête refusé sans perte ; rech
   await b.close();
 });
 
+test('rognage au pointeur : un glissement = UNE entrée d’historique', async ({ page }) => {
+  await open(page);
+  const v = await version(page);
+  const first = segments(page).first();
+  const id = (await first.getAttribute('data-testid'))!.replace('segment-', '');
+  const before = (await first.boundingBox())!;
+  const handle = page.getByTestId(`trim-end-${id}`);
+  const h = (await handle.boundingBox())!;
+  await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 10; i++)
+    await page.mouse.move(h.x + h.width / 2 - i * 4, h.y + h.height / 2);
+  await page.mouse.up();
+  await expect.poll(() => version(page)).toBe(v + 1);
+  await expect(page.getByTestId('editor-version')).toContainText('enregistré');
+  expect((await first.boundingBox())!.width).toBeLessThan(before.width - 20);
+  const journal = await page.request.get(
+    `/api/clip-projects/${state().projectId}/edits?since=${v}`,
+  );
+  const entries = ((await journal.json()) as { entries: { ops: { type: string }[] }[] }).entries;
+  expect(entries).toHaveLength(1);
+  expect(entries[0]!.ops.map((o) => o.type)).toEqual(['trimSegment']);
+});
+
+test('disposition libre : poignées sur l’aperçu, un déplacement = une entrée', async ({ page }) => {
+  await open(page);
+  const v = await version(page);
+  await page.getByTestId('layout-preset').selectOption('custom');
+  await expect.poll(() => version(page)).toBe(v + 1);
+  const layer = page.locator('[data-testid^="layer-"]').first();
+  await expect(layer).toBeVisible();
+  const b = (await layer.boundingBox())!;
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 5; i++)
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2 + i * 10);
+  await page.mouse.up();
+  await expect.poll(() => version(page)).toBe(v + 2);
+  expect((await layer.boundingBox())!.y).toBeGreaterThan(b.y + 30);
+  // Annuler revient à la position d'avant (même réducteur, inverse exacte).
+  await page.keyboard.press('Control+z');
+  await expect.poll(async () => Math.round((await layer.boundingBox())!.y)).toBe(Math.round(b.y));
+});
+
+test('sous-titre ajouté : texte affiché pseudonymisé par le serveur, comme dans l’export', async ({
+  page,
+}) => {
+  await open(page);
+  await page.getByTestId('ruler').click({ position: { x: 60, y: 5 } });
+  await page.getByTestId('manual-new').fill('GG Théo');
+  await page.getByRole('button', { name: 'Ajouter à la tête de lecture' }).click();
+  // Un sous-titre coupé par un raccord apparaît une fois par morceau.
+  await expect(page.getByText('✎ GG [Coéquipier 1]').first()).toBeVisible();
+  await expect(page.getByText('GG Théo', { exact: true })).toHaveCount(0);
+});
+
+test('zone masquée : désactivation après confirmation explicite, avertissement permanent', async ({
+  page,
+}) => {
+  await open(page);
+  await page.getByTestId('mask-list').getByRole('button', { name: 'Pseudo' }).click();
+  await page.getByRole('button', { name: 'Désactiver…' }).click();
+  await expect(page.getByTestId('masks-disabled')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Je confirme le risque' }).click();
+  await expect(page.getByTestId('masks-disabled')).toBeVisible();
+  // La zone sensible redevient visible dans l'aperçu (aucun flou ne la remplace).
+  await expect
+    .poll(
+      async () => (await canvasPixels(page, ZONE)).filter((p) => p.every((v) => v > 220)).length,
+    )
+    .toBeGreaterThan(0);
+  await page.keyboard.press('Control+z');
+  await expect(page.getByTestId('masks-disabled')).toHaveCount(0);
+});
+
 test('proxy lu par une vraie balise <video> à travers Vite ; autre origine locale refusée', async ({
   browser,
 }) => {

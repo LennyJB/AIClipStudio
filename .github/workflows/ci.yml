@@ -50,7 +50,7 @@ jobs:
         run: npm run format:check
 
   unit:
-    name: Tests unitaires
+    name: Tests unitaires (dont interface, jsdom)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -96,6 +96,29 @@ jobs:
         run: npm run test:integration
         env:
           REQUIRE_FFMPEG: '1'
+
+  e2e:
+    name: Éditeur de bout en bout (Playwright, Chromium)
+    # API réelle (FFmpeg, transcription simulée, faux modèle : aucun appel à Claude), interface
+    # servie par Vite, Chromium dont la version est fixée par celle de Playwright.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Installer FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+      - run: npm ci
+      - name: Installer Chromium (version fixée par Playwright)
+        run: npx playwright install --with-deps chromium
+      - name: Parcours de l'éditeur (Playwright)
+        run: npm run test:e2e
 
   build:
     name: Build et démarrage de l'API

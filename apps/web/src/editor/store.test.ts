@@ -183,6 +183,33 @@ describe('reprise du brouillon (fermeture brutale)', () => {
     expect(store.getState().doc!.segments).toHaveLength(2);
   });
 
+  it('double chargement (montage double de React) pendant la restauration : un seul envoi, aucune erreur', async () => {
+    const server = new FakeEditServer(fixtureV2(), CTX);
+    const drafts = memoryDrafts();
+    const d = server.doc;
+    const next = (await import('@acs/timeline')).applyBatch(d, [split(d)], CTX).doc;
+    await drafts.save('p', [
+      {
+        requestId: crypto.randomUUID(),
+        ops: [split(d)],
+        summary: 'coupe',
+        base: 1,
+        expectedHash: await sha256Hex((await import('@acs/timeline')).canonicalJson(next)),
+        createdAt: '2026-11-26T12:00:00Z',
+      },
+    ]);
+    const { store } = setup({ server, drafts });
+    const first = store.getState().load();
+    store.getState().dispose();
+    const second = store.getState().load();
+    await Promise.all([first, second]);
+    await until(() => !store.getState().restoring);
+    expect(store.getState().status).toBe('ready');
+    expect(server.entries).toHaveLength(1);
+    expect(new Set(server.calls.map((c) => c.requestId)).size).toBe(1);
+    expect(store.getState().doc).toEqual(server.doc);
+  });
+
   it('tête différente, gestes indépendants : réappliqué par le serveur (§6.3)', async () => {
     const server = new FakeEditServer(fixtureV2(), CTX);
     const drafts = memoryDrafts();

@@ -154,6 +154,8 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
   let poll: unknown = null;
   let undoAfterSend = false;
   let disposed = false;
+  /** Chargement en cours (réutilisé : montage double de React). */
+  let loading: Promise<void> | null = null;
 
   const store = createStore<EditorState>()((set, get) => {
     /** Document affiché : serveur + lots en attente (tout ou rien ; un échec ⇒ conflit). */
@@ -271,7 +273,23 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
             set({ doc: fresh.document });
             continue;
           }
-          const doc = applyBatch(server.document, b.ops, applyContext(server)).doc;
+          // Document du serveur = base du lot + le lot, seulement si l'état connu est EXACTEMENT
+          // la base ; sinon (relecture concurrente, autre onglet), le document est relu.
+          let doc: ClipProjectV2 | null = null;
+          if (server.version === base && !r.replayed) {
+            try {
+              doc = applyBatch(server.document, b.ops, applyContext(server)).doc;
+            } catch {
+              doc = null;
+            }
+          }
+          if (!doc) {
+            set({ pending: rest });
+            const fresh = await fetchServer();
+            set({ doc: safeRecompute(fresh, rest) });
+            broadcast(fresh.version);
+            continue;
+          }
           set({
             pending: rest,
             server: {
@@ -339,6 +357,52 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
       broadcast(server.version);
     };
 
+    /** Chargement : document, brouillon (renvoyé), diffusion entre onglets, relecture. */
+    const loadOnce = async (): Promise<void> => {
+      try {
+        const server = await fetchServer();
+        const drafts = await deps.drafts.load(projectId);
+        set({
+          status: 'ready',
+          doc: server.document,
+          pending: drafts,
+          restoring: drafts.length > 0,
+        });
+        if (drafts.length) {
+          // Brouillon restauré : renvoyé avec les MÊMES requestId (aucun doublon) ; une tête
+          // différente passe par la règle de réapplication du serveur (§6.3).
+          await flush();
+          set({ restoring: false });
+          if (!get().conflict) {
+            const fresh = await fetchServer();
+            set({ doc: fresh.document });
+          }
+        }
+      } catch (err) {
+        set({ status: 'error', error: message(err) });
+        return;
+      }
+      if (disposed) return;
+      channel ??= deps.channel(`acs-editor-${projectId}`);
+      if (channel) {
+        channel.onmessage = (e) => {
+          const m = e.data as { type?: string; version?: number } | null;
+          if (m?.type === 'head' && typeof m.version === 'number') void get().refresh();
+        };
+      }
+      if (poll !== null) deps.clearInterval(poll);
+      poll = deps.setInterval(() => {
+        const s = get();
+        if (!s.server || s.pending.length || s.sending) return;
+        deps.api
+          .editsSince(projectId, s.server.version)
+          .then((r) => {
+            if (r.head.version !== get().server?.version) void get().refresh();
+          })
+          .catch(() => set({ offline: true }));
+      }, POLL_MS);
+    };
+
     return {
       projectId,
       clientId,
@@ -358,52 +422,13 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
       textsError: null,
       entries: [],
 
-      async load() {
+      load() {
         disposed = false;
-        channel?.close();
-        channel = deps.channel(`acs-editor-${projectId}`);
-        if (poll !== null) deps.clearInterval(poll);
-        poll = null;
-        try {
-          const server = await fetchServer();
-          const drafts = await deps.drafts.load(projectId);
-          set({
-            status: 'ready',
-            doc: server.document,
-            pending: drafts,
-            restoring: drafts.length > 0,
-          });
-          if (drafts.length) {
-            // Brouillon restauré : renvoyé avec les MÊMES requestId (aucun doublon) ; une tête
-            // différente passe par la règle de réapplication du serveur (§6.3).
-            await flush();
-            set({ restoring: false });
-            if (!get().conflict) {
-              const fresh = await fetchServer();
-              set({ doc: fresh.document });
-            }
-          }
-        } catch (err) {
-          set({ status: 'error', error: message(err) });
-          return;
-        }
-        if (disposed) return;
-        if (channel) {
-          channel.onmessage = (e) => {
-            const m = e.data as { type?: string; version?: number } | null;
-            if (m?.type === 'head' && typeof m.version === 'number') void get().refresh();
-          };
-        }
-        poll = deps.setInterval(() => {
-          const s = get();
-          if (!s.server || s.pending.length || s.sending) return;
-          deps.api
-            .editsSince(projectId, s.server.version)
-            .then((r) => {
-              if (r.head.version !== get().server?.version) void get().refresh();
-            })
-            .catch(() => set({ offline: true }));
-        }, POLL_MS);
+        // Montage double de React : le chargement en cours est réutilisé (aucun envoi en double).
+        loading ??= loadOnce().finally(() => {
+          loading = null;
+        });
+        return loading;
       },
 
       async dispatch(ops, summary) {
