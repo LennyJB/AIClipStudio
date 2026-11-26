@@ -106,7 +106,7 @@ describe('graphe multi-segments', () => {
   const g = pl.filterComplex;
 
   it('arrêt sur image : une image, répétée, mêmes aplats ; SILENCE numérique (aucune boucle du son)', () => {
-    expect(g).toContain('[1:v]fps=30,drawbox=');
+    expect(g).toContain('[1:v]setpts=PTS-STARTPTS,fps=30,drawbox=');
     expect(g).toContain('trim=end_frame=1,loop=loop=44:size=1:start=0');
     expect(g).toMatch(/anullsrc=r=48000:cl=stereo,atrim=end_sample=72000,[^;]*\[a1_0\]/u);
     expect(g).not.toMatch(/\[1:a/u);
@@ -118,7 +118,7 @@ describe('graphe multi-segments', () => {
   });
 
   it('segments : aplats sur l’image source avant la disposition ; nombre exact d’images ; concaténation', () => {
-    expect(g).toContain('[0:v]fps=30,drawbox=');
+    expect(g).toContain('[0:v]setpts=PTS-STARTPTS,fps=30,drawbox=');
     expect(g).toContain('trim=end_frame=301,setpts=PTS-STARTPTS[s0]');
     expect(g).toContain('[v0][v1][v2][v3]concat=n=4:v=1:a=0[cat]');
     expect(g).toContain('[a0_0][a1_0][a2_0][a3_0]concat=n=4:v=0:a=1,volume=0dB[t0]');

@@ -476,7 +476,12 @@ function multiGraph(c: Compiled, loudnorm: boolean): string {
           s.kind === 'source'
             ? `tpad=stop_mode=clone:stop_duration=1,trim=end_frame=${s.frames},setpts=PTS-STARTPTS`
             : `trim=end_frame=1,loop=loop=${s.frames - 1}:size=1:start=0,setpts=N/(${F}*TB)`;
-        parts.push(`[${s.input}:v]${prelude},setpts=PTS-STARTPTS,${frames}[s${k}]`);
+        // Horodatages remis à zéro AVANT la cadence : selon la version de FFmpeg, la recherche
+        // précise garde un léger décalage (image visible avant l'instant demandé) qui, arrondi par
+        // `fps`, répéterait ou sauterait des images.
+        parts.push(
+          `[${s.input}:v]setpts=PTS-STARTPTS,${prelude},setpts=PTS-STARTPTS,${frames}[s${k}]`,
+        );
         parts.push(
           ...layoutParts(
             { ...g, facecamZooms: camZooms },
@@ -637,7 +642,13 @@ export function buildFramePlan(i: RenderPlanV2Input, atEditMs: number): FramePla
   } else {
     const offsetMs = seg.kind === 'source' ? ((j - seg.firstFrame) * 1000) / c.fps : 0;
     input = { srcMs: seg.srcMs! + offsetMs };
-    const pre = [...sourcePrelude(g), 'setpts=PTS-STARTPTS', 'trim=end_frame=1', at].join(',');
+    const pre = [
+      'setpts=PTS-STARTPTS',
+      ...sourcePrelude(g),
+      'setpts=PTS-STARTPTS',
+      'trim=end_frame=1',
+      at,
+    ].join(',');
     parts.push(...layoutParts(g, { input: '[0:v]', pre, output: '[comp]', sfx: '' }));
   }
   parts.push(`[comp]${compositionTail(g, { beforeSubtitles: at }).join(',')}[v]`);
