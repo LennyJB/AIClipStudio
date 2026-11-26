@@ -944,8 +944,9 @@ réaction** de la 6a s'appliquent toujours au premier et au dernier segment.
 | ------------------------------------------------- | -------------------------------------------------------------- |
 | 7a — Modèle v2, opérations et scène               | fusionnée (PR #18)                                             |
 | 7b — Journal d'édition, points de contrôle et API | fusionnée (PR #19)                                             |
-| 7c — Moteur multi-segments                        | en revue                                                       |
-| 7d à 7k                                           | non commencées (chacune attend la validation de la précédente) |
+| 7c — Moteur multi-segments                        | fusionnée (PR #20)                                             |
+| 7d — Médias de travail de l'éditeur               | en revue                                                       |
+| 7e à 7k                                           | non commencées (chacune attend la validation de la précédente) |
 
 ---
 
@@ -1156,3 +1157,54 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   du moteur). Le scénario d'analyse simulé de l'API ne produit pas de proposition sur une piste
   mélangée : ce cas est testé au niveau du moteur.
 - **Code d'erreur ajouté** : `RENDER_FEATURE_UNSUPPORTED` (409, détails renvoyés).
+
+## 17. Précisions de mise en œuvre (PR 7d)
+
+- **Intégration à travers Vite sans navigateur** (décision du créateur pendant la 7d) : le plan
+  prévoyait Chromium « dans le job Playwright de la CI », alors que Playwright n'arrive qu'en 7e
+  (décision 7, § 14). La 7d lance donc un **vrai serveur Vite** (`apps/web/vite.config.ts`,
+  `changeOrigin: false`) devant l'API de test, et des requêtes HTTP reproduisant exactement les
+  en-têtes mesurés au § 5.2 (balise `<video>`, `fetch` POST, autre origine, `Host` étranger). Le
+  même scénario avec Chromium sera ajouté en 7e, avec Playwright.
+- **Médias de travail** (`packages/media/src/{proxy,thumbnails}.ts`) :
+  - proxy H.264 540 p, cadence de la source (60 i/s au plus), image clé toutes les 0,5 s, sans
+    son ni masque ; aligné sur le temps source (première image = image de début de fenêtre, sans
+    saut ni répétition : vérifié image par image) ;
+  - planche de vignettes : une seule image JPEG en grille (10 colonnes, 160 px de large, une
+    vignette par seconde au plus, 240 au plus) produite depuis l'image **masquée** ; tout aplat
+    opaque du document est appliqué (temporel compris, sur toute la fenêtre : jamais moins masqué).
+    Les masques entrent dans la clé du cache : un masque ajouté produit une nouvelle planche.
+  - Types de dérivés existants (`video_proxy`, `thumbnail`) ; traitements `video_proxy` et
+    `thumbnail_sprite` (file interactive) ; fichiers dans `storage/processing/editor/<enregistrement>/`.
+- **Préparation** : `POST /api/clip-projects/:id/editor-media` (`{ sessionId }`) prépare, pour la
+  fenêtre éditable, le proxy, la planche, les pistes de montage des **seules pistes autorisées et
+  activées** (décision 5) et leurs formes d'onde, puis prend ou prolonge le bail de la session
+  (15 minutes, renouvelé par l'éditeur). `POST …/editor-media/release` rend les baux.
+- **Baux** (migration 9 `derivative_leases`) : titulaire `editor:<projet>:<session>`. Le
+  nettoyage ne supprime jamais un dérivé sous bail actif ; la vérification est refaite sous
+  `BEGIN IMMEDIATE` (un bail pris pendant le calcul protège le dérivé). Bail expiré ou rendu : le
+  dérivé redevient un cache évinçable, et le bail est purgé. Les rendus n'utilisent aucun dérivé
+  (ils relisent l'original) et restent protégés par leur état, comme à l'étape 6.
+- **Accès protégé** (`services/api/src/clips/media-access.ts`, `editor-media.ts`) :
+  - `POST /api/clip-projects/:id/media-token` (`{ sessionId, derivativeId }`) : socket local,
+    `Host`, `Origin` obligatoire et autorisé, `Sec-Fetch-Site: same-origin` s'il est présent,
+    `Content-Type: application/json`, bail actif de la session sur ce dérivé ;
+  - `GET|HEAD /api/editor-media/:derivativeId?token=…` (requêtes `Range`) : socket local, `Host`,
+    `Origin` absent ou autorisé, `Sec-Fetch-Site`, jeton, puis droits **revérifiés à chaque
+    requête** (même enregistrement, bail actif, piste audio toujours autorisée et activée) ; le
+    fichier est résolu en base et ouvert sans suivre de lien ;
+  - jeton : charge JSON en base64url et signature HMAC-SHA-256 (256 bits), clé aléatoire en
+    mémoire renouvelée à chaque démarrage, 10 minutes, lié au projet, au dérivé et au bail ;
+  - refus : `403 FORBIDDEN` avec un message générique (la raison précise va aux journaux) ;
+  - `OPTIONS` ⇒ 403, aucun `Access-Control-Allow-Origin` ; `Cross-Origin-Resource-Policy`,
+    `Cache-Control: no-store`, `nosniff`, `Referrer-Policy: no-referrer` ;
+  - le paramètre `token` est masqué dans les journaux (sérialiseur des requêtes) ;
+  - les mêmes contrôles servent la planche de vignettes, les pistes de montage et les formes
+    d'onde de l'éditeur.
+- **`EDITOR_ALLOWED_ORIGINS`** : origines `http:` locales exactes (127.0.0.1, localhost, [::1]),
+  sans chemin ni identifiants ; toute autre valeur empêche le démarrage. Les `Host` acceptés en
+  sont déduits (`hôte:port`) ; la liste n'est jamais élargie au port de l'API.
+- **Polices** : `GET /api/editor/fonts/:file`, liste fermée déduite de `assets/fonts` (fichiers
+  `.ttf`/`.otf`), connexion locale et `Host` autorisé.
+- **`npm run doctor`** : avertissement si `API_HOST` n'est pas une adresse de bouclage.
+- **Code d'erreur ajouté** : `FORBIDDEN` (403).
