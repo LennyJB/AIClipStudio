@@ -404,4 +404,52 @@ describe.skipIf(!enabled)('Moteur multi-segments par l’API (étape 7c)', () =>
       }),
     ).toThrow(/pas couverte/);
   }, 300_000);
+
+  it('élargissement rejoué après un second élargissement : même réponse que la première opération (version et fenêtre), replayed: true', async () => {
+    const { video, inst } = await setup({ EDITOR_WINDOW_MARGIN_SEC: '10' });
+    const t = await prepare(inst, video);
+    const d0 = await t.doc();
+    const w0 = d0.document.source.editWindow;
+    interface WindowBody extends ErrorBody {
+      version: number;
+      replayed: boolean;
+      window: { srcStartMs: number; srcEndMs: number; integrityManifestId: string };
+    }
+    const extend = (body: Record<string, unknown>) =>
+      t.call<WindowBody>('POST', `/api/clip-projects/${t.project}/window`, body);
+
+    // 1. Premier élargissement.
+    const first = {
+      requestId: randomUUID(),
+      baseRevision: d0.version,
+      srcStartMs: Math.max(0, w0.srcStartMs - 5000),
+      srcEndMs: w0.srcEndMs + 5000,
+    };
+    const r1 = await extend(first);
+    expect(r1.status, JSON.stringify(r1.body)).toBe(200);
+    expect(r1.body).toMatchObject({
+      version: d0.version + 1,
+      replayed: false,
+      window: { srcStartMs: first.srcStartMs, srcEndMs: first.srcEndMs },
+    });
+
+    // 2. Second élargissement (nouvelle version, nouveau manifeste).
+    const r2 = await extend({
+      requestId: randomUUID(),
+      baseRevision: r1.body.version,
+      srcStartMs: Math.max(0, first.srcStartMs - 5000),
+      srcEndMs: first.srcEndMs + 5000,
+    });
+    expect(r2.status, JSON.stringify(r2.body)).toBe(200);
+    expect(r2.body.version).toBe(r1.body.version + 1);
+    expect(r2.body.window.integrityManifestId).not.toBe(r1.body.window.integrityManifestId);
+    expect((await t.doc()).document.source.editWindow).toEqual(r2.body.window);
+
+    // 3. Rejeu de la première requête : résultat de la PREMIÈRE opération, rien n'est écrit.
+    const replay = await extend(first);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body).toEqual({ ...r1.body, replayed: true });
+    expect(replay.body.window).not.toEqual(r2.body.window);
+    expect((await t.doc()).version).toBe(r2.body.version);
+  }, 300_000);
 });

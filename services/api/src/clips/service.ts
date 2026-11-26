@@ -696,7 +696,7 @@ export class ClipProjectService {
       return {
         version: prior.seq,
         replayed: true,
-        window: this.edits.head(projectId).doc.source.editWindow,
+        window: this.windowAt(projectId, prior.seq),
       };
     }
     const head = this.edits.head(projectId);
@@ -797,7 +797,15 @@ export class ClipProjectService {
         );
       })
       .immediate();
-    return { ...r, window: this.edits.head(projectId).doc.source.editWindow };
+    return { ...r, window: this.windowAt(projectId, r.version) };
+  }
+
+  /**
+   * Fenêtre éditable à la version produite par une requête : réponse déterministe, y compris au
+   * rejeu après d'autres modifications (jamais la fenêtre courante associée à une ancienne version).
+   */
+  private windowAt(projectId: string, version: number) {
+    return this.edits.docAt(projectId, version).doc.source.editWindow;
   }
 
   /**
