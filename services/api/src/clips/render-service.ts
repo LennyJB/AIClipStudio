@@ -267,6 +267,13 @@ export class RenderService {
       },
       audio,
       captions,
+      // Sous-titres manuels et calques texte : pseudonymisés, comme la transcription.
+      manualCaptions: Object.fromEntries(
+        doc.captions.manual.map((m) => [m.id, pseudonymize(m.text).text]),
+      ),
+      overlayTexts: Object.fromEntries(
+        doc.overlays.filter((o) => o.text !== null).map((o) => [o.id, pseudonymize(o.text!).text]),
+      ),
       probeBytes: manifest.probeBytes,
     };
     let plan: RenderPlan;

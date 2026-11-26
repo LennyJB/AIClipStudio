@@ -374,7 +374,7 @@ describe.skipIf(!enabled)('médias de travail de l’éditeur par l’API (étap
       url: `/api/clip-projects/${project}/editor-media/release`,
       payload: { sessionId },
     });
-    expect(rel.json()).toEqual({ released: 4 });
+    expect(rel.json()).toMatchObject({ released: 4, checkpoint: expect.any(Number) });
     const r2 = await inst.services.storage.clean({ dryRun: false, evictAllCache: true });
     expect(r2.items.some((i) => i.derivativeId === proxy.id)).toBe(true);
     expect(existsSync(abs)).toBe(false);

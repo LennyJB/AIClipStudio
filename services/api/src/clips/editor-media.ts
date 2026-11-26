@@ -115,11 +115,15 @@ export class EditorMediaService {
     };
   }
 
-  /** Fermeture de l'éditeur : baux rendus (les médias redeviennent un cache évinçable). */
+  /**
+   * Fermeture de l'éditeur : baux rendus (les médias redeviennent un cache évinçable) et point de
+   * contrôle à la version courante (§6.1 : chargement borné ; le journal n'est jamais tronqué).
+   */
   release(projectId: string, body: unknown) {
     const { sessionId } = parse(EditorSessionBodySchema, body);
     this.clips.projectRow(projectId);
-    return { released: this.leases.release(this.holder(projectId, sessionId)) };
+    const released = this.leases.release(this.holder(projectId, sessionId));
+    return { released, checkpoint: this.clips.edits.checkpoint(projectId) };
   }
 
   /**

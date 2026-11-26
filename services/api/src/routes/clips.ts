@@ -97,6 +97,18 @@ export function registerClipRoutes(app: FastifyInstance, services: Services) {
     return clips.editorDocument(id);
   });
 
+  // Textes affichés (corrigés, pseudonymisés) de la version courante : aperçu de l'éditeur.
+  app.get('/api/clip-projects/:id/texts', async (req) => {
+    const { id } = parse(IdParams, req.params);
+    return clips.editorTexts(id);
+  });
+
+  // « Enregistrer une version » : point de contrôle immuable à la version courante.
+  app.post('/api/clip-projects/:id/checkpoint', async (req) => {
+    const { id } = parse(IdParams, req.params);
+    return clips.saveVersion(id);
+  });
+
   /** Lot d'opérations, annulation ou rétablissement (journal en ajout seul). */
   app.post('/api/clip-projects/:id/edits', async (req) => {
     const { id } = parse(IdParams, req.params);
