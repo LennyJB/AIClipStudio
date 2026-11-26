@@ -10,8 +10,10 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@acs/timeline": "*",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "zustand": "5.1.0"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.2",

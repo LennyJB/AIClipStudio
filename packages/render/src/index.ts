@@ -5,6 +5,7 @@
  */
 export * from './audio';
 export * from './effects';
+export * from './editor-graph';
 export * from './ffmpeg-args';
 export * from './layout';
 export * from './plan';
