@@ -13,6 +13,37 @@ import {
 /** Racine du dépôt (services/api/src → ../../..). */
 export const ROOT_DIR = path.resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 
+/** `API_HOST` est-elle une adresse de bouclage (API inaccessible depuis le réseau) ? */
+export function isLoopbackHost(host: string): boolean {
+  const h = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/gu, '');
+  return h === 'localhost' || h === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(h);
+}
+
+/** Noms d'hôte locaux acceptés pour l'interface de l'éditeur. */
+const LOCAL_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+/**
+ * Origine `http:` locale normalisée (`http://hôte:port`), ou null si la valeur n'en est pas une
+ * exactement (schéma, nom d'hôte, chemin, identifiants, paramètres).
+ */
+export function parseLocalOrigin(raw: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'http:' || !LOCAL_HOSTNAMES.has(u.hostname)) return null;
+  if (u.username || u.password || u.search || u.hash || (u.pathname !== '/' && u.pathname !== '')) {
+    return null;
+  }
+  if (raw.replace(/\/$/u, '') !== u.origin) return null;
+  return u.origin;
+}
+
 const emptyToUndefined = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? undefined : v);
 const bool = (def: boolean) =>
   z
@@ -121,6 +152,34 @@ export const EnvSchema = z.object({
    * la fenêtre de leur manifeste ; l'élargir crée un nouveau manifeste.
    */
   EDITOR_WINDOW_MARGIN_SEC: z.coerce.number().int().min(10).max(600).default(60),
+  /**
+   * Éditeur (étape 7d) : origines EXACTES de l'interface autorisées à lire les médias de travail
+   * (proxy non masqué, pistes de montage). Uniquement des origines `http:` locales (127.0.0.1,
+   * localhost, [::1]) : toute autre valeur fait échouer le démarrage. Les en-têtes `Host`
+   * acceptés en sont DÉDUITS (aucune seconde liste).
+   */
+  EDITOR_ALLOWED_ORIGINS: z
+    .string()
+    .default('http://127.0.0.1:5173,http://localhost:5173')
+    .transform((v, ctx) => {
+      const out: string[] = [];
+      for (const raw of v
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)) {
+        const origin = parseLocalOrigin(raw);
+        if (!origin) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `origine non autorisée (http: local uniquement, sans chemin) : ${raw}`,
+          });
+          continue;
+        }
+        if (!out.includes(origin)) out.push(origin);
+      }
+      if (!out.length) ctx.addIssue({ code: 'custom', message: 'aucune origine autorisée' });
+      return out;
+    }),
   CLIP_WINDOW_MARGIN_SEC: z.coerce.number().int().min(0).max(600).default(30),
   CLIP_WINDOW_GRID_SEC: z.coerce.number().int().min(1).max(600).default(30),
   /* ---------------------------- Analyse éditoriale ---------------------------- */
@@ -203,7 +262,13 @@ export interface AppConfig {
   cache: { maxBytes: number };
   render: { finalCrf: number; x264Preset: string; previewHeight: number; probeBytes: number };
   clipWindow: { marginMs: number; gridMs: number };
-  editor: { windowMarginMs: number };
+  editor: {
+    windowMarginMs: number;
+    /** Origines exactes de l'interface (`http://hôte:port`). */
+    allowedOrigins: string[];
+    /** En-têtes `Host` acceptés : DÉDUITS des origines (hôte:port), jamais d'autre liste. */
+    allowedHosts: string[];
+  };
   analysis: {
     effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     triageEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -305,7 +370,11 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
       previewHeight: e.RENDER_PREVIEW_HEIGHT,
       probeBytes: e.RENDER_PROBE_BYTES,
     },
-    editor: { windowMarginMs: e.EDITOR_WINDOW_MARGIN_SEC * 1000 },
+    editor: {
+      windowMarginMs: e.EDITOR_WINDOW_MARGIN_SEC * 1000,
+      allowedOrigins: e.EDITOR_ALLOWED_ORIGINS,
+      allowedHosts: e.EDITOR_ALLOWED_ORIGINS.map((o) => new URL(o).host),
+    },
     clipWindow: {
       marginMs: e.CLIP_WINDOW_MARGIN_SEC * 1000,
       gridMs: e.CLIP_WINDOW_GRID_SEC * 1000,

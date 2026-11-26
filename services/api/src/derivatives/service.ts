@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import path from 'node:path';
 import { z } from 'zod';
 import {
   AUDIO_GENERATOR_VERSION,
@@ -11,6 +12,13 @@ import {
   extractFrame,
   fingerprintFile,
   FRAME_GENERATOR_VERSION,
+  generateProxy,
+  generateThumbnails,
+  PROXY_GENERATOR_VERSION,
+  PROXY_PROFILE,
+  THUMBNAIL_GENERATOR_VERSION,
+  THUMBNAIL_PROFILE,
+  thumbnailLayout,
   type NormalizedRect,
   selectEditorTracks,
   selectTranscriptionTracks,
@@ -85,6 +93,32 @@ const AudioJobParams = z
   })
   .strict();
 const WaveformJobParams = z.object({ derivativeId: z.string().min(1) }).strict();
+const rangeSchema = z
+  .object({ startMs: z.number().int().nonnegative(), endMs: z.number().int().positive() })
+  .strict()
+  .refine((r) => r.startMs < r.endMs, 'plage vide');
+const rectSchema = z
+  .object({
+    x: z.number().min(0).max(1),
+    y: z.number().min(0).max(1),
+    w: z.number().min(0).max(1),
+    h: z.number().min(0).max(1),
+  })
+  .strict();
+const ProxyJobParams = z.object({ recordingId: z.uuid(), range: rangeSchema }).strict();
+const ThumbnailJobParams = z
+  .object({ recordingId: z.uuid(), range: rangeSchema, masks: z.array(rectSchema).max(50) })
+  .strict();
+
+/** Médias de travail de l'éditeur demandés pour une fenêtre (étape 7d). */
+export interface EditorMediaResult {
+  status: 'ready' | 'pending';
+  proxy: DerivativeDto | null;
+  thumbnails: DerivativeDto | null;
+  audio: DerivativeDto[];
+  waveforms: DerivativeDto[];
+  jobs: JobDto[];
+}
 
 /**
  * Production à la demande et cache des fichiers dérivés.
@@ -415,6 +449,213 @@ export class DerivativeService {
     return { job };
   }
 
+  /* ------------------------- Médias de travail (7d) ------------------------- */
+
+  /** Proxy et vignettes : UNIQUEMENT dans `processing/editor/` (donnée sensible, §5.2). */
+  private editorRelPath(recordingId: string, prefix: string, key: string, ext: string) {
+    return `processing/editor/${recordingId}/${prefix}-${key.slice(0, 16)}.${ext}`;
+  }
+
+  private proxySpec(
+    fp: string,
+    recordingId: string,
+    range: { startMs: number; endMs: number },
+  ): Spec {
+    const params = { ...PROXY_PROFILE };
+    const key = derivativeCacheKey({
+      sourceFingerprint: fp,
+      kind: 'video_proxy',
+      audioIndex: null,
+      range,
+      params,
+      generatorVersion: PROXY_GENERATOR_VERSION,
+    });
+    return {
+      key,
+      kind: 'video_proxy',
+      audioIndex: null,
+      range,
+      params,
+      paramsJson: canonicalJson(params),
+      version: PROXY_GENERATOR_VERSION,
+      relPath: this.editorRelPath(recordingId, 'proxy', key, 'mp4'),
+    };
+  }
+
+  /** Les masques entrent dans la clé : un masque ajouté ou modifié produit une nouvelle planche. */
+  private thumbnailSpec(
+    fp: string,
+    recordingId: string,
+    range: { startMs: number; endMs: number },
+    masks: readonly NormalizedRect[],
+  ): Spec {
+    const params = { ...THUMBNAIL_PROFILE, masks: masks.map((m) => ({ ...m })) };
+    const key = derivativeCacheKey({
+      sourceFingerprint: fp,
+      kind: 'thumbnail',
+      audioIndex: null,
+      range,
+      params,
+      generatorVersion: THUMBNAIL_GENERATOR_VERSION,
+    });
+    return {
+      key,
+      kind: 'thumbnail',
+      audioIndex: null,
+      range,
+      params,
+      paramsJson: canonicalJson(params),
+      version: THUMBNAIL_GENERATOR_VERSION,
+      relPath: this.editorRelPath(recordingId, 'vignettes', key, 'jpg'),
+    };
+  }
+
+  /**
+   * Médias de travail d'une fenêtre éditable : proxy (sans masque), planche de vignettes MASQUÉE,
+   * pistes de montage des seules pistes demandées (autorisées et activées : choix de l'appelant)
+   * et leurs formes d'onde. Disponibles, ou traitements créés (file interactive).
+   */
+  requestEditorMedia(
+    recordingId: string,
+    range: { startMs: number; endMs: number },
+    masks: readonly NormalizedRect[],
+    audioIndexes: readonly number[],
+  ): EditorMediaResult {
+    const { rec, fp } = this.loadRecording(recordingId);
+    if (!rec.video?.width || !rec.video.height) {
+      throw new AppError('MEDIA_UNSUPPORTED', 'Aucune piste vidéo exploitable');
+    }
+    const jobs: JobDto[] = [];
+    const ensure = (
+      spec: Spec,
+      type: 'video_proxy' | 'thumbnail_sprite',
+      params: Record<string, unknown>,
+    ) => {
+      const found = this.findUsable(recordingId, fp, spec);
+      if (found) return found;
+      const { job } = this.runnerRef().enqueue({
+        type,
+        lane: 'interactive',
+        targetKey: `${type}:${spec.key}`,
+        recordingId,
+        params,
+        files: outputFiles(spec.relPath),
+      });
+      jobs.push(job);
+      return null;
+    };
+    const proxy = ensure(this.proxySpec(fp, recordingId, range), 'video_proxy', {
+      recordingId,
+      range,
+    });
+    const thumbnails = ensure(
+      this.thumbnailSpec(fp, recordingId, range, masks),
+      'thumbnail_sprite',
+      {
+        recordingId,
+        range,
+        masks: masks.map((m) => ({ ...m })),
+      },
+    );
+    const audio = audioIndexes.length
+      ? this.requestAudio(recordingId, 'audio_stem', [...audioIndexes], range, 'interactive')
+      : { audio: [], waveforms: [], jobs: [] };
+    jobs.push(...audio.jobs);
+    return {
+      status: jobs.length ? 'pending' : 'ready',
+      proxy,
+      thumbnails,
+      audio: audio.audio,
+      waveforms: audio.waveforms,
+      jobs,
+    };
+  }
+
+  private async runProxyJob(job: JobDto, { signal, reportProgress }: JobHandlerContext) {
+    const p = ProxyJobParams.parse(job.params);
+    const { rec, fp, sourcePath } = this.loadRecording(p.recordingId);
+    const spec = this.proxySpec(fp, rec.id, p.range);
+    const existing = this.findUsable(rec.id, fp, spec);
+    if (existing) return { derivativeIds: [existing.id] };
+    await this.assertSourceUnchanged(sourcePath, fp);
+    const res = await generateProxy({
+      ffmpegPath: this.ctx.config.tools.ffmpeg,
+      inputPath: sourcePath,
+      outputPath: this.abs(spec.relPath),
+      allowedDir: path.join(this.ctx.config.paths.processing, 'editor'),
+      windowStartMs: p.range.startMs,
+      windowEndMs: p.range.endMs,
+      sourceFps: rec.video?.fps ?? null,
+      probeBytes: this.ctx.config.render.probeBytes,
+      signal,
+      onProgress: reportProgress,
+    });
+    const d = this.repo.upsert({
+      id: randomUUID(),
+      cacheKey: spec.key,
+      recordingId: rec.id,
+      sourceFingerprint: fp,
+      kind: 'video_proxy',
+      audioIndex: null,
+      range: spec.range,
+      paramsJson: spec.paramsJson,
+      generatorVersion: spec.version,
+      inputDerivativeId: null,
+      relPath: spec.relPath,
+      sizeBytes: res.sizeBytes,
+      durationMs: res.durationMs,
+    });
+    return { derivativeIds: [d.id] };
+  }
+
+  private async runThumbnailJob(job: JobDto, { signal }: JobHandlerContext) {
+    const p = ThumbnailJobParams.parse(job.params);
+    const { rec, fp, sourcePath } = this.loadRecording(p.recordingId);
+    const spec = this.thumbnailSpec(fp, rec.id, p.range, p.masks);
+    const existing = this.findUsable(rec.id, fp, spec);
+    if (existing) return { derivativeIds: [existing.id] };
+    if (!rec.video?.width || !rec.video.height) {
+      throw new AppError('MEDIA_UNSUPPORTED', 'Aucune piste vidéo exploitable');
+    }
+    await this.assertSourceUnchanged(sourcePath, fp);
+    const res = await generateThumbnails({
+      ffmpegPath: this.ctx.config.tools.ffmpeg,
+      inputPath: sourcePath,
+      outputPath: this.abs(spec.relPath),
+      allowedDir: path.join(this.ctx.config.paths.processing, 'editor'),
+      windowStartMs: p.range.startMs,
+      windowEndMs: p.range.endMs,
+      videoWidth: rec.video.width,
+      videoHeight: rec.video.height,
+      masks: p.masks,
+      probeBytes: this.ctx.config.render.probeBytes,
+      signal,
+    });
+    const d = this.repo.upsert({
+      id: randomUUID(),
+      cacheKey: spec.key,
+      recordingId: rec.id,
+      sourceFingerprint: fp,
+      kind: 'thumbnail',
+      audioIndex: null,
+      range: spec.range,
+      paramsJson: spec.paramsJson,
+      generatorVersion: spec.version,
+      inputDerivativeId: null,
+      relPath: spec.relPath,
+      sizeBytes: res.sizeBytes,
+      durationMs: null,
+    });
+    return { derivativeIds: [d.id] };
+  }
+
+  /** Disposition de la planche de vignettes (déduite de la fenêtre et des dimensions source). */
+  thumbnailLayoutFor(d: DerivativeDto) {
+    const rec = this.recordings.get(d.recordingId);
+    if (d.srcStartMs === null || !rec?.video?.width || !rec.video.height) return null;
+    return thumbnailLayout(d.srcStartMs, d.srcEndMs!, rec.video.width, rec.video.height);
+  }
+
   /* --------------------------------- Images --------------------------------- */
 
   /**
@@ -534,6 +775,8 @@ export class DerivativeService {
         this.runAudioJob(job, hctx, 'audio_transcription'),
       extract_audio_stems: (job, hctx) => this.runAudioJob(job, hctx, 'audio_stem'),
       compute_waveform: (job, hctx) => this.runWaveformJob(job, hctx),
+      video_proxy: (job, hctx) => this.runProxyJob(job, hctx),
+      thumbnail_sprite: (job, hctx) => this.runThumbnailJob(job, hctx),
     };
   }
 

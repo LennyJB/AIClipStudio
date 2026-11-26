@@ -1,6 +1,7 @@
 import { pino } from 'pino';
 import type { FastifyServerOptions } from 'fastify';
 import type { AppConfig } from './config';
+import { redactToken } from './clips/media-access';
 
 /**
  * Logs JSON structurés (pino) en production/test ; affichage lisible en dev.
@@ -12,6 +13,15 @@ export function loggerOptions(config: AppConfig): NonNullable<FastifyServerOptio
     redact: {
       paths: ['req.headers.authorization', 'req.headers["x-api-key"]', '*.apiKey'],
       censor: '[masqué]',
+    },
+    // Jeton des médias de l'éditeur (paramètre `token` de l'URL) : jamais journalisé.
+    serializers: {
+      req: (req: { method: string; url: string; hostname: string; ip: string }) => ({
+        method: req.method,
+        url: redactToken(req.url),
+        hostname: req.hostname,
+        remoteAddress: req.ip,
+      }),
     },
   };
   if (config.env === 'development' && process.stdout.isTTY) {

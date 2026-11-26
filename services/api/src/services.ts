@@ -2,6 +2,9 @@ import { ClaudeModel, type EditorialModel } from '@acs/editorial';
 import { AnalysisService } from './analysis/service';
 import type { AppContext } from './context';
 import { DerivativeService } from './derivatives/service';
+import { LeaseRepository } from './derivatives/leases';
+import { EditorMediaService } from './clips/editor-media';
+import { MediaAccess } from './clips/media-access';
 import { JobRunner } from './jobs/runner';
 import { StorageService } from './storage/service';
 import { TranscriptionService } from './transcriptions/service';
@@ -20,6 +23,8 @@ export interface Services {
   exportAudio: ExportAudioService;
   clips: ClipProjectService;
   renders: RenderService;
+  /** Médias de travail de l'éditeur (étape 7d) : préparation, baux, accès protégé. */
+  editorMedia: EditorMediaService;
 }
 
 export interface ServiceOptions {
@@ -50,6 +55,14 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
   const exportAudio = new ExportAudioService(ctx);
   const clips = new ClipProjectService(ctx, review, analysis, exportAudio);
   const renders = new RenderService(ctx, clips, exportAudio, () => runner);
+  const editorMedia = new EditorMediaService(
+    ctx,
+    clips,
+    derivatives,
+    exportAudio,
+    new MediaAccess(ctx.config.editor),
+    new LeaseRepository(ctx.db),
+  );
   const runner: JobRunner = new JobRunner(
     ctx,
     {
@@ -77,6 +90,7 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
     exportAudio,
     clips,
     renders,
+    editorMedia,
   };
 }
 

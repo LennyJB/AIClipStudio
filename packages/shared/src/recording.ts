@@ -22,7 +22,9 @@ export type JobType =
   | 'transcribe_recording'
   | 'prepare_analysis'
   | 'run_analysis'
-  | 'render_clip';
+  | 'render_clip'
+  | 'video_proxy'
+  | 'thumbnail_sprite';
 
 /**
  * File d'exécution :

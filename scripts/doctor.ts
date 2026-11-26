@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { mkdir } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { WhisperWorker, WORKER_SCRIPT } from '@acs/transcription';
-import { loadConfig, loadEnvFile, ROOT_DIR } from '../services/api/src/config';
+import { isLoopbackHost, loadConfig, loadEnvFile, ROOT_DIR } from '../services/api/src/config';
 
 const { values: cli } = parseArgs({
   options: {
@@ -164,6 +164,17 @@ async function main() {
   } catch (err) {
     add('SQLite (better-sqlite3)', 'fail', err instanceof Error ? err.message : String(err));
   }
+
+  // Écoute de l'API (étape 7d) : le proxy non masqué de l'éditeur n'est servi qu'à une connexion
+  // locale, mais une écoute sur le réseau expose toutes les autres routes.
+  add(
+    'Adresse d’écoute de l’API',
+    isLoopbackHost(config.server.host) ? 'ok' : 'warn',
+    isLoopbackHost(config.server.host)
+      ? `${config.server.host} (boucle locale)`
+      : `${config.server.host} n’est pas une adresse de bouclage : l’API est joignable depuis le réseau. Les médias de l’éditeur restent refusés à toute connexion non locale ; préférez API_HOST=127.0.0.1`,
+    false,
+  );
 
   // Stockage
   try {

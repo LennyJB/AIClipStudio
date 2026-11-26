@@ -174,6 +174,11 @@ export class ClipProjectService {
 
   /* ------------------------------- Lecture ------------------------------- */
 
+  /** Enregistrement d'un projet (médias de travail de l'éditeur). */
+  recordingOf(row: ProjectRow): RecordingDto {
+    return this.recording(row.recordingId);
+  }
+
   private recording(id: string): RecordingDto {
     const rec = this.recordings.get(id);
     if (!rec) throw new AppError('NOT_FOUND', 'Enregistrement introuvable');
