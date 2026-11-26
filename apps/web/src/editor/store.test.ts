@@ -15,12 +15,17 @@ import { fakeChannels, FakeEditServer, sha256Hex } from './test/fake-server';
 const CTX = { allowedAudioIndexes: [1], allowedCaptionRoles: ['mic'] };
 
 function setup(
-  o: { server?: FakeEditServer; drafts?: DraftStore; channels?: EditorDeps['channel'] } = {},
+  o: {
+    server?: FakeEditServer;
+    drafts?: DraftStore;
+    channels?: EditorDeps['channel'];
+    api?: EditorDeps['api'];
+  } = {},
 ) {
   const server = o.server ?? new FakeEditServer(fixtureV2(), CTX);
   const drafts = o.drafts ?? memoryDrafts();
   const deps: EditorDeps = {
-    api: server.api(),
+    api: o.api ?? server.api(),
     drafts,
     channel: o.channels ?? (() => null),
     uuid: () => crypto.randomUUID(),
@@ -198,6 +203,14 @@ describe('reprise du brouillon (fermeture brutale)', () => {
         createdAt: '2026-11-26T12:00:00Z',
       },
     ]);
+    // Montage double de React : load(), dispose(), load() dans la même tâche. Le chargement en
+    // cours est réutilisé : le brouillon n'est lu (et renvoyé) qu'une fois.
+    let draftReads = 0;
+    const load = drafts.load.bind(drafts);
+    drafts.load = async (id) => {
+      draftReads++;
+      return load(id);
+    };
     const { store } = setup({ server, drafts });
     const first = store.getState().load();
     store.getState().dispose();
@@ -206,7 +219,8 @@ describe('reprise du brouillon (fermeture brutale)', () => {
     await until(() => !store.getState().restoring);
     expect(store.getState().status).toBe('ready');
     expect(server.entries).toHaveLength(1);
-    expect(new Set(server.calls.map((c) => c.requestId)).size).toBe(1);
+    expect(server.calls).toHaveLength(1);
+    expect(draftReads).toBe(1);
     expect(store.getState().doc).toEqual(server.doc);
   });
 
@@ -309,6 +323,20 @@ describe('plusieurs onglets', () => {
 });
 
 describe('garde-fous', () => {
+  it('document divergent (même version, résultat différent sur le serveur) : refusé, conflit sans perte', async () => {
+    const { server, store, drafts } = setup();
+    await store.getState().load();
+    // Divergence simulée : le serveur a un autre document à la MÊME version.
+    (server as unknown as { base: ClipProjectV2 }).base = {
+      ...server.base,
+      layout: { ...server.base.layout, focusX: 0.123 },
+    };
+    await store.getState().dispatch([{ type: 'setMode', mode: 'enrichi' }], 'mode');
+    await until(() => store.getState().conflict !== null);
+    expect(server.entries).toHaveLength(0);
+    expect((await drafts.load('p')).map((b) => b.summary)).toEqual(['mode']);
+  });
+
   it('annuler l’ajout d’un masque exige une confirmation explicite', async () => {
     const { server, store } = setup();
     await store.getState().load();

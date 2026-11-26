@@ -73,6 +73,7 @@ test('aperçu canvas : zone sensible visible sans masque (contre-épreuve), apla
   // Sous-titres : seules les sources autorisées (micro), textes pseudonymisés par le serveur.
   await expect(page.getByText(/\[Coéquipier 1\]/u).first()).toBeVisible();
   await expect(page.getByText(/SECRET/u)).toHaveCount(0);
+  await expect(page.locator('.tl-caption.role-discord')).toHaveCount(0);
   await expect(page.getByText(/Théo/u)).toHaveCount(0);
   await expect
     .poll(

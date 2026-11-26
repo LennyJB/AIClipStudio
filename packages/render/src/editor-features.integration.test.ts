@@ -305,6 +305,10 @@ describe.skipIf(!enabled)('fonctions de l’éditeur (FFmpeg réel)', () => {
     const f = frameAt(out, 2);
     // Centre de la zone sensible : toujours noir (un flou appliqué AVANT l'aplat la rendrait grise).
     expect(black(f.rgb(...P(Z.mask.x + Z.mask.w / 2, Z.mask.y + Z.mask.h / 2)))).toBe(true);
+    // Juste sous la zone masquée (dans le flou) : aucun halo blanc diffusé hors de l'aplat (un flou
+    // appliqué AVANT l'aplat étalerait la zone sensible autour de lui).
+    const halo = f.rgb(...P(Z.mask.x + Z.mask.w / 2, Z.mask.y + Z.mask.h + 8));
+    expect(halo[0] < 40 && halo[1] < 40, `halo ${halo}`).toBe(true);
     // Frontière rouge/bleu floutée : mélange des deux couleurs.
     const [r, , b] = f.rgb(...P(640, 300));
     expect(r > 50 && b > 50, `frontière floutée ${[r, b]}`).toBe(true);
