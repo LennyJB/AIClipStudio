@@ -1106,8 +1106,14 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   quel que soit le nombre de coupes (fréquence non entière comprise). L'audio est coupé à
   l'échantillon près (48 échantillons par milliseconde) ; l'écart image / son à une coupe reste
   inférieur à une image et ne se cumule pas.
-- **Image source d'un segment** : celle qui est visible à son instant source de début (comportement
-  de la recherche précise de FFmpeg) ; même règle pour l'image figée d'un arrêt sur image.
+- **Image source de début d'un segment** (recherche précise de FFmpeg) : quand l'instant source
+  tombe entre deux images, FFmpeg < 7 prend celle qui le couvre et FFmpeg ≥ 7 la suivante ; les deux
+  sont à l'image près, et identiques quand l'instant tombe sur une image. Même règle pour l'image
+  figée d'un arrêt sur image, et pour l'image exacte (même version, même choix que le rendu). Les
+  horodatages de chaque branche sont remis à zéro AVANT la cadence (`fps`) : sans cela, FFmpeg
+  récent répétait ou sautait des images (constaté sur la CI Windows, corrigé et testé). Lire avant
+  l'instant pour couper dans le graphe a été écarté : la lecture pourrait sortir de la zone protégée
+  par le manifeste, et l'origine des horodatages diffère elle aussi selon les versions.
 - **Arrêt sur image** : une image (aplats compris) répétée, **silence numérique** (`anullsrc`) sur
   chaque piste. **Vide** : fond de la mise en page (`layout.background`, aucune image source),
   silence numérique. Les zooms de la facecam sont exprimés dans le temps de chaque branche.

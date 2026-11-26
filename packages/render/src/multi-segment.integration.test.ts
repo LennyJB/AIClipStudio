@@ -166,18 +166,41 @@ async function render(pl: RenderPlan, source: string) {
   return out;
 }
 
-/** Numéro d'image source attendu pour chaque image de sortie (null : vide). */
-function expectedSourceFrames(pl: RenderPlan, fps: number): (number | null)[] {
-  const out: (number | null)[] = [];
+/**
+ * Écarts entre les images de sortie et le montage attendu (liste vide si tout est exact) :
+ *  - vide : aucune image source ;
+ *  - segment source : images source CONTIGUËS (aucune répétée ni sautée) à partir de l'image de
+ *    début ; arrêt sur image : la même image partout ;
+ *  - image de début : celle qui couvre l'instant source (FFmpeg < 7) ou la première à partir de
+ *    cet instant (FFmpeg ≥ 7) ; identiques quand l'instant tombe sur une image.
+ */
+function frameProblems(
+  frames: { source: number | null }[],
+  pl: RenderPlan,
+  fps: number,
+): { segment: string; problem: string }[] {
+  const out: { segment: string; problem: string }[] = [];
+  const total = pl.segments!.reduce((n, s) => n + s.frames, 0);
+  if (frames.length !== total)
+    out.push({ segment: '*', problem: `${frames.length} images au lieu de ${total}` });
   for (const s of pl.segments!) {
-    for (let m = 0; m < s.frames; m++) {
-      if (s.kind === 'gap') out.push(null);
-      else {
-        // Image VISIBLE à l’instant source (celle qui couvre cet instant).
-        const first = Math.floor((s.srcMs! * fps) / 1000 + 1e-6);
-        out.push(s.kind === 'freeze' ? first : first + m);
-      }
+    const got = frames.slice(s.firstFrame, s.firstFrame + s.frames).map((f) => f.source);
+    if (s.kind === 'gap') {
+      if (got.some((g) => g !== null))
+        out.push({ segment: s.id, problem: `image source dans le vide : ${got}` });
+      continue;
     }
+    const exact = (s.srcMs! * fps) / 1000;
+    const allowed = [Math.floor(exact + 1e-6), Math.ceil(exact - 1e-6)];
+    const f0 = got[0];
+    if (f0 === null || f0 === undefined || !allowed.includes(f0)) {
+      out.push({ segment: s.id, problem: `début ${f0}, attendu ${allowed.join(' ou ')}` });
+      continue;
+    }
+    const want = got.map((_, m) => (s.kind === 'freeze' ? f0 : f0 + m));
+    const bad = got.findIndex((g, m) => g !== want[m]);
+    if (bad >= 0)
+      out.push({ segment: s.id, problem: `image ${bad} : ${got[bad]} au lieu de ${want[bad]}` });
   }
   return out;
 }
@@ -218,13 +241,7 @@ describe.skipIf(!enabled)('moteur multi-segments (FFmpeg réel)', () => {
     const pl = buildRenderPlanV2(input(v2Doc({ segments: EDIT })));
     expect(pl.inputs).toHaveLength(4);
     const out = await render(pl, editVideo);
-    const frames = decodeEditFrames(out, FG);
-    const expected = expectedSourceFrames(pl, 30);
-    expect(frames).toHaveLength(expected.length);
-    const wrong = frames
-      .map((f, j) => ({ j, got: f.source, want: expected[j] }))
-      .filter((x) => x.got !== x.want);
-    expect(wrong, JSON.stringify(wrong.slice(0, 5))).toEqual([]);
+    expect(frameProblems(decodeEditFrames(out, FG), pl, 30)).toEqual([]);
   }, 180_000);
 
   it('audio et vidéo synchrones après chaque coupe (± 1 image) ; silence mesuré pendant l’arrêt et le vide', async () => {
@@ -479,12 +496,6 @@ describe.skipIf(!enabled)('moteur multi-segments (FFmpeg réel)', () => {
     // limite de ligne de commande de Windows (32 767) ; il est lu depuis un fichier.
     expect(pl.filterComplex.length).toBeGreaterThan(20_000);
     const out = await render(pl, editVideo);
-    const frames = decodeEditFrames(out, FG);
-    const expected = expectedSourceFrames(pl, 30);
-    expect(frames.length).toBe(expected.length);
-    const wrong = frames
-      .map((f, j) => ({ j, got: f.source, want: expected[j] }))
-      .filter((x) => x.got !== x.want);
-    expect(wrong, JSON.stringify(wrong.slice(0, 5))).toEqual([]);
+    expect(frameProblems(decodeEditFrames(out, FG), pl, 30)).toEqual([]);
   }, 300_000);
 });
