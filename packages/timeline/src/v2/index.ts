@@ -10,3 +10,4 @@ export * from './history';
 export * from './rebase';
 export * from './scene';
 export * from './v1-compat';
+export * from './warnings';

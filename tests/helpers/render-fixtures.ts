@@ -270,3 +270,162 @@ export function integratedLufs(file: string): number {
   const m = [...r.stderr.matchAll(/I:\s+(-?[\d.]+) LUFS/gu)].at(-1);
   return m ? Number(m[1]) : NaN;
 }
+
+/* ------------------------------------------------------------------ */
+/* Montage multi-segments (étape 7, PR 7c)                             */
+/* ------------------------------------------------------------------ */
+
+/** Code-barres du numéro d'image source : 10 carrés de 24 px en haut, plus un pilote toujours blanc. */
+export const BARCODE = { bits: 10, size: 24, pilotX: 264 } as const;
+/** Tonalités de la fixture de montage (Hz) : fond continu et bip de chaque seconde. */
+export const EDIT_TONES = { bed: 440, beep: 1000 } as const;
+
+/**
+ * Vidéo 320×180 de montage : fond gris foncé, numéro d'image source en code-barres (haut),
+ * éclair BLANC de 2 images à chaque seconde entière (bas), tonalité continue de 440 Hz et bip de
+ * 1 kHz de 50 ms synchrone de chaque éclair. `tracks` pistes identiques (1 = piste unique
+ * « Tout »).
+ */
+export function createEditVideo(
+  dir: string,
+  o: { fps?: number; seconds?: number; tracks?: number; name?: string } = {},
+): string {
+  const fps = o.fps ?? 30;
+  const seconds = o.seconds ?? 20;
+  const tracks = o.tracks ?? 1;
+  const out = path.join(dir, o.name ?? `montage-${fps}-${tracks}.mkv`);
+  const s = BARCODE.size;
+  const bits = Array.from(
+    { length: BARCODE.bits },
+    (_, i) =>
+      `drawbox=x=${i * s}:y=0:w=${s}:h=${s}:color=white:t=fill:enable='eq(mod(floor(n/${2 ** i}),2),1)'`,
+  ).join(',');
+  const audioLabels = Array.from({ length: tracks }, (_, k) => `[a${k}]`).join('');
+  ff([
+    '-f',
+    'lavfi',
+    '-i',
+    `color=c=0x202020:s=320x180:r=${fps}:d=${seconds}`,
+    '-f',
+    'lavfi',
+    '-i',
+    `sine=f=${EDIT_TONES.bed}:sample_rate=48000:d=${seconds}`,
+    '-f',
+    'lavfi',
+    '-i',
+    `sine=f=${EDIT_TONES.beep}:sample_rate=48000:d=${seconds}`,
+    '-filter_complex',
+    [
+      `[0:v]${bits},drawbox=x=${BARCODE.pilotX}:y=0:w=${s}:h=${s}:color=white:t=fill,` +
+        `drawbox=x=0:y=120:w=320:h=60:color=white:t=fill:enable='lt(mod(n,${fps}),2)'[v]`,
+      // `sine` produit une amplitude de 1/8 : fond à 0,25, bip à 0,5.
+      `[1:a]volume=2[bed]`,
+      `[2:a]volume='if(lt(mod(t,1),0.05),4,0)':eval=frame[beep]`,
+      `[bed][beep]amix=inputs=2:normalize=0,asplit=${tracks}${audioLabels}`,
+    ].join(';'),
+    '-map',
+    '[v]',
+    ...Array.from({ length: tracks }, (_, k) => ['-map', `[a${k}]`]).flat(),
+    ...(tracks === 1 ? ['-metadata:s:a:0', 'title=Tout'] : ['-metadata:s:a:0', 'title=Micro']),
+    '-c:v',
+    'libx264',
+    '-preset',
+    'ultrafast',
+    '-g',
+    String(fps),
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    out,
+  ]);
+  return out;
+}
+
+/**
+ * Images de la sortie (disposition « fond flouté », premier plan pleine largeur) ramenées à la
+ * taille de la source : pour chaque image, numéro d'image source lu dans le code-barres (null si
+ * le pilote est absent : vide ou fond), et présence de l'éclair.
+ */
+export function decodeEditFrames(
+  file: string,
+  fg: { y: number; h: number; w: number },
+): { source: number | null; flash: boolean }[] {
+  const raw = execFileSync(
+    FFMPEG,
+    [
+      '-v',
+      'error',
+      '-nostdin',
+      '-i',
+      file,
+      '-vf',
+      `crop=${fg.w}:${fg.h}:0:${fg.y},scale=320:180:flags=neighbor,format=gray`,
+      '-f',
+      'rawvideo',
+      '-',
+    ],
+    { maxBuffer: 512 * 1024 * 1024 },
+  );
+  const size = 320 * 180;
+  const px = (f: number, x: number, y: number) => raw[f * size + y * 320 + x]!;
+  const c = BARCODE.size / 2;
+  const out: { source: number | null; flash: boolean }[] = [];
+  for (let f = 0; (f + 1) * size <= raw.length; f++) {
+    const pilot = px(f, BARCODE.pilotX + c, c) > 160;
+    let n = 0;
+    for (let i = 0; i < BARCODE.bits; i++) if (px(f, i * BARCODE.size + c, c) > 160) n |= 1 << i;
+    out.push({ source: pilot ? n : null, flash: px(f, 160, 150) > 160 });
+  }
+  return out;
+}
+
+/** Énergie d'une fréquence (Goertzel) sur une fenêtre [startMs, startMs + durMs). */
+export function toneLevelAt(
+  samples: Float32Array,
+  freq: number,
+  startMs: number,
+  durMs: number,
+  rate = 48000,
+): number {
+  const a = Math.max(0, Math.round((startMs * rate) / 1000));
+  const b = Math.min(samples.length, Math.round(((startMs + durMs) * rate) / 1000));
+  const k = 2 * Math.cos((2 * Math.PI * freq) / rate);
+  let s1 = 0;
+  let s2 = 0;
+  for (let i = a; i < b; i++) {
+    const s = samples[i]! + k * s1 - s2;
+    s2 = s1;
+    s1 = s;
+  }
+  return b > a ? Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - k * s1 * s2)) / (b - a) : 0;
+}
+
+/** Débuts des bips (ms) : fenêtres de 5 ms où l'énergie à `freq` franchit le seuil. */
+export function beepOnsetsMs(samples: Float32Array, freq: number, threshold = 0.05): number[] {
+  const out: number[] = [];
+  let on = false;
+  const total = (samples.length / 48000) * 1000;
+  for (let t = 0; t + 5 <= total; t += 5) {
+    const lvl = toneLevelAt(samples, freq, t, 5);
+    if (!on && lvl > threshold) {
+      out.push(t);
+      on = true;
+    } else if (on && lvl < threshold / 4) on = false;
+  }
+  return out;
+}
+
+/** Valeur absolue maximale des échantillons d'une fenêtre (silence numérique ⇒ 0). */
+export function peakAt(
+  samples: Float32Array,
+  startMs: number,
+  durMs: number,
+  rate = 48000,
+): number {
+  const a = Math.max(0, Math.round((startMs * rate) / 1000));
+  const b = Math.min(samples.length, Math.round(((startMs + durMs) * rate) / 1000));
+  let m = 0;
+  for (let i = a; i < b; i++) m = Math.max(m, Math.abs(samples[i]!));
+  return m;
+}
