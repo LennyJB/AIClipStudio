@@ -91,6 +91,15 @@ export function ClipsPanel({ recordingId }: { recordingId: string }) {
                       i.project.lastRender.status}
                   </span>
                 )}{' '}
+                {pid && (
+                  <a
+                    className="button-link"
+                    href={`#/editeur/${pid}`}
+                    data-testid={`open-editor-${i.proposal.id}`}
+                  >
+                    {i.readOnly ? 'Consulter dans l’éditeur' : 'Ouvrir l’éditeur'}
+                  </a>
+                )}{' '}
                 {pid ? (
                   <button
                     type="button"
