@@ -52,6 +52,28 @@ const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 export const documentHashV2 = (d: ClipProjectV2) => sha256(canonicalJson(d));
 
 const version = z.number().int().min(1);
+
+/**
+ * La fenêtre éditable ne change que par la route dédiée (le serveur construit le NOUVEAU manifeste
+ * d'intégrité et l'enregistre) : un lot de l'interface ne peut ni l'élargir ni la restaurer, il
+ * pourrait sinon désigner un manifeste quelconque.
+ */
+function assertClientOps(ops: readonly unknown[]) {
+  for (const op of ops) {
+    const o = op as { type?: unknown; entries?: { key?: unknown }[] } | null;
+    const touchesWindow =
+      o?.type === 'extendWindow' ||
+      (o?.type === 'restore' &&
+        Array.isArray(o.entries) &&
+        o.entries.some((e) => e?.key === 'window'));
+    if (touchesWindow) {
+      throw new AppError(
+        'VALIDATION_FAILED',
+        'La fenêtre éditable s’élargit par sa route dédiée (nouveau manifeste d’intégrité)',
+      );
+    }
+  }
+}
 export const EditRequestSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -364,6 +386,7 @@ export class EditService {
         let targetSeq: number | null = null;
 
         if (b.kind === 'do') {
+          assertClientOps(b.ops);
           if (b.base.version === h.headSeq) {
             try {
               ({ doc, applied } = applyBatch(headDoc, b.ops, ctx));
@@ -454,8 +477,63 @@ export class EditService {
       nextVersion: number,
     ) => { project: ClipProject; summary: string | null },
   ): { version: number; replayed: boolean } {
+    return this.appendSystemV2Locked(
+      projectId,
+      recordingId,
+      { ...req, requestHash: sha256(canonicalJson({ system: req.requestId })) },
+      source,
+      (headDoc, nextVersion) => {
+        const v1 = projectToV1(headDoc);
+        if (!v1) {
+          throw new AppError(
+            'EDITOR_REQUIRED',
+            'Ce projet utilise des fonctions de l’éditeur avec timeline (étape 7) : modifiez-le dans l’éditeur',
+          );
+        }
+        const { project, summary } = mutate(v1, nextVersion);
+        let target: ClipProjectV2;
+        try {
+          target = migrateV1ToV2(project, {
+            manifestWindow: {
+              srcStartMs: headDoc.source.editWindow.srcStartMs,
+              srcEndMs: headDoc.source.editWindow.srcEndMs,
+            },
+          });
+        } catch (err) {
+          fromOpError(err);
+        }
+        return { doc: target, summary };
+      },
+    );
+  }
+
+  /**
+   * Entrée « system » à partir d'une transformation du document v2 (élargissement de la fenêtre,
+   * et, via `appendSystemLocked`, PATCH v1). Enregistrée comme restauration clé par clé vérifiée.
+   * À appeler DANS une transaction `BEGIN IMMEDIATE` ; la décision a déjà été vérifiée.
+   */
+  appendSystemV2Locked(
+    projectId: string,
+    recordingId: string,
+    req: {
+      requestId: string;
+      baseVersion: number;
+      requestHash: string;
+      acknowledgeMaskRisk?: boolean;
+    },
+    source: RevisionSource,
+    mutate: (
+      doc: ClipProjectV2,
+      nextVersion: number,
+    ) => { doc: ClipProjectV2; summary: string | null },
+  ): { version: number; replayed: boolean } {
     const prior = this.repo.byRequest(projectId, req.requestId);
-    if (prior) return { version: prior.seq, replayed: true };
+    if (prior) {
+      if (prior.requestHash !== req.requestHash) {
+        throw new AppError('IDEMPOTENCY_MISMATCH', 'Même requestId, contenu différent');
+      }
+      return { version: prior.seq, replayed: true };
+    }
     const h = this.repo.head(projectId);
     if (!h) throw new AppError('NOT_FOUND', 'Projet de clip introuvable');
     if (h.headSeq !== req.baseVersion) {
@@ -464,23 +542,10 @@ export class EditService {
       });
     }
     const headDoc = this.docAt(projectId, h.headSeq).doc;
-    const v1 = projectToV1(headDoc);
-    if (!v1) {
-      throw new AppError(
-        'EDITOR_REQUIRED',
-        'Ce projet utilise des fonctions de l’éditeur avec timeline (étape 7) : modifiez-le dans l’éditeur',
-      );
-    }
-    const { project, summary } = mutate(v1, h.headSeq + 1);
+    const { doc: target, summary } = mutate(headDoc, h.headSeq + 1);
     let applied: AppliedOp[] = [];
     let doc = headDoc;
     try {
-      const target = migrateV1ToV2(project, {
-        manifestWindow: {
-          srcStartMs: headDoc.source.editWindow.srcStartMs,
-          srcEndMs: headDoc.source.editWindow.srcEndMs,
-        },
-      });
       const ops = diffToRestore(headDoc, target, {
         ...(req.acknowledgeMaskRisk ? { acknowledgeMaskRisk: true } : {}),
         ctx: this.audioContext(recordingId),
@@ -499,10 +564,15 @@ export class EditService {
       baseSeq: h.headSeq,
       clientId: null,
       requestId: req.requestId,
-      requestHash: sha256(canonicalJson({ system: req.requestId })),
+      requestHash: req.requestHash,
       summary: summary?.slice(0, 500) ?? null,
       source,
     });
     return { version: r.version, replayed: false };
+  }
+
+  /** Entrée du journal enregistrée pour une requête (idempotence des routes du serveur). */
+  entryForRequest(projectId: string, requestId: string): EditEntry | null {
+    return this.repo.byRequest(projectId, requestId);
   }
 }

@@ -103,6 +103,12 @@ export function registerClipRoutes(app: FastifyInstance, services: Services) {
     return clips.submitEdit(id, req.body ?? {}, 'ui');
   });
 
+  /** Élargit la fenêtre éditable (nouveau manifeste d'intégrité construit par le serveur). */
+  app.post('/api/clip-projects/:id/window', async (req) => {
+    const { id } = parse(IdParams, req.params);
+    return clips.extendWindow(id, req.body ?? {}, 'ui');
+  });
+
   /** Entrées du journal après une version (synchronisation entre onglets). */
   app.get('/api/clip-projects/:id/edits', async (req) => {
     const { id } = parse(IdParams, req.params);
