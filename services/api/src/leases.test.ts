@@ -2,6 +2,7 @@
  * Baux sur les dérivés (migration 9, étape 7d) : contraintes, cascade, et nettoyage qui ne
  * supprime JAMAIS un dérivé sous bail actif, puis le supprime une fois le bail expiré.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,6 +18,8 @@ import { StorageService } from './storage/service';
 const REC = `INSERT INTO recordings (id, source_path, file_name, size_bytes, mtime_ms, fingerprint, container,
   game_id, media_info_json) VALUES ('rec', '/a.mkv', 'a.mkv', 1, 1, 'fp', 'mkv', 'generic', '{}')`;
 
+const key = (name: string) => createHash('sha256').update(name).digest('hex');
+
 async function setup() {
   const storage = await mkdtemp(path.join(tmpdir(), 'acs-baux-'));
   const config = loadConfig({ NODE_ENV: 'test', STORAGE_DIR: storage }, ROOT_DIR);
@@ -30,7 +33,7 @@ async function setup() {
     writeFileSync(abs, Buffer.alloc(bytes));
     return derivs.upsert({
       id: `d-${name}`,
-      cacheKey: `k-${name}`,
+      cacheKey: key(name),
       recordingId: 'rec',
       sourceFingerprint: 'fp',
       kind: 'video_proxy',
@@ -58,25 +61,20 @@ const expireAll = (db: Db) =>
   db.prepare(`UPDATE derivative_leases SET expires_at = '2000-01-01T00:00:00.000Z'`).run();
 
 describe('baux sur les dérivés', () => {
-  it('migration 9 : appliquée sur une base v8 ; contraintes ; suppression du dérivé ⇒ baux supprimés', () => {
+  it('migration 9 : appliquée sur une base v8 ; contraintes ; bail possible sur un média pas encore produit', () => {
     const db = openDatabase(':memory:', MIGRATIONS.slice(0, 8));
     expect(migrate(db, MIGRATIONS)).toEqual([9]);
-    db.prepare(REC).run();
-    db.prepare(
-      `INSERT INTO media_derivatives (id, cache_key, recording_id, source_fingerprint, kind,
-         params_json, generator_version, rel_path, size_bytes) VALUES ('d', 'k', 'rec', 'fp',
-         'video_proxy', '{}', 1, 'processing/editor/rec/p.mp4', 1)`,
-    ).run();
     const ins = db.prepare(
-      'INSERT INTO derivative_leases (derivative_id, holder, expires_at) VALUES (?, ?, ?)',
+      'INSERT INTO derivative_leases (cache_key, holder, expires_at) VALUES (?, ?, ?)',
     );
-    ins.run('d', 'editor:p:s', '2999-01-01T00:00:00.000Z');
-    expect(() => ins.run('d', 'editor:p:s', '2999-01-01T00:00:00.000Z')).toThrow(/UNIQUE|PRIMARY/);
-    expect(() => ins.run('d', '', '2999-01-01T00:00:00.000Z')).toThrow(/CHECK/);
-    expect(() => ins.run('d', 'x', 'demain')).toThrow(/CHECK/);
-    expect(() => ins.run('inconnu', 'x', '2999-01-01T00:00:00.000Z')).toThrow(/FOREIGN/);
-    db.prepare(`DELETE FROM media_derivatives WHERE id = 'd'`).run();
-    expect(db.prepare('SELECT COUNT(*) AS n FROM derivative_leases').get()).toEqual({ n: 0 });
+    // Clé d'un média encore en préparation (aucune ligne media_derivatives) : accepté.
+    ins.run(key('attendu'), 'editor:p:s', '2999-01-01T00:00:00.000Z');
+    expect(() => ins.run(key('attendu'), 'editor:p:s', '2999-01-01T00:00:00.000Z')).toThrow(
+      /UNIQUE|PRIMARY/,
+    );
+    expect(() => ins.run('court', 'x', '2999-01-01T00:00:00.000Z')).toThrow(/CHECK/);
+    expect(() => ins.run(key('a'), '', '2999-01-01T00:00:00.000Z')).toThrow(/CHECK/);
+    expect(() => ins.run(key('a'), 'x', 'demain')).toThrow(/CHECK/);
   });
 
   it('acquérir, prolonger (jamais raccourcir), libérer ; bail expiré = inactif', async () => {
@@ -84,16 +82,16 @@ describe('baux sur les dérivés', () => {
     const { db, add } = await setup();
     const leases = new LeaseRepository(db, () => now);
     const d = add('proxy');
-    const exp = leases.acquire([d.id], 'editor:p:s1', 600_000);
+    const exp = leases.acquire([d.cacheKey], 'editor:p:s1', 600_000);
     expect(exp).toBe('2026-11-26T10:10:00.000Z');
-    expect(leases.active(d.id, 'editor:p:s1')).toMatchObject({ expiresAt: exp });
-    expect(leases.active(d.id, 'editor:p:autre')).toBeNull();
-    leases.acquire([d.id], 'editor:p:s1', 1000); // ne raccourcit pas
-    expect(leases.active(d.id, 'editor:p:s1')?.expiresAt).toBe(exp);
+    expect(leases.active(d.cacheKey, 'editor:p:s1')).toMatchObject({ expiresAt: exp });
+    expect(leases.active(d.cacheKey, 'editor:p:autre')).toBeNull();
+    leases.acquire([d.cacheKey], 'editor:p:s1', 1000); // ne raccourcit pas
+    expect(leases.active(d.cacheKey, 'editor:p:s1')?.expiresAt).toBe(exp);
     now += 600_001;
-    expect(leases.active(d.id, 'editor:p:s1')).toBeNull();
-    expect(leases.protectedDerivativeIds().size).toBe(0);
-    leases.acquire([d.id], 'editor:p:s2', 600_000);
+    expect(leases.active(d.cacheKey, 'editor:p:s1')).toBeNull();
+    expect(leases.protectedCacheKeys().size).toBe(0);
+    leases.acquire([d.cacheKey], 'editor:p:s2', 600_000);
     expect(leases.release('editor:p:s2')).toBe(1);
     expect(leases.purgeExpired()).toBe(1);
   });
@@ -102,7 +100,7 @@ describe('baux sur les dérivés', () => {
     const { storage, db, add, storageService, leases } = await setup();
     const proxy = add('proxy');
     const other = add('autre');
-    leases.acquire([proxy.id], 'editor:p:s', 600_000);
+    leases.acquire([proxy.cacheKey], 'editor:p:s', 600_000);
     const r1 = await storageService.clean({ dryRun: false, evictAllCache: true });
     expect(r1.items.map((i) => i.derivativeId)).toEqual([other.id]);
     expect(r1.skippedInUse).toBe(1);
@@ -124,18 +122,17 @@ describe('baux sur les dérivés', () => {
     let calls = 0;
     // Premier calcul : aucun bail ; un bail est pris juste avant la transaction d'exécution.
     service.leases = {
-      ...real,
-      protectedDerivativeIds: () => {
+      protectedCacheKeys: () => {
         calls++;
         if (calls === 1) {
-          const ids = real.protectedDerivativeIds();
-          leases.acquire([proxy.id], 'editor:p:s', 600_000);
-          return ids;
+          const keys = real.protectedCacheKeys();
+          leases.acquire([proxy.cacheKey], 'editor:p:s', 600_000);
+          return keys;
         }
-        return real.protectedDerivativeIds();
+        return real.protectedCacheKeys();
       },
       purgeExpired: () => real.purgeExpired(),
-    } as LeaseRepository;
+    } as unknown as LeaseRepository;
     const r = await storageService.clean({ dryRun: false, evictAllCache: true });
     expect(calls).toBeGreaterThanOrEqual(2);
     expect(r.items).toEqual([]);

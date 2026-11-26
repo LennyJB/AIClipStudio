@@ -235,15 +235,15 @@ describe.skipIf(!enabled)('médias de travail de l’éditeur par l’API (étap
     expect(proxy.relPath.startsWith(`processing/editor/${rec.id}/`)).toBe(true);
     expect(thumbs.relPath.startsWith(`processing/editor/${rec.id}/`)).toBe(true);
     const holder = `editor:${project}:${sessionId}`;
+    // Baux de la session sur les clés de cache des 4 médias (posés dès la première demande).
     const leased = (
-      inst.db
-        .prepare('SELECT derivative_id FROM derivative_leases WHERE holder = ?')
-        .all(holder) as {
-        derivative_id: string;
+      inst.db.prepare('SELECT cache_key FROM derivative_leases WHERE holder = ?').all(holder) as {
+        cache_key: string;
       }[]
-    ).map((r) => r.derivative_id);
+    ).map((r) => r.cache_key);
+    const keyOf = (id: string) => derivs.get(id)!.cacheKey;
     expect(leased.sort()).toEqual(
-      [proxy.id, thumbs.id, ready.audio[0]!.id, ready.waveforms[0]!.id].sort(),
+      [proxy.id, thumbs.id, ready.audio[0]!.id, ready.waveforms[0]!.id].map(keyOf).sort(),
     );
     // Masque ajouté : nouvelle planche (les masques entrent dans sa clé), même proxy.
     const doc = (
@@ -277,6 +277,86 @@ describe.skipIf(!enabled)('médias de travail de l’éditeur par l’API (étap
     expect(derivs.get(again.ready.thumbnails!.id)!.params).toMatchObject({
       masks: [{ x: 0, y: 0, w: 0.5, h: 0.5 }],
     });
+  }, 300_000);
+
+  it('course : médias encore en préparation lors de la demande ⇒ protégés DÈS leur création (éviction automatique et nettoyage), sans nouvel appel ; puis libération et expiration', async () => {
+    // Budget de cache minuscule : l'éviction automatique (après chaque traitement réussi)
+    // supprimerait tout dérivé non protégé dès sa création.
+    const { video, inst } = await setup({ CACHE_MAX_GB: '0.000001' });
+    const { project } = await prepareProject(inst, video);
+    const sessionId = randomUUID();
+    const prepare = () =>
+      inst.app.inject({
+        method: 'POST',
+        url: `/api/clip-projects/${project}/editor-media`,
+        payload: { sessionId },
+      });
+    // 1. Demande alors que rien n'est prêt : traitements en attente.
+    const first = (await prepare()).json<Prepared>();
+    expect(first.status).toBe('pending');
+    expect(first.proxy).toBeNull();
+    // 2. Les traitements se terminent et créent les dérivés (éviction automatique après chacun).
+    await inst.services.runner.idle();
+    const editorKinds = inst.db
+      .prepare(
+        `SELECT id, kind, rel_path FROM media_derivatives
+         WHERE kind IN ('video_proxy','thumbnail','audio_stem','waveform') ORDER BY kind`,
+      )
+      .all() as { id: string; kind: string; rel_path: string }[];
+    expect(editorKinds.map((d) => d.kind)).toEqual([
+      'audio_stem',
+      'thumbnail',
+      'video_proxy',
+      'waveform',
+    ]);
+    // 3. Nettoyage complet AVANT tout nouvel appel de l'interface.
+    await inst.services.storage.clean({ dryRun: false, evictAllCache: true });
+    // 4. Rien de ce qui est destiné à la session active n'a été supprimé.
+    for (const d of editorKinds) {
+      expect(existsSync(path.join(config.paths.storage, d.rel_path)), d.kind).toBe(true);
+      expect(inst.services.derivatives.repo.get(d.id), d.kind).not.toBeNull();
+    }
+    // La session lit ses médias sans avoir rappelé la préparation.
+    const proxy = editorKinds.find((d) => d.kind === 'video_proxy')!;
+    const tok = await tokenRequest(inst, project, { sessionId, derivativeId: proxy.id });
+    expect(tok.statusCode, tok.body).toBe(200);
+    expect(
+      (await mediaRequest(inst, proxy.id, tok.json<{ token: string }>().token)).statusCode,
+    ).toBe(206);
+
+    // Expiration du bail (éditeur abandonné sans libération) : redevient évinçable.
+    inst.db.prepare(`UPDATE derivative_leases SET expires_at = '2000-01-01T00:00:00.000Z'`).run();
+    await inst.services.storage.clean({ dryRun: false, evictAllCache: true });
+    for (const d of editorKinds) {
+      expect(existsSync(path.join(config.paths.storage, d.rel_path)), d.kind).toBe(false);
+    }
+
+    // Nouvelle session : demande pendant la préparation, puis libération explicite.
+    const s2 = randomUUID();
+    const again = (
+      await inst.app.inject({
+        method: 'POST',
+        url: `/api/clip-projects/${project}/editor-media`,
+        payload: { sessionId: s2 },
+      })
+    ).json<Prepared>();
+    expect(again.status).toBe('pending');
+    await inst.services.runner.idle();
+    const created = inst.db
+      .prepare(`SELECT rel_path FROM media_derivatives WHERE kind IN ('video_proxy','thumbnail')`)
+      .all() as { rel_path: string }[];
+    expect(created).toHaveLength(2);
+    await inst.services.storage.clean({ dryRun: false, evictAllCache: true });
+    for (const d of created)
+      expect(existsSync(path.join(config.paths.storage, d.rel_path))).toBe(true);
+    await inst.app.inject({
+      method: 'POST',
+      url: `/api/clip-projects/${project}/editor-media/release`,
+      payload: { sessionId: s2 },
+    });
+    await inst.services.storage.clean({ dryRun: false, evictAllCache: true });
+    for (const d of created)
+      expect(existsSync(path.join(config.paths.storage, d.rel_path))).toBe(false);
   }, 300_000);
 
   it('baux : le nettoyage ne supprime jamais un média sous bail ; après la fin de session, il redevient évinçable ; original intact', async () => {

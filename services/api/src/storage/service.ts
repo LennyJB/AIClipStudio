@@ -16,6 +16,8 @@ export interface CleanupItem {
   category: CleanupCategory;
   bytes: number;
   derivativeId?: string;
+  /** Clé de cache du dérivé (baux, étape 7d). */
+  cacheKey?: string;
   /** Aperçu de rendu évincé (étape 6b). */
   renderId?: string;
 }
@@ -253,14 +255,20 @@ export class StorageService {
         }
         total -= previewBytes(p.id);
       }
-      const leased = this.leases.protectedDerivativeIds();
+      const leased = this.leases.protectedCacheKeys();
       for (const d of cache) {
         if (total <= budget) break;
-        if (prot.has(d.relPath) || leased.has(d.id)) {
+        if (prot.has(d.relPath) || leased.has(d.cacheKey)) {
           skippedInUse++;
           continue;
         }
-        items.push({ relPath: d.relPath, category: 'cache', bytes: d.sizeBytes, derivativeId: d.id });
+        items.push({
+          relPath: d.relPath,
+          category: 'cache',
+          bytes: d.sizeBytes,
+          derivativeId: d.id,
+          cacheKey: d.cacheKey,
+        });
         total -= d.sizeBytes;
       }
     }
@@ -280,11 +288,11 @@ export class StorageService {
       const protNow = this.protectedPaths();
       const rendersNow = this.renderState();
       // Baux revérifiés SOUS LE VERROU : un bail pris pendant le calcul protège le dérivé.
-      const leasedNow = this.leases.protectedDerivativeIds();
+      const leasedNow = this.leases.protectedCacheKeys();
       const evicted = new Set<string>();
       const ok = items.filter((i) => {
         if (isProtected(i.relPath, rendersNow.protectedPrefixes, protNow)) return false;
-        if (i.derivativeId && leasedNow.has(i.derivativeId)) return false;
+        if (i.cacheKey && leasedNow.has(i.cacheKey)) return false;
         if (!i.renderId) return true;
         // Un aperçu n'est supprimé que s'il est encore « réussi » ; un final ne l'est jamais
         // (contrainte SQL : un final ne peut pas passer à « evicted »).

@@ -60,6 +60,11 @@ export interface DerivativeRequestResult {
   audio: DerivativeDto[];
   waveforms: DerivativeDto[];
   jobs: JobDto[];
+  /**
+   * Clés de cache de TOUS les fichiers attendus (disponibles ou en préparation) : un bail posé
+   * sur ces clés protège un fichier dès sa création par le traitement.
+   */
+  expectedKeys: string[];
 }
 
 const KIND_DIRS: Record<DerivativeKind, string> = {
@@ -118,6 +123,8 @@ export interface EditorMediaResult {
   audio: DerivativeDto[];
   waveforms: DerivativeDto[];
   jobs: JobDto[];
+  /** Clés de cache de tous les médias attendus (disponibles ou en préparation). */
+  expectedKeys: string[];
 }
 
 /**
@@ -379,6 +386,7 @@ export class DerivativeService {
     const waveforms: DerivativeDto[] = [];
     const jobs: JobDto[] = [];
     const missing: number[] = [];
+    const expectedKeys: string[] = [];
 
     for (const idx of audioIndexes) {
       const found = this.findUsable(
@@ -391,8 +399,10 @@ export class DerivativeService {
         continue;
       }
       audio.push(found);
+      expectedKeys.push(found.cacheKey);
       if (!withWaveforms) continue;
       const wf = this.ensureWaveform(found);
+      expectedKeys.push(this.waveformSpec(found).key);
       if ('derivative' in wf) waveforms.push(wf.derivative);
       else jobs.push(wf.job);
     }
@@ -401,6 +411,12 @@ export class DerivativeService {
       const specs = missing.map((i) =>
         this.audioSpec(fp, recordingId, kind, i, produceRange, profile),
       );
+      for (const sp of specs) {
+        expectedKeys.push(sp.key);
+        // Forme d'onde produite dans le même traitement (même calcul de clé qu'à la production).
+        if (withWaveforms)
+          expectedKeys.push(this.waveformSpec(this.pendingAudio(sp, fp, recordingId)).key);
+      }
       const files: JobFile[] = specs.flatMap((s) => outputFiles(s.relPath));
       const type: JobType =
         kind === 'audio_transcription' ? 'extract_transcription_audio' : 'extract_audio_stems';
@@ -419,7 +435,30 @@ export class DerivativeService {
       });
       jobs.push(job);
     }
-    return { status: jobs.length ? 'pending' : 'ready', audio, waveforms, jobs };
+    return { status: jobs.length ? 'pending' : 'ready', audio, waveforms, jobs, expectedKeys };
+  }
+
+  /** Vue d'un dérivé audio pas encore produit (pour calculer la clé de sa forme d'onde). */
+  private pendingAudio(sp: Spec, fp: string, recordingId: string): DerivativeDto {
+    return {
+      id: '',
+      cacheKey: sp.key,
+      recordingId,
+      sourceFingerprint: fp,
+      kind: sp.kind,
+      audioIndex: sp.audioIndex,
+      srcStartMs: sp.range?.startMs ?? null,
+      srcEndMs: sp.range?.endMs ?? null,
+      params: JSON.parse(sp.paramsJson) as Record<string, unknown>,
+      generatorVersion: sp.version,
+      inputDerivativeId: null,
+      relPath: sp.relPath,
+      sizeBytes: 0,
+      durationMs: null,
+      retention: 'cache',
+      createdAt: '',
+      lastUsedAt: '',
+    };
   }
 
   /** Forme d'onde d'un dérivé audio : disponible, ou traitement créé. */
@@ -429,9 +468,10 @@ export class DerivativeService {
       throw new AppError('NOT_FOUND', 'Dérivé audio introuvable');
     }
     const wf = this.ensureWaveform(audio);
+    const expectedKeys = [audio.cacheKey, this.waveformSpec(audio).key];
     return 'derivative' in wf
-      ? { status: 'ready', audio: [audio], waveforms: [wf.derivative], jobs: [] }
-      : { status: 'pending', audio: [audio], waveforms: [], jobs: [wf.job] };
+      ? { status: 'ready', audio: [audio], waveforms: [wf.derivative], jobs: [], expectedKeys }
+      : { status: 'pending', audio: [audio], waveforms: [], jobs: [wf.job], expectedKeys };
   }
 
   private ensureWaveform(audio: DerivativeDto): { derivative: DerivativeDto } | { job: JobDto } {
@@ -544,22 +584,20 @@ export class DerivativeService {
       jobs.push(job);
       return null;
     };
-    const proxy = ensure(this.proxySpec(fp, recordingId, range), 'video_proxy', {
+    const proxySpec = this.proxySpec(fp, recordingId, range);
+    const thumbSpec = this.thumbnailSpec(fp, recordingId, range, masks);
+    const proxy = ensure(proxySpec, 'video_proxy', {
       recordingId,
       range,
     });
-    const thumbnails = ensure(
-      this.thumbnailSpec(fp, recordingId, range, masks),
-      'thumbnail_sprite',
-      {
-        recordingId,
-        range,
-        masks: masks.map((m) => ({ ...m })),
-      },
-    );
+    const thumbnails = ensure(thumbSpec, 'thumbnail_sprite', {
+      recordingId,
+      range,
+      masks: masks.map((m) => ({ ...m })),
+    });
     const audio = audioIndexes.length
       ? this.requestAudio(recordingId, 'audio_stem', [...audioIndexes], range, 'interactive')
-      : { audio: [], waveforms: [], jobs: [] };
+      : { audio: [], waveforms: [], jobs: [], expectedKeys: [] };
     jobs.push(...audio.jobs);
     return {
       status: jobs.length ? 'pending' : 'ready',
@@ -568,6 +606,12 @@ export class DerivativeService {
       audio: audio.audio,
       waveforms: audio.waveforms,
       jobs,
+      // Médias disponibles ET attendus : le bail les protège dès leur création.
+      expectedKeys: [
+        proxy?.cacheKey ?? proxySpec.key,
+        thumbnails?.cacheKey ?? thumbSpec.key,
+        ...audio.expectedKeys,
+      ],
     };
   }
 

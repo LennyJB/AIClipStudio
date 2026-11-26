@@ -85,14 +85,9 @@ export class EditorMediaService {
       tracks,
     );
     const holder = this.holder(projectId, sessionId);
-    const ready = [r.proxy, r.thumbnails, ...r.audio, ...r.waveforms].filter(
-      (d): d is DerivativeDto => d !== null,
-    );
-    const expiresAt = this.leases.acquire(
-      ready.map((d) => d.id),
-      holder,
-      EDITOR_LEASE_TTL_MS,
-    );
+    // Bail sur TOUS les médias de la session, disponibles ou encore en préparation (clés de cache) :
+    // un média produit après cette demande est protégé dès sa création, sans nouvel appel.
+    const expiresAt = this.leases.acquire(r.expectedKeys, holder, EDITOR_LEASE_TTL_MS);
     const roles = new Map(
       this.clips.recordingOf(row).audioTracks.map((t) => [t.audioIndex, t.role]),
     );
@@ -135,7 +130,7 @@ export class EditorMediaService {
     const refuse = (reason: string) =>
       new AppError('FORBIDDEN', 'Accès refusé', { details: { reason } });
     if (!d || d.recordingId !== row.recordingId || !SERVABLE[d.kind]) throw refuse('derivative');
-    if (!this.leases.active(d.id, holder)) throw refuse('lease');
+    if (!this.leases.active(d.cacheKey, holder)) throw refuse('lease');
     if (d.kind === 'audio_stem' || d.kind === 'waveform') {
       const { doc } = this.clips.edits.head(row.id);
       if (d.audioIndex === null || !this.audibleTracks(row, doc).includes(d.audioIndex)) {

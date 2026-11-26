@@ -1180,9 +1180,14 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   fenêtre éditable, le proxy, la planche, les pistes de montage des **seules pistes autorisées et
   activées** (décision 5) et leurs formes d'onde, puis prend ou prolonge le bail de la session
   (15 minutes, renouvelé par l'éditeur). `POST …/editor-media/release` rend les baux.
-- **Baux** (migration 9 `derivative_leases`) : titulaire `editor:<projet>:<session>`. Le
-  nettoyage ne supprime jamais un dérivé sous bail actif ; la vérification est refaite sous
-  `BEGIN IMMEDIATE` (un bail pris pendant le calcul protège le dérivé). Bail expiré ou rendu : le
+- **Baux** (migration 9 `derivative_leases`) : titulaire `editor:<projet>:<session>`. Le bail
+  porte sur la **clé de cache** du média (déterministe, connue dès la demande) et non sur la ligne
+  du dérivé : la préparation pose un bail sur **tous** les médias de la session, disponibles ou
+  encore en préparation. Un média produit après la demande est donc protégé **dès sa création**,
+  y compris contre l'éviction automatique qui suit chaque traitement réussi, sans nouvel appel de
+  l'interface (correctif de revue : un bail posé seulement sur les médias déjà prêts laissait
+  supprimer les autres dès leur création). Le nettoyage ne supprime jamais un dérivé dont la clé est
+  sous bail actif ; la vérification est refaite sous `BEGIN IMMEDIATE`. Bail expiré ou rendu : le
   dérivé redevient un cache évinçable, et le bail est purgé. Les rendus n'utilisent aucun dérivé
   (ils relisent l'original) et restent protégés par leur état, comme à l'étape 6.
 - **Accès protégé** (`services/api/src/clips/media-access.ts`, `editor-media.ts`) :
