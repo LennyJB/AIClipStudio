@@ -115,6 +115,12 @@ export const EnvSchema = z.object({
   RENDER_PREVIEW_HEIGHT: z.coerce.number().int().min(320).max(1920).default(960),
   /** Octets lus par FFmpeg à l'ouverture (zone de détection protégée par le manifeste). */
   RENDER_PROBE_BYTES: z.coerce.number().int().min(32).max(100_000_000).default(5_000_000),
+  /**
+   * Éditeur (étape 7) : marge de la fenêtre éditable des NOUVEAUX projets autour de la proposition
+   * (au moins les ±10 s de l'ajustement des bornes de l'étape 6). Les projets existants gardent
+   * la fenêtre de leur manifeste ; l'élargir crée un nouveau manifeste.
+   */
+  EDITOR_WINDOW_MARGIN_SEC: z.coerce.number().int().min(10).max(600).default(60),
   CLIP_WINDOW_MARGIN_SEC: z.coerce.number().int().min(0).max(600).default(30),
   CLIP_WINDOW_GRID_SEC: z.coerce.number().int().min(1).max(600).default(30),
   /* ---------------------------- Analyse éditoriale ---------------------------- */
@@ -197,6 +203,7 @@ export interface AppConfig {
   cache: { maxBytes: number };
   render: { finalCrf: number; x264Preset: string; previewHeight: number; probeBytes: number };
   clipWindow: { marginMs: number; gridMs: number };
+  editor: { windowMarginMs: number };
   analysis: {
     effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     triageEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -298,6 +305,7 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
       previewHeight: e.RENDER_PREVIEW_HEIGHT,
       probeBytes: e.RENDER_PROBE_BYTES,
     },
+    editor: { windowMarginMs: e.EDITOR_WINDOW_MARGIN_SEC * 1000 },
     clipWindow: {
       marginMs: e.CLIP_WINDOW_MARGIN_SEC * 1000,
       gridMs: e.CLIP_WINDOW_GRID_SEC * 1000,

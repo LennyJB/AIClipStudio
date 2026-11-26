@@ -1,17 +1,25 @@
 /**
  * Exécution d'un plan de rendu : SEUL module du paquet qui lance un processus.
  *  - FFmpeg sans shell, arguments en tableau ;
- *  - dossier de travail dédié (cwd) : `subs.ass` et `fonts/` y sont copiés, le graphe ne les
- *    désigne que par ces noms relatifs (aucun chemin Windows `C:\…` à échapper) ;
+ *  - dossier de travail dédié (cwd) : `graph.txt`, `subs.ass` et `fonts/` y sont écrits ; le graphe
+ *    est lu depuis `graph.txt` et ne désigne les autres que par ces noms relatifs (aucun chemin
+ *    Windows `C:\…` à échapper, aucune limite de longueur de ligne de commande) ;
  *  - la sortie est un fichier `.part` fourni par l'appelant (renommé seulement après contrôle) ;
  *  - l'original n'est ouvert qu'en lecture (`-i`).
  */
-import { copyFile, mkdir, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isSpawnNotFound, probeMedia, runProcess } from '@acs/media';
 import { AppError } from '@acs/shared';
-import { buildFrameArgs, buildRenderArgs, parseProgressLine } from './ffmpeg-args';
-import type { RenderPlan } from './plan';
+import {
+  buildFrameArgs,
+  buildRenderArgs,
+  filterScriptArgs,
+  GRAPH_FILE,
+  parseProgressLine,
+  type FilterScriptSyntax,
+} from './ffmpeg-args';
+import type { FramePlan, RenderPlan } from './plan';
 
 export interface RunRenderOptions {
   ffmpegPath: string;
@@ -36,13 +44,73 @@ export function sanitizeStderr(text: string, paths: readonly string[]): string {
   return out.slice(-2000);
 }
 
-async function prepareWorkDir(o: Pick<RunRenderOptions, 'workDir' | 'fontsDir' | 'plan'>) {
+async function prepareWorkDir(o: {
+  workDir: string;
+  fontsDir: string;
+  graph: string;
+  ass: string | null;
+}) {
   await mkdir(path.join(o.workDir, 'fonts'), { recursive: true });
   for (const f of await readdir(o.fontsDir)) {
     if (/\.(ttf|otf)$/iu.test(f))
       await copyFile(path.join(o.fontsDir, f), path.join(o.workDir, 'fonts', f));
   }
-  if (o.plan.ass !== null) await writeFile(path.join(o.workDir, 'subs.ass'), o.plan.ass, 'utf8');
+  await writeFile(path.join(o.workDir, GRAPH_FILE), o.graph, 'utf8');
+  if (o.ass !== null) await writeFile(path.join(o.workDir, 'subs.ass'), o.ass, 'utf8');
+}
+
+const syntaxCache = new Map<string, Promise<FilterScriptSyntax>>();
+
+/**
+ * Option de lecture du graphe depuis un fichier acceptée par CET exécutable FFmpeg : essai réel
+ * de `-/filter_complex` (FFmpeg ≥ 7) sur une source synthétique, sinon `-filter_complex_script`.
+ * Résultat mémorisé par chemin d'exécutable.
+ */
+export function filterScriptSyntax(
+  ffmpegPath: string,
+  workDir: string,
+): Promise<FilterScriptSyntax> {
+  let cached = syntaxCache.get(ffmpegPath);
+  if (!cached) {
+    cached = (async () => {
+      const dir = path.join(workDir, 'essai-graphe');
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, GRAPH_FILE), '[0:v]null[o]', 'utf8');
+      try {
+        const r = await runProcess(
+          ffmpegPath,
+          [
+            '-hide_banner',
+            '-nostdin',
+            '-loglevel',
+            'error',
+            '-f',
+            'lavfi',
+            '-i',
+            'color=s=16x16:d=0.04',
+            ...filterScriptArgs('file-option'),
+            '-map',
+            '[o]',
+            '-f',
+            'null',
+            '-',
+          ],
+          { cwd: dir, captureStdout: false },
+        );
+        return r.exitCode === 0 ? 'file-option' : 'legacy-script';
+      } catch (err) {
+        if (isSpawnNotFound(err)) {
+          throw new AppError('TOOL_MISSING', `FFmpeg introuvable (${ffmpegPath})`, { cause: err });
+        }
+        throw err;
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    })();
+    syntaxCache.set(ffmpegPath, cached);
+    cached.catch(() => syntaxCache.delete(ffmpegPath));
+  }
+  return cached;
 }
 
 async function run(
@@ -73,8 +141,13 @@ async function run(
 }
 
 export async function runRender(o: RunRenderOptions): Promise<void> {
-  await prepareWorkDir(o);
-  const args = buildRenderArgs(o.plan, { sourcePath: o.sourcePath, outputPath: o.outputPath });
+  const syntax = await filterScriptSyntax(o.ffmpegPath, o.workDir);
+  await prepareWorkDir({ ...o, graph: o.plan.filterComplex, ass: o.plan.ass });
+  const args = buildRenderArgs(
+    o.plan,
+    { sourcePath: o.sourcePath, outputPath: o.outputPath },
+    syntax,
+  );
   await run(o.ffmpegPath, args, {
     cwd: o.workDir,
     ...(o.signal ? { signal: o.signal } : {}),
@@ -86,12 +159,25 @@ export async function runRender(o: RunRenderOptions): Promise<void> {
   });
 }
 
-export async function runFrame(o: Omit<RunRenderOptions, 'onProgress'> & { atEditMs: number }) {
-  await prepareWorkDir({ ...o, plan: { ...o.plan, ass: null } });
-  const args = buildFrameArgs(o.plan, o.atEditMs, {
-    sourcePath: o.sourcePath,
-    outputPath: o.outputPath,
-  });
+export interface RunFrameOptions {
+  ffmpegPath: string;
+  frame: FramePlan;
+  sourcePath: string;
+  outputPath: string;
+  workDir: string;
+  fontsDir: string;
+  signal?: AbortSignal;
+}
+
+/** Image exacte (mêmes aplats, disposition, zooms et sous-titres que l'export). */
+export async function runFrame(o: RunFrameOptions) {
+  const syntax = await filterScriptSyntax(o.ffmpegPath, o.workDir);
+  await prepareWorkDir({ ...o, graph: o.frame.graph, ass: o.frame.ass });
+  const args = buildFrameArgs(
+    o.frame,
+    { sourcePath: o.sourcePath, outputPath: o.outputPath },
+    syntax,
+  );
   await run(o.ffmpegPath, args, {
     cwd: o.workDir,
     ...(o.signal ? { signal: o.signal } : {}),

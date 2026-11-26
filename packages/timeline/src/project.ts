@@ -399,6 +399,11 @@ export interface CreateProjectInput {
   audio: AudioSelectionInput;
   defaults: { mode: 'fidele' | 'enrichi'; minMs: number; maxMs: number };
   makeId: (kind: string, index: number) => string;
+  /**
+   * Plage où les sous-titres sont préparés (étape 7 : fenêtre éditable du projet). Par défaut, la
+   * fenêtre ajustable de l'étape 6 (proposition ±10 s).
+   */
+  captionsWindow?: { startMs: number; endMs: number };
 }
 
 const FULL_FRAME = { x: 0, y: 0, w: 1, h: 1 };
@@ -424,12 +429,13 @@ export function projectFromProposal(input: CreateProjectInput): {
     input.source.durationMs,
   );
 
-  // Sous-titres : préparés sur toute la fenêtre ajustable (les corrections survivent aux
-  // changements de bornes) ; affichés seulement pour les rôles autorisés et sélectionnés.
+  // Sous-titres : préparés sur toute la fenêtre ajustable, ou éditable (les corrections survivent
+  // aux changements de bornes) ; affichés seulement pour les rôles autorisés et sélectionnés.
+  const capWin = input.captionsWindow ?? win;
   const items: CaptionItem[] = [];
   for (const rw of input.words) {
     items.push(
-      ...groupWords(rw, win.startMs, win.endMs, (role, i) => input.makeId(`cap-${role}`, i)),
+      ...groupWords(rw, capWin.startMs, capWin.endMs, (role, i) => input.makeId(`cap-${role}`, i)),
     );
   }
   items.sort((a, b) => a.srcStartMs - b.srcStartMs || (a.id < b.id ? -1 : 1));

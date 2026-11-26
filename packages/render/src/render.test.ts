@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyRenderOptions,
   displayCaptions,
+  migrateV1ToV2,
   projectFromProposal,
   projectSegments,
   type ClipProject,
@@ -16,9 +17,15 @@ import {
   suggestEffects,
   type EnergyEnvelope,
 } from './effects';
-import { buildFrameArgs, buildRenderArgs, parseProgressLine } from './ffmpeg-args';
+import {
+  buildFrameArgs,
+  buildRenderArgs,
+  filterScriptArgs,
+  GRAPH_FILE,
+  parseProgressLine,
+} from './ffmpeg-args';
 import { buildVideoGraph, cropToAspect, safeName, zoomExpression } from './layout';
-import { buildRenderPlan, RenderPlanError, type RenderPlanInput } from './plan';
+import { buildFramePlan, buildRenderPlan, type RenderPlanInput } from './plan';
 import { outputFps, presetFor } from './presets';
 import {
   assColor,
@@ -439,10 +446,12 @@ describe('plan de rendu', () => {
     const silent = applyRenderOptions(off, { audio: { silent: true } }, ctx(3)).project;
     const plan = buildRenderPlan(planInput(silent, { revision: 3 }));
     expect(plan.hasAudio).toBe(false);
-    expect(buildRenderArgs(plan, { sourcePath: '/s.mkv', outputPath: '/o.part' })).toContain('-an');
+    expect(
+      buildRenderArgs(plan, { sourcePath: '/s.mkv', outputPath: '/o.part' }, 'file-option'),
+    ).toContain('-an');
   });
 
-  it('durée hors plage refusée sans confirmation de la révision ; un seul segment à l’étape 6', () => {
+  it('durée hors plage refusée sans confirmation de la révision ; plusieurs segments rendus', () => {
     const short = projectFromProposal(
       input({ proposal: { ...input().proposal, srcEndMs: 120_000 } }),
     ).project;
@@ -458,7 +467,11 @@ describe('plan de rendu', () => {
         { id: 's2', kind: 'source', srcStartMs: 120_000, srcEndMs: 125_000, speed: 1 },
       ],
     };
-    expect(() => buildRenderPlan(planInput(two))).toThrow(RenderPlanError);
+    // Plusieurs segments (étape 7) : une entrée FFmpeg par segment.
+    expect(buildRenderPlan(planInput(two)).inputs).toEqual([
+      { srcStartMs: 110_000, durationMs: 30_000 },
+      { srcStartMs: 120_000, durationMs: 5_000 },
+    ]);
   });
 
   it('karaoké seulement sur un texte exact ; corrigé ⇒ texte simple, jamais de mot inventé', () => {
@@ -510,20 +523,24 @@ describe('plan de rendu', () => {
 });
 
 describe('arguments FFmpeg', () => {
-  it('-ss avant -i, durée en sortie, chemins en arguments seulement, progression', () => {
+  it('-ss avant -i, durée en sortie, chemins en arguments seulement, graphe dans un fichier, progression', () => {
     const plan = buildRenderPlan(planInput(base()));
-    const args = buildRenderArgs(plan, {
-      sourcePath: 'C:\\Vidéos\\a b.mkv',
-      outputPath: '/tmp/o.mp4.part',
-    });
+    const args = buildRenderArgs(
+      plan,
+      { sourcePath: 'C:\\Vidéos\\a b.mkv', outputPath: '/tmp/o.mp4.part' },
+      'file-option',
+    );
     expect(args.indexOf('-ss')).toBeLessThan(args.indexOf('-i'));
     expect(args[args.indexOf('-ss') + 1]).toBe('110.000');
     expect(args[args.indexOf('-t') + 1]).toBe('30.000');
     expect(args.indexOf('-t')).toBeGreaterThan(args.indexOf('-i'));
     expect(args[args.indexOf('-i') + 1]).toBe('C:\\Vidéos\\a b.mkv');
-    const graph = args[args.indexOf('-filter_complex') + 1]!;
-    expect(graph).not.toContain('Vidéos');
-    expect(graph).not.toMatch(/[A-Za-z]:\\|\/tmp/u);
+    // Graphe lu depuis un fichier relatif du dossier de travail, jamais en argument.
+    expect(args[args.indexOf('-/filter_complex') + 1]).toBe(GRAPH_FILE);
+    expect(args).not.toContain('-filter_complex');
+    expect(args.join(' ')).not.toContain(plan.filterComplex);
+    expect(plan.filterComplex).not.toContain('Vidéos');
+    expect(plan.filterComplex).not.toMatch(/[A-Za-z]:\\|\/tmp/u);
     expect(args.slice(-1)[0]).toBe('/tmp/o.mp4.part');
     expect(args).toEqual(
       expect.arrayContaining([
@@ -535,11 +552,50 @@ describe('arguments FFmpeg', () => {
         'pipe:1',
       ]),
     );
-    const frame = buildFrameArgs(plan, 5000, { sourcePath: '/s.mkv', outputPath: '/f.jpg' });
-    expect(frame[frame.indexOf('-ss') + 1]).toBe('115.000');
-    expect(frame[frame.indexOf('-filter_complex') + 1]).not.toContain('subtitles');
+    // FFmpeg < 7 : option historique.
+    const legacy = buildRenderArgs(
+      plan,
+      { sourcePath: '/s.mkv', outputPath: '/o' },
+      'legacy-script',
+    );
+    expect(legacy[legacy.indexOf('-filter_complex_script') + 1]).toBe(GRAPH_FILE);
+    expect(filterScriptArgs('file-option')).toEqual(['-/filter_complex', 'graph.txt']);
     expect(parseProgressLine('out_time_us=15000000', 30_000)).toBe(0.5);
     expect(parseProgressLine('out_time_ms=45000000', 30_000)).toBe(1);
     expect(parseProgressLine('progress=continue', 30_000)).toBeNull();
+  });
+
+  it('image exacte : instant source, sous-titres et zoom compris, horodatée à l’instant de sortie', () => {
+    const fx = applyRenderOptions(base(), { mode: 'enrichi' }, ctx()).project;
+    const p: ClipProject = {
+      ...fx,
+      effects: [
+        {
+          id: 'z',
+          type: 'punch_zoom',
+          params: { factor: 1.12 },
+          timing: { anchor: 'source', srcStartMs: 114_000, srcEndMs: 116_000 },
+          enabled: true,
+          origin: 'creator',
+          reason: 'test',
+          signals: {},
+        },
+      ],
+    };
+    const v2 = migrateV1ToV2(p, { manifestWindow: { srcStartMs: 50_000, srcEndMs: 200_000 } });
+    const frame = buildFramePlan({ ...planInput(p, { revision: 2 }), project: v2 }, 5000);
+    expect(frame.input).toEqual({ srcMs: 115_000 });
+    expect(frame.frameTimeMs).toBe(5000);
+    expect(frame.graph).toContain('subtitles=subs.ass');
+    expect(frame.graph).toContain('zoompan=');
+    expect(frame.graph).toContain('setpts=5/TB');
+    expect(frame.ass).toContain('Dialogue:');
+    const args = buildFrameArgs(
+      frame,
+      { sourcePath: '/s.mkv', outputPath: '/f.jpg' },
+      'file-option',
+    );
+    expect(args[args.indexOf('-ss') + 1]).toBe('115.000');
+    expect(args[args.indexOf('-/filter_complex') + 1]).toBe(GRAPH_FILE);
   });
 });

@@ -43,7 +43,7 @@ export interface VideoGraphInput {
   fontsDir: string;
 }
 
-const num = (n: number) => {
+export const num = (n: number) => {
   if (!Number.isFinite(n)) throw new RangeError('valeur non finie dans le graphe');
   return Number(n.toFixed(4)).toString();
 };
@@ -62,7 +62,7 @@ export function zoomExpression(windows: readonly ZoomWindow[]): string {
     .join('')}`;
 }
 
-function zoompan(windows: readonly ZoomWindow[], w: number, h: number, fps: number): string {
+export function zoompan(windows: readonly ZoomWindow[], w: number, h: number, fps: number): string {
   // Expressions entre apostrophes : leurs virgules ne séparent pas les filtres pour le parseur de
   // graphes de FFmpeg. Les valeurs viennent exclusivement de nombres validés.
   return `zoompan=z='${zoomExpression(windows)}':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${w}x${h}:fps=${num(fps)}`;
@@ -90,57 +90,87 @@ export function computeGeometry(i: VideoGraphInput): VideoGeometry {
 }
 
 /**
- * Graphe vidéo complet : [0:v] → [v]. Ordre : cadence, aplats opaques (image source), remise à
- * zéro des horodatages, disposition, zoom, sous-titres, format final.
+ * Disposition 9:16 d'un flux : `${input}` (image source, après `pre`) → `${output}` (image
+ * composée). `sfx` rend uniques les étiquettes intermédiaires (une branche par segment). Les
+ * zooms de la facecam (`facecamZooms`) sont exprimés dans le temps du flux (`it`).
  */
-export function buildVideoGraph(i: VideoGraphInput): string {
-  const geo = computeGeometry(i);
+export function layoutParts(
+  i: Omit<VideoGraphInput, 'zooms' | 'subtitlesFile' | 'fontsDir'>,
+  o: { input: string; pre: string; output: string; sfx: string },
+): string[] {
+  const geo = computeGeometry({ ...i, zooms: [], subtitlesFile: null, fontsDir: 'fonts' });
   const W = i.outWidth;
   const H = i.outHeight;
-  const base = [
+  const head = `${o.input}${o.pre ? `${o.pre},` : ''}`;
+  const l = (name: string) => `[${name}${o.sfx}]`;
+  const scale = (w: number, h: number) => `scale=${w}:${h}:flags=lanczos,setsar=1`;
+  if (i.layout.preset === 'facecam_top') {
+    const top = geo.facecamHeight;
+    const bottom = H - top;
+    const camZoom = i.facecamZooms.length ? `,${zoompan(i.facecamZooms, W, top, i.fps)}` : '';
+    return [
+      `${head}split=2${l('cam_in')}${l('game_in')}`,
+      `${l('cam_in')}${crop(geo.facecam!)},${scale(W, top)}${camZoom}${l('cam')}`,
+      `${l('game_in')}${crop(geo.gameplay)},${scale(W, bottom)}${l('game')}`,
+      `${l('cam')}${l('game')}vstack=inputs=2${o.output}`,
+    ];
+  }
+  if (i.layout.preset === 'gameplay_crop') {
+    return [`${head}${crop(geo.gameplay)},${scale(W, H)}${o.output}`];
+  }
+  // Fond : même gameplay recadré en 9:16, agrandi et flouté ; premier plan : gameplay entier.
+  const bg = cropToAspect(geo.gameplay, W / H, i.layout.focusX);
+  const fgH = even(Math.min(H, (W * geo.gameplay.h) / geo.gameplay.w));
+  const sigma = Math.max(4, Math.round((30 * W) / 1080));
+  return [
+    `${head}split=2${l('bg_in')}${l('fg_in')}`,
+    `${l('bg_in')}${crop(bg)},${scale(W, H)},gblur=sigma=${sigma}${l('bg')}`,
+    `${l('fg_in')}${crop(geo.gameplay)},${scale(W, fgH)}${l('fg')}`,
+    `${l('bg')}${l('fg')}overlay=0:${evenPos((H - fgH) / 2)}${o.output}`,
+  ];
+}
+
+/** Filtres appliqués à l'image source avant la disposition : cadence puis aplats opaques. */
+export function sourcePrelude(
+  i: Pick<VideoGraphInput, 'fps' | 'layout' | 'srcWidth' | 'srcHeight'>,
+) {
+  return [
     `fps=${num(i.fps)}`,
     ...opaqueMaskFilters(
       i.layout.masks.filter((m) => m.mode === 'opaque').map((m) => m.rect),
       i.srcWidth,
       i.srcHeight,
     ),
-    'setpts=PTS-STARTPTS',
-  ].join(',');
-  const parts: string[] = [];
-  const scale = (w: number, h: number) => `scale=${w}:${h}:flags=lanczos,setsar=1`;
+  ];
+}
 
-  if (i.layout.preset === 'facecam_top') {
-    const top = geo.facecamHeight;
-    const bottom = H - top;
-    const camZoom = i.facecamZooms.length ? `,${zoompan(i.facecamZooms, W, top, i.fps)}` : '';
-    parts.push(
-      `[0:v]${base},split=2[cam_in][game_in]`,
-      `[cam_in]${crop(geo.facecam!)},${scale(W, top)}${camZoom}[cam]`,
-      `[game_in]${crop(geo.gameplay)},${scale(W, bottom)}[game]`,
-      `[cam][game]vstack=inputs=2[comp]`,
-    );
-  } else if (i.layout.preset === 'gameplay_crop') {
-    parts.push(`[0:v]${base},${crop(geo.gameplay)},${scale(W, H)}[comp]`);
-  } else {
-    // Fond : même gameplay recadré en 9:16, agrandi et flouté ; premier plan : gameplay entier.
-    const bg = cropToAspect(geo.gameplay, W / H, i.layout.focusX);
-    const fgH = even(Math.min(H, (W * geo.gameplay.h) / geo.gameplay.w));
-    const sigma = Math.max(4, Math.round((30 * W) / 1080));
-    parts.push(
-      `[0:v]${base},split=2[bg_in][fg_in]`,
-      `[bg_in]${crop(bg)},${scale(W, H)},gblur=sigma=${sigma}[bg]`,
-      `[fg_in]${crop(geo.gameplay)},${scale(W, fgH)}[fg]`,
-      `[bg][fg]overlay=0:${evenPos((H - fgH) / 2)}[comp]`,
-    );
-  }
-  const tail = [
-    ...(i.zooms.length ? [zoompan(i.zooms, W, H, i.fps)] : []),
+/** Fin de chaîne commune : zoom de l'image composée, sous-titres, format final. */
+export function compositionTail(
+  i: Pick<
+    VideoGraphInput,
+    'zooms' | 'outWidth' | 'outHeight' | 'fps' | 'subtitlesFile' | 'fontsDir'
+  >,
+  extra: { beforeSubtitles?: string } = {},
+): string[] {
+  return [
+    ...(i.zooms.length ? [zoompan(i.zooms, i.outWidth, i.outHeight, i.fps)] : []),
+    ...(extra.beforeSubtitles ? [extra.beforeSubtitles] : []),
     ...(i.subtitlesFile
       ? [`subtitles=${safeName(i.subtitlesFile)}:fontsdir=${safeName(i.fontsDir)}`]
       : []),
     'format=yuv420p',
   ];
-  parts.push(`[comp]${tail.join(',')}[v]`);
+}
+
+/**
+ * Graphe vidéo complet d'un clip d'UN segment (étape 6) : [0:v] → [v]. Ordre : cadence, aplats
+ * opaques (image source), remise à zéro des horodatages, disposition, zoom, sous-titres, format
+ * final. Inchangé depuis l'étape 6b (empreintes de plan identiques).
+ */
+export function buildVideoGraph(i: VideoGraphInput): string {
+  const base = [...sourcePrelude(i), 'setpts=PTS-STARTPTS'].join(',');
+  const parts = layoutParts(i, { input: '[0:v]', pre: base, output: '[comp]', sfx: '' });
+  parts.push(`[comp]${compositionTail(i).join(',')}[v]`);
   return parts.join(';');
 }
 

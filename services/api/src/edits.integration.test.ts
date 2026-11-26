@@ -408,7 +408,8 @@ describe.skipIf(!enabled)('Journal d’édition (API, étape 7b)', () => {
     );
     expect(v.body).toMatchObject({ revision: 3, document: { layout: { preset: initial } } });
 
-    // Calque (fonction de l'éditeur) : l'interface 6c, le PATCH v1 et le rendu refusent clairement.
+    // Calque (fonction de l'éditeur) : l'interface 6c et le PATCH v1 refusent clairement ; le moteur
+    // (qui rend le document v2 depuis la PR 7c) refuse explicitement les calques (rendus en PR 7j).
     const overlay = {
       id: 'titre',
       kind: 'text',
@@ -438,7 +439,7 @@ describe.skipIf(!enabled)('Journal d’édition (API, étape 7b)', () => {
       kind: 'preview',
     });
     expect(render.status).toBe(409);
-    expect(render.body.error?.code).toBe('EDITOR_REQUIRED');
+    expect(render.body.error?.code).toBe('RENDER_FEATURE_UNSUPPORTED');
     // Le document v2 reste lisible par l'éditeur ; annuler le calque rend le projet de nouveau
     // lisible par l'interface 6c.
     expect((await t.doc()).document.overlays.map((o) => o.id)).toEqual(['titre']);

@@ -48,6 +48,7 @@ export type AppErrorCode =
   | 'PRECONDITION_FAILED'
   | 'MASK_RISK_NOT_ACKNOWLEDGED'
   | 'DOCUMENT_DIVERGED'
+  | 'RENDER_FEATURE_UNSUPPORTED'
   | 'INTERNAL';
 
 export class AppError extends Error {

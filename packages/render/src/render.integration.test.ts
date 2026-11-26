@@ -12,6 +12,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   applyRenderOptions,
   displayCaptions,
+  migrateV1ToV2,
   projectFromProposal,
   projectSegments,
   type ClipProject,
@@ -32,7 +33,7 @@ import {
   videoFps,
 } from '../../../tests/helpers/render-fixtures';
 import { allowedAudio, EMPTY_AUDIO_STATE, type ExportAudioState, type TrackIn } from './audio';
-import { buildRenderPlan, type RenderPlan } from './plan';
+import { buildFramePlan, buildRenderPlan, type FramePlan, type RenderPlan } from './plan';
 import type { PresetConfig } from './presets';
 import { checkOutput, runFrame, runRender } from './run';
 
@@ -122,11 +123,11 @@ const ctx = (
   allowedAudioTracks: tracks,
 });
 
-function plan(
+function planArgs(
   p: ClipProject,
   opts: { revision?: number; kind?: 'preview' | 'final'; state?: ExportAudioState } = {},
-): RenderPlan {
-  return buildRenderPlan({
+) {
+  return {
     project: p,
     revision: opts.revision ?? 1,
     kind: opts.kind ?? 'preview',
@@ -138,7 +139,26 @@ function plan(
       pseudonymize: (t) => ({ text: t, replacements: 0 }),
     }),
     probeBytes: 5_000_000,
+  };
+}
+
+function plan(
+  p: ClipProject,
+  opts: { revision?: number; kind?: 'preview' | 'final'; state?: ExportAudioState } = {},
+): RenderPlan {
+  return buildRenderPlan(planArgs(p, opts));
+}
+
+/** Image exacte d'un document de l'étape 6 (migré en v2, fenêtre = segments). */
+function framePlan(
+  p: ClipProject,
+  atEditMs: number,
+  opts: { revision?: number; state?: ExportAudioState } = {},
+): FramePlan {
+  const v2 = migrateV1ToV2(p, {
+    manifestWindow: { srcStartMs: 0, srcEndMs: p.source.durationMs ?? 12_000 },
   });
+  return buildFramePlan({ ...planArgs(p, opts), project: v2 }, atEditMs);
 }
 
 let n = 0;
@@ -238,12 +258,11 @@ describe.skipIf(!enabled)('moteur de rendu (FFmpeg réel)', () => {
     const jpg = path.join(work, 'image.jpg');
     await runFrame({
       ffmpegPath: FFMPEG,
-      plan: pl,
+      frame: framePlan(p, 2000, { revision: 2 }),
       sourcePath: layoutVideo,
       outputPath: jpg,
       workDir: work,
       fontsDir: FONTS,
-      atEditMs: 2000,
     });
     const img = frameAt(jpg, 0);
     expect([img.width, img.height]).toEqual([540, 960]);

@@ -29,7 +29,8 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { fingerprintFile, runProcess } from '@acs/media';
 import {
-  buildRenderPlan,
+  buildFramePlan,
+  buildRenderPlanV2,
   checkOutput,
   mergeSuggestedEffects,
   RENDER_ENGINE_VERSION,
@@ -41,14 +42,16 @@ import {
   type EnergyEnvelope,
   type RenderKind,
   type RenderPlan,
+  type RenderPlanV2Input,
 } from '@acs/render';
 import { AppError, isAppError } from '@acs/shared';
 import {
   canonicalJson,
   displayCaptions,
-  projectSegments,
-  projectWarnings,
+  projectWarningsV2,
+  segmentsV2,
   type ClipProject,
+  type ClipProjectV2,
 } from '@acs/timeline';
 import type { AppContext } from '../context';
 import type { JobHandler, JobHandlerContext, JobRunner } from '../jobs/runner';
@@ -139,12 +142,16 @@ async function fileSha256(file: string): Promise<string> {
 
 interface Built {
   row: ReturnType<ClipProjectService['projectRow']>;
+  /** Version du journal sur laquelle le plan est construit. */
   revision: number;
-  doc: ClipProject;
+  /** Document v2 de cette version (le moteur rend le document de l'éditeur). */
+  doc: ClipProjectV2;
   rec: RecordingDto;
   sourcePath: string;
   fingerprint: string;
   plan: RenderPlan;
+  /** Entrées du plan (image exacte construite à partir des mêmes données). */
+  planInput: RenderPlanV2Input;
   planHash: string;
   audioStateHash: string;
   title: string;
@@ -223,58 +230,51 @@ export class RenderService {
     return sha(canonicalJson(this.exportAudio.state(recordingId)));
   }
 
-  /** Construit le plan à partir de l'état COURANT (document, accords, confidentialité). */
+  /** Construit le plan à partir de l'état COURANT (document v2, accords, confidentialité). */
   private async build(projectId: string, kind: RenderKind): Promise<Built> {
     const row = this.clips.projectRow(projectId);
-    const { rev, doc } = this.clips.current(row);
+    const head = this.clips.edits.head(projectId);
+    const doc = head.doc;
     const rec = this.recordings.get(row.recordingId);
     const src = this.recordings.getSource(row.recordingId);
     if (!rec || !src) throw new AppError('NOT_FOUND', 'Enregistrement introuvable');
-    const manifest = this.clips.repo.manifest(doc.source.integrityManifestId);
-    if (!manifest) throw new AppError('NOT_FOUND', 'Manifeste d’intégrité introuvable');
+    // Manifeste de la fenêtre éditable : même enregistrement, fenêtre couverte (segments compris).
+    const manifest = this.clips.windowManifest(row, doc);
     const audio = this.exportAudio.decisionFor(rec);
     // Pseudonymisation : fichier de confidentialité invalide ⇒ refus (jamais de repli sans).
     const pseudonymize = await this.clips.pseudonymizer();
     const privacy = await this.clipsPrivacyHash();
     const roles = doc.captions.enabled ? doc.captions.sources : [];
     const captions = displayCaptions(
-      projectSegments(doc),
+      segmentsV2(doc.segments),
       doc.captions.items,
       doc.captions.corrections,
-      {
-        roles,
-        pseudonymize,
-      },
+      { roles, pseudonymize },
     );
+    const planInput: RenderPlanV2Input = {
+      project: doc,
+      revision: head.version,
+      kind,
+      presetConfig: {
+        finalCrf: this.ctx.config.render.finalCrf,
+        x264Preset: this.ctx.config.render.x264Preset,
+        previewHeight: this.ctx.config.render.previewHeight,
+      },
+      source: {
+        width: rec.video?.width ?? null,
+        height: rec.video?.height ?? null,
+        fps: rec.video?.fps ?? null,
+      },
+      audio,
+      captions,
+      probeBytes: manifest.probeBytes,
+    };
     let plan: RenderPlan;
     try {
-      plan = buildRenderPlan({
-        project: doc,
-        revision: rev.revision,
-        kind,
-        presetConfig: {
-          finalCrf: this.ctx.config.render.finalCrf,
-          x264Preset: this.ctx.config.render.x264Preset,
-          previewHeight: this.ctx.config.render.previewHeight,
-        },
-        source: {
-          width: rec.video?.width ?? null,
-          height: rec.video?.height ?? null,
-          fps: rec.video?.fps ?? null,
-        },
-        audio,
-        captions,
-        probeBytes: manifest.probeBytes,
-      });
+      plan = buildRenderPlanV2(planInput);
     } catch (err) {
       if (err instanceof RenderPlanError) {
-        throw new AppError(
-          err.code === 'MEDIA_UNSUPPORTED' ? 'MEDIA_UNSUPPORTED' : err.code,
-          err.message,
-          {
-            details: err.details,
-          },
-        );
+        throw new AppError(err.code, err.message, { details: err.details });
       }
       throw err;
     }
@@ -291,12 +291,13 @@ export class RenderService {
     const title = this.proposals.getProposal(row.proposalId)?.title ?? 'clip';
     return {
       row,
-      revision: rev.revision,
+      revision: head.version,
       doc,
       rec,
       sourcePath: src.sourcePath,
       fingerprint: src.fingerprint,
       plan,
+      planInput,
       planHash,
       audioStateHash,
       title,
@@ -380,7 +381,7 @@ export class RenderService {
             built.revision,
             b.kind,
             built.planHash,
-            JSON.stringify(projectWarnings(built.doc, built.revision)),
+            JSON.stringify(projectWarningsV2(built.doc, built.revision)),
           );
         return { id, created: true };
       })
@@ -607,9 +608,10 @@ export class RenderService {
         pseudonymized: true,
       },
       layout: b.doc.layout.preset,
-      masksDisabled: b.doc.layout.masks.filter((m) => m.mode === 'off').length,
+      masksDisabled: b.doc.masks.filter((m) => m.mode === 'off').length,
+      segments: b.doc.segments.length,
       effects: b.plan.effects.map((e) => e.type),
-      warnings: projectWarnings(b.doc, b.revision).map((w) => w.code),
+      warnings: projectWarningsV2(b.doc, b.revision).map((w) => w.code),
       toolchain: { ffmpeg: await this.ffmpegVersion() },
       createdAt: new Date().toISOString(),
     };
@@ -992,7 +994,8 @@ export class RenderService {
   maxFrameGenerations = MAX_FRAME_GENERATIONS;
 
   /**
-   * Image fixe de la disposition (même graphe que le rendu, sans sous-titres ni zoom).
+   * Image EXACTE de l'export à un instant du montage : mêmes aplats, disposition, zooms et
+   * sous-titres que le rendu (image figée pendant un arrêt sur image, fond pendant un vide).
    *
    * Annulation EFFECTIVE côté serveur (docs/plan-etape-6.md §19) :
    *  - `signal` (déconnexion du client) arrête FFmpeg ;
@@ -1026,12 +1029,11 @@ export class RenderService {
       await this.hooks.beforeFrameProcess?.(projectId, ctrl.signal);
       await runFrame({
         ffmpegPath: this.ctx.config.tools.ffmpeg,
-        plan: built.plan,
+        frame: buildFramePlan(built.planInput, atEditMs),
         sourcePath: built.sourcePath,
         outputPath: out,
         workDir: work,
         fontsDir: FONTS_DIR,
-        atEditMs,
         signal: ctrl.signal,
       });
       return await readFile(out);

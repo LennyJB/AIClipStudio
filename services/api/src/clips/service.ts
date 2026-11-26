@@ -24,11 +24,12 @@ import {
 } from '@acs/shared';
 import { loadCreatorProfile, loadGameProfile, profileHash } from '@acs/editorial';
 import {
-  adjustableWindow,
   applyRenderOptions,
+  byStartThenId,
   canonicalJson,
   displayCaptions,
   durationAccepted,
+  groupWords,
   migrateProject,
   PROJECT_SCHEMA_VERSION,
   ProjectError,
@@ -39,6 +40,7 @@ import {
   RenderOptionsPatchSchema,
   type CaptionRole,
   type ClipProject,
+  type ClipProjectV2,
   type DisplayCaption,
   type ProjectWarning,
   type RoleWords,
@@ -56,7 +58,7 @@ import { TranscriptionRepository } from '../transcriptions/repository';
 import type { ExportAudioService } from './export-audio';
 import { DecisionGuard, type EffectiveDecisionView } from './guard';
 import { EditService } from './edits';
-import { ClipRepository, type ProjectRow } from './repository';
+import { ClipRepository, type ProjectRow, type StoredManifest } from './repository';
 
 export const CreateProjectBodySchema = z.object({ requestId: z.uuid() }).strict();
 
@@ -67,6 +69,34 @@ export const PatchProjectBodySchema = z
     changes: RenderOptionsPatchSchema,
   })
   .strict();
+
+const ms = z.number().int().nonnegative();
+/** Élargissement de la fenêtre éditable (nouveau manifeste construit par le serveur). */
+export const ExtendWindowBodySchema = z
+  .object({
+    requestId: z.uuid(),
+    baseRevision: z.number().int().min(1),
+    srcStartMs: ms,
+    srcEndMs: ms,
+  })
+  .strict()
+  .refine((b) => b.srcStartMs < b.srcEndMs, 'fenêtre vide');
+
+/** Largeur maximale d'une fenêtre éditable (coût du manifeste d'intégrité, du proxy, etc.). */
+export const MAX_EDIT_WINDOW_MS = 20 * 60_000;
+
+/** Fenêtre éditable d'un NOUVEAU projet : proposition ± marge, bornée à l'enregistrement. */
+export function editorWindow(
+  proposal: { srcStartMs: number; srcEndMs: number },
+  durationMs: number | null,
+  marginMs: number,
+): { startMs: number; endMs: number } {
+  const end = proposal.srcEndMs + marginMs;
+  return {
+    startMs: Math.max(0, proposal.srcStartMs - marginMs),
+    endMs: durationMs === null ? end : Math.min(durationMs, end),
+  };
+}
 
 export interface ProjectView {
   project: ProjectRow;
@@ -393,7 +423,13 @@ export class ClipProjectService {
       );
     }
     const durationMs = rec.durationSec === null ? null : Math.round(rec.durationSec * 1000);
-    const win = adjustableWindow({ srcStartMs: p.srcStartMs, srcEndMs: p.srcEndMs }, durationMs);
+    // Fenêtre éditable de l'éditeur (étape 7) : proposition ± EDITOR_WINDOW_MARGIN_SEC (au moins
+    // les ±10 s de l'ajustement des bornes de l'étape 6), couverte par le manifeste.
+    const win = editorWindow(
+      { srcStartMs: p.srcStartMs, srcEndMs: p.srcEndMs },
+      durationMs,
+      this.ctx.config.editor.windowMarginMs,
+    );
     const manifest = await buildIntegrityManifest({
       ffprobePath: this.ctx.config.tools.ffprobe,
       filePath: src.sourcePath,
@@ -462,6 +498,7 @@ export class ClipProjectService {
           maxMs: range.maxSeconds * 1000,
         },
         makeId: (kind, i) => `${kind}-${i}`,
+        captionsWindow: win,
       });
     } catch (err) {
       fromProjectError(err);
@@ -635,12 +672,174 @@ export class ClipProjectService {
 
   /* ------------------------------ Intégrité ------------------------------ */
 
+  /* --------------------------- Fenêtre éditable --------------------------- */
+
+  /**
+   * Élargit la fenêtre éditable (docs/plan-etape-7.md §3.2) : le serveur construit un NOUVEAU
+   * manifeste d'intégrité sur la nouvelle fenêtre (les manifestes restent figés), puis enregistre
+   * dans le journal, sous le verrou d'écriture, la nouvelle fenêtre et les sous-titres de la
+   * transcription pour la zone ajoutée. Annulable comme toute entrée (refusée si un segment est
+   * désormais hors de l'ancienne fenêtre). Idempotent par `requestId`.
+   */
+  async extendWindow(projectId: string, body: unknown, source: Source) {
+    const b = parse(ExtendWindowBodySchema, body);
+    const row = this.projectRow(projectId);
+    this.guard.assertAccepted(row.proposalId);
+    const requestHash = sha256(
+      canonicalJson({ window: { srcStartMs: b.srcStartMs, srcEndMs: b.srcEndMs } }),
+    );
+    const prior = this.edits.entryForRequest(projectId, b.requestId);
+    if (prior) {
+      if (prior.requestHash !== requestHash) {
+        throw new AppError('IDEMPOTENCY_MISMATCH', 'Même requestId, contenu différent');
+      }
+      return {
+        version: prior.seq,
+        replayed: true,
+        window: this.windowAt(projectId, prior.seq),
+      };
+    }
+    const head = this.edits.head(projectId);
+    if (head.version !== b.baseRevision) {
+      throw new AppError('VERSION_CONFLICT', 'Le projet a été modifié entre-temps : rechargez-le', {
+        details: { currentRevision: head.version },
+      });
+    }
+    const cur = head.doc.source.editWindow;
+    const rec = this.recording(row.recordingId);
+    const durationMs = rec.durationSec === null ? null : Math.round(rec.durationSec * 1000);
+    if (b.srcStartMs > cur.srcStartMs || b.srcEndMs < cur.srcEndMs) {
+      throw new AppError('VALIDATION_FAILED', 'La nouvelle fenêtre doit contenir l’actuelle');
+    }
+    if (b.srcStartMs === cur.srcStartMs && b.srcEndMs === cur.srcEndMs) {
+      throw new AppError('VALIDATION_FAILED', 'La fenêtre demandée est déjà la fenêtre actuelle');
+    }
+    if (durationMs !== null && b.srcEndMs > durationMs) {
+      throw new AppError('VALIDATION_FAILED', 'La fenêtre dépasse la fin de l’enregistrement');
+    }
+    if (b.srcEndMs - b.srcStartMs > MAX_EDIT_WINDOW_MS) {
+      throw new AppError(
+        'VALIDATION_FAILED',
+        `Fenêtre éditable limitée à ${MAX_EDIT_WINDOW_MS / 60_000} minutes`,
+      );
+    }
+    const src = this.recordings.getSource(rec.id)!;
+    if (!existsSync(src.sourcePath)) {
+      throw new AppError('MEDIA_NOT_FOUND', 'Original introuvable : vérifiez son emplacement');
+    }
+    if ((await fingerprintFile(src.sourcePath)).hash !== src.fingerprint) {
+      throw new AppError('MEDIA_SOURCE_CHANGED', 'L’original a été modifié depuis l’import');
+    }
+    const manifest = await buildIntegrityManifest({
+      ffprobePath: this.ctx.config.tools.ffprobe,
+      filePath: src.sourcePath,
+      windowStartMs: b.srcStartMs,
+      windowEndMs: b.srcEndMs,
+      probeBytes: this.ctx.config.render.probeBytes,
+    });
+    if ((await fingerprintFile(src.sourcePath)).hash !== src.fingerprint) {
+      throw new AppError('MEDIA_SOURCE_CHANGED', 'L’original a changé pendant la vérification');
+    }
+    // Sous-titres de la zone ajoutée (mêmes règles de découpage qu'à la création).
+    const proposal = this.proposal(row.proposalId);
+    const added = [
+      [b.srcStartMs, cur.srcStartMs],
+      [cur.srcEndMs, b.srcEndMs],
+    ].filter(([a, z]) => a! < z!) as [number, number][];
+    const manifestId = randomUUID();
+    const r = this.ctx.db
+      .transaction(() => {
+        this.guard.assertAccepted(row.proposalId);
+        const again = this.edits.entryForRequest(projectId, b.requestId);
+        if (again) {
+          if (again.requestHash !== requestHash) {
+            throw new AppError('IDEMPOTENCY_MISMATCH', 'Même requestId, contenu différent');
+          }
+          return { version: again.seq, replayed: true };
+        }
+        this.repo.insertManifest(manifestId, rec.id, manifest);
+        return this.edits.appendSystemV2Locked(
+          projectId,
+          rec.id,
+          { requestId: b.requestId, baseVersion: b.baseRevision, requestHash },
+          source,
+          (doc, nextVersion) => {
+            const items = [...doc.captions.items];
+            // Identifiants propres à cette version et à chaque zone ajoutée (avant, après).
+            added.forEach(([from, to], zone) => {
+              for (const rw of this.words(proposal, from, to).byRole) {
+                items.push(
+                  ...groupWords(
+                    rw,
+                    from,
+                    to,
+                    (role, i) => `cap-${role}-v${nextVersion}-${zone}-${i}`,
+                  ),
+                );
+              }
+            });
+            return {
+              doc: {
+                ...doc,
+                source: {
+                  ...doc.source,
+                  editWindow: {
+                    srcStartMs: b.srcStartMs,
+                    srcEndMs: b.srcEndMs,
+                    integrityManifestId: manifestId,
+                  },
+                },
+                captions: { ...doc.captions, items: items.sort(byStartThenId) },
+              },
+              summary: `fenêtre éditable élargie : ${b.srcStartMs}–${b.srcEndMs} ms`,
+            };
+          },
+        );
+      })
+      .immediate();
+    return { ...r, window: this.windowAt(projectId, r.version) };
+  }
+
+  /**
+   * Fenêtre éditable à la version produite par une requête : réponse déterministe, y compris au
+   * rejeu après d'autres modifications (jamais la fenêtre courante associée à une ancienne version).
+   */
+  private windowAt(projectId: string, version: number) {
+    return this.edits.docAt(projectId, version).doc.source.editWindow;
+  }
+
+  /**
+   * Manifeste d'intégrité de la fenêtre éditable du document : il doit appartenir au MÊME
+   * enregistrement et couvrir la fenêtre, donc tous les segments (vérifié avant chaque rendu et
+   * chaque image exacte).
+   */
+  windowManifest(row: ProjectRow, doc: ClipProjectV2): StoredManifest {
+    const w = doc.source.editWindow;
+    const m = this.repo.manifest(w.integrityManifestId);
+    if (!m) throw new AppError('NOT_FOUND', 'Manifeste d’intégrité introuvable');
+    const outside = doc.segments.some((s) =>
+      s.kind === 'source'
+        ? s.srcStartMs < m.windowStartMs || s.srcEndMs > m.windowEndMs
+        : s.kind === 'freeze' && (s.srcAtMs < m.windowStartMs || s.srcAtMs >= m.windowEndMs),
+    );
+    if (
+      m.recordingId !== row.recordingId ||
+      w.srcStartMs < m.windowStartMs ||
+      w.srcEndMs > m.windowEndMs ||
+      outside
+    ) {
+      throw new AppError(
+        'VALIDATION_FAILED',
+        'La fenêtre éditable n’est pas couverte par le manifeste d’intégrité de cet enregistrement',
+      );
+    }
+    return m;
+  }
+
   /** Vérifie l'ensemble d'octets protégé de la source du projet (utilisé avant chaque rendu). */
   async verifySource(projectId: string) {
     const row = this.projectRow(projectId);
-    const { doc } = this.current(row);
-    const m = this.repo.manifest(doc.source.integrityManifestId);
-    if (!m) throw new AppError('NOT_FOUND', 'Manifeste d’intégrité introuvable');
+    const m = this.windowManifest(row, this.edits.head(projectId).doc);
     const src = this.recordings.getSource(row.recordingId)!;
     const r = await verifyIntegrity(src.sourcePath, m);
     if (!r.ok) {

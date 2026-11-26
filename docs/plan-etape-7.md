@@ -943,8 +943,9 @@ réaction** de la 6a s'appliquent toujours au premier et au dernier segment.
 | PR                                                | Statut                                                         |
 | ------------------------------------------------- | -------------------------------------------------------------- |
 | 7a — Modèle v2, opérations et scène               | fusionnée (PR #18)                                             |
-| 7b — Journal d'édition, points de contrôle et API | en revue                                                       |
-| 7c à 7k                                           | non commencées (chacune attend la validation de la précédente) |
+| 7b — Journal d'édition, points de contrôle et API | fusionnée (PR #19)                                             |
+| 7c — Moteur multi-segments                        | en revue                                                       |
+| 7d à 7k                                           | non commencées (chacune attend la validation de la précédente) |
 
 ---
 
@@ -1084,3 +1085,74 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   | GET     | `/api/clip-projects/:id/document`     | Document v2, version, empreinte, historique (haut des piles) |
   | POST    | `/api/clip-projects/:id/edits`        | Lot (`do`), annulation (`undo`), rétablissement (`redo`)     |
   | GET     | `/api/clip-projects/:id/edits?since=` | Entrées après une version (synchronisation entre onglets)    |
+
+## 16. Précisions de mise en œuvre (PR 7c)
+
+- **Le moteur rend le document v2** (version courante du journal), et non plus la projection v1 :
+  un montage de l'éditeur (coupes, arrêts sur image, vides) est rendu même si l'interface 6c ne
+  peut pas l'afficher (`EDITOR_REQUIRED` côté 6c seulement).
+- **Fonctions de l'éditeur pas encore rendues : refus explicite**, jamais ignorées
+  (`409 RENDER_FEATURE_UNSUPPORTED`, liste des fonctions en cause) : disposition personnalisée et
+  masques temporels (7h), réglages par sous-titre et sous-titres manuels (7g), effets du catalogue
+  v2 autres que ceux de l'étape 6 et automatisation du gain (7i), calques et effets sonores (7j).
+  Un effet désactivé, ou un effet de mouvement en mode fidèle, n'est pas appliqué et n'est donc pas
+  refusé. Même règle pour l'image exacte.
+- **Une entrée FFmpeg par segment** (même fichier, recherche précise `-ss`, lecture bornée
+  `-t` + 250 ms), au lieu d'une entrée unique découpée : réordonner les segments ne met aucune image
+  en mémoire tampon, et la mémoire ne dépend pas de l'ordre. Un vide n'a pas d'entrée.
+- **Coupes sur la grille d'images de sortie** : la première image d'un segment est celle dont
+  l'instant est le premier ≥ son début en temps montage ; le nombre d'images d'un segment est la
+  différence de ces indices. Le total vaut toujours les images de la durée totale : aucune dérive,
+  quel que soit le nombre de coupes (fréquence non entière comprise). L'audio est coupé à
+  l'échantillon près (48 échantillons par milliseconde) ; l'écart image / son à une coupe reste
+  inférieur à une image et ne se cumule pas.
+- **Image source de début d'un segment** (recherche précise de FFmpeg) : quand l'instant source
+  tombe entre deux images, FFmpeg < 7 prend celle qui le couvre et FFmpeg ≥ 7 la suivante ; les deux
+  sont à l'image près, et identiques quand l'instant tombe sur une image. Même règle pour l'image
+  figée d'un arrêt sur image, et pour l'image exacte (même version, même choix que le rendu). Les
+  horodatages de chaque branche sont remis à zéro AVANT la cadence (`fps`) : sans cela, FFmpeg
+  récent répétait ou sautait des images (constaté sur la CI Windows, corrigé et testé). Lire avant
+  l'instant pour couper dans le graphe a été écarté : la lecture pourrait sortir de la zone protégée
+  par le manifeste, et l'origine des horodatages diffère elle aussi selon les versions.
+- **Arrêt sur image** : une image (aplats compris) répétée, **silence numérique** (`anullsrc`) sur
+  chaque piste. **Vide** : fond de la mise en page (`layout.background`, aucune image source),
+  silence numérique. Les zooms de la facecam sont exprimés dans le temps de chaque branche.
+- **Raccords** : fondu de 8 ms à la sortie du segment qui précède et à l'entrée de celui qui suit,
+  **aux seuls raccords** : ni au début ni à la fin du clip (comportement de l'étape 6 inchangé ;
+  c'est aussi ce qui garantit des plans identiques pour un segment).
+- **Concaténations vidéo et audio séparées** (une par piste) : chaque flux garde sa durée exacte
+  (le `concat` commun complète les segments au plus long flux, ce qui ferait dériver le son).
+- **Graphe lu depuis un fichier** (`graph.txt` du dossier de travail) : `-/filter_complex` avec
+  FFmpeg ≥ 7, `-filter_complex_script` avant. L'option est choisie par un **essai réel** de
+  l'exécutable (source synthétique), mémorisé par chemin. La CI couvre les deux : Linux (FFmpeg
+  6.1, option historique) et Windows (FFmpeg récent).
+- **Projets de l'étape 6 rendus à l'identique** : un clip d'un seul segment source garde le graphe
+  de l'étape 6, et le plan est identique octet pour octet (12 projets de référence, empreintes
+  capturées avec le moteur 6b sur `main` avant la PR, vérifiées par l'entrée v1 et par le document
+  v2 migré). `RENDER_ENGINE_VERSION` reste à 1 : les rendus existants restent reconnus à jour. Le
+  champ `frameGraph` du plan est conservé pour cette raison ; l'image exacte utilise désormais un
+  plan dédié (`buildFramePlan`).
+- **Image exacte** (`GET /frame`) : même source, aplats, disposition, zooms et sous-titres que
+  l'export (image horodatée à l'instant de sortie, image figée pendant un arrêt sur image, fond
+  pendant un vide). Test : moins de 0,2 % de points différents de l'image du rendu au même instant ;
+  sans zoom ou sans sous-titres, l'écart monte à 3,3 % et 0,7 % (contre-épreuves).
+- **Fenêtre éditable des nouveaux projets** : proposition ± `EDITOR_WINDOW_MARGIN_SEC` (60 s par
+  défaut, 10 à 600 s, bornée à l'enregistrement), couverte par le manifeste créé avec le projet ;
+  les sous-titres sont préparés sur toute cette fenêtre. Les projets existants gardent la leur.
+  L'ajustement des bornes de l'interface 6c reste limité à ±10 s.
+- **Élargissement de la fenêtre** : `POST /api/clip-projects/:id/window`
+  (`{ requestId, baseRevision, srcStartMs, srcEndMs }`). Le serveur construit un **nouveau**
+  manifeste (empreinte du fichier vérifiée avant et après), puis enregistre sous le verrou une
+  entrée `system` du journal : nouvelle fenêtre et sous-titres de la transcription pour la zone
+  ajoutée (identifiants propres à la version). Idempotent (`IDEMPOTENCY_MISMATCH` si le contenu
+  change), annulable (refusé si un segment est sorti de l'ancienne fenêtre), limité à 20 minutes.
+  **Un lot de l'interface ne peut ni élargir ni restaurer la fenêtre** (`extendWindow`, ou
+  `restore` de la clé `window`) : il pourrait sinon désigner un manifeste quelconque.
+- **Contrôle avant chaque rendu et image exacte** : le manifeste de la fenêtre doit appartenir au
+  même enregistrement et couvrir la fenêtre et tous les segments ; puis vérification de l'intégrité
+  de la source, comme à l'étape 6.
+- **Piste unique « Tout »** : une seule piste (rôle `mix`), autorisée seulement par la déclaration
+  de composition ; silence pendant les arrêts sur image ; aucune séparation inventée (test FFmpeg
+  du moteur). Le scénario d'analyse simulé de l'API ne produit pas de proposition sur une piste
+  mélangée : ce cas est testé au niveau du moteur.
+- **Code d'erreur ajouté** : `RENDER_FEATURE_UNSUPPORTED` (409, détails renvoyés).
