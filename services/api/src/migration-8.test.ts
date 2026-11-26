@@ -43,7 +43,7 @@ describe('migration 8 (journal d’édition)', () => {
       projects: db.prepare('SELECT * FROM clip_projects').all(),
       revisions: db.prepare('SELECT * FROM clip_project_revisions').all(),
     };
-    expect(migrate(db, MIGRATIONS)).toEqual([8]);
+    expect(migrate(db, MIGRATIONS.slice(0, 8))).toEqual([8]);
     expect(db.prepare('SELECT * FROM clip_projects').all()).toEqual(before.projects);
     expect(db.prepare('SELECT * FROM clip_project_revisions').all()).toEqual(before.revisions);
     expect(

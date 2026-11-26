@@ -883,6 +883,24 @@ export const MIGRATIONS: readonly Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'clip_project_edits : journal en ajout seul'); END;
     `,
   },
+  {
+    // Étape 7d : baux sur les médias de travail de l'éditeur (docs/plan-etape-7.md §5.2). Un
+    // dérivé sous bail actif n'est jamais supprimé par le nettoyage ; un bail expiré ne protège
+    // plus rien (le dérivé redevient un cache évinçable).
+    version: 9,
+    name: 'derivative_leases',
+    sql: `
+      CREATE TABLE derivative_leases (
+        derivative_id  TEXT NOT NULL REFERENCES media_derivatives(id) ON DELETE CASCADE,
+        holder         TEXT NOT NULL CHECK (length(holder) BETWEEN 1 AND 200),
+        expires_at     TEXT NOT NULL CHECK (expires_at GLOB '[0-9][0-9][0-9][0-9]-*Z'),
+        created_at     TEXT NOT NULL DEFAULT (${NOW}),
+        PRIMARY KEY (derivative_id, holder)
+      );
+      CREATE INDEX derivative_leases_expiry ON derivative_leases(expires_at);
+      CREATE INDEX derivative_leases_holder ON derivative_leases(holder);
+    `,
+  },
 ];
 
 export function openDatabase(

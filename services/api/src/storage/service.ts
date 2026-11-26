@@ -4,6 +4,7 @@ import path from 'node:path';
 import { isInside } from '@acs/media';
 import type { AppContext } from '../context';
 import type { DerivativeKind } from '../derivatives/cache-key';
+import { LeaseRepository } from '../derivatives/leases';
 import { DerivativeRepository } from '../derivatives/repository';
 import { JobRepository } from '../recordings/repository';
 import { toAbs, toRel } from './paths';
@@ -71,16 +72,19 @@ const DEFAULT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
  * Espace disque : rapport et nettoyage.
  * Règles absolues :
  *  - n'opère QUE dans storage/processing (vérifié pour chaque fichier) ;
- *  - ne touche jamais un fichier déclaré par un traitement actif, ni un dérivé épinglé ;
+ *  - ne touche jamais un fichier déclaré par un traitement actif, ni un dérivé épinglé, ni un
+ *    dérivé sous bail ACTIF (médias de travail d'une session de l'éditeur, étape 7d) ;
  *  - les originaux (hors stockage), projets et exports ne sont jamais concernés.
  */
 export class StorageService {
   private readonly derivs: DerivativeRepository;
   private readonly jobs: JobRepository;
+  private readonly leases: LeaseRepository;
 
   constructor(private readonly ctx: AppContext) {
     this.derivs = new DerivativeRepository(ctx.db);
     this.jobs = new JobRepository(ctx.db);
+    this.leases = new LeaseRepository(ctx.db);
   }
 
   private get paths() {
@@ -249,9 +253,10 @@ export class StorageService {
         }
         total -= previewBytes(p.id);
       }
+      const leased = this.leases.protectedDerivativeIds();
       for (const d of cache) {
         if (total <= budget) break;
-        if (prot.has(d.relPath)) {
+        if (prot.has(d.relPath) || leased.has(d.id)) {
           skippedInUse++;
           continue;
         }
@@ -268,14 +273,18 @@ export class StorageService {
     };
     if (dryRun || !items.length) return report;
 
-    // Exécution : re-vérification de la protection et suppression des lignes dans une transaction,
+    // Exécution : re-vérification de la protection et suppression des lignes dans une transaction
+    // BEGIN IMMEDIATE (verrou d’écriture pris avant toute lecture),
     // puis suppression des fichiers (un dérivé sans ligne ne peut plus être servi).
     const executed = this.ctx.db.transaction(() => {
       const protNow = this.protectedPaths();
       const rendersNow = this.renderState();
+      // Baux revérifiés SOUS LE VERROU : un bail pris pendant le calcul protège le dérivé.
+      const leasedNow = this.leases.protectedDerivativeIds();
       const evicted = new Set<string>();
       const ok = items.filter((i) => {
         if (isProtected(i.relPath, rendersNow.protectedPrefixes, protNow)) return false;
+        if (i.derivativeId && leasedNow.has(i.derivativeId)) return false;
         if (!i.renderId) return true;
         // Un aperçu n'est supprimé que s'il est encore « réussi » ; un final ne l'est jamais
         // (contrainte SQL : un final ne peut pas passer à « evicted »).
@@ -289,8 +298,9 @@ export class StorageService {
         return changed === 1;
       });
       for (const i of ok) if (i.derivativeId) this.derivs.delete(i.derivativeId);
+      this.leases.purgeExpired();
       return ok;
-    })();
+    }).immediate();
     for (const i of executed) {
       const abs = toAbs(this.paths.storage, i.relPath);
       if (!isInside(this.paths.processing, abs)) {
