@@ -250,14 +250,14 @@ async function renderCommand(
   if (values['suggest-effects']) {
     const r = await renders.suggest(project.id, {
       requestId: randomUUID(),
-      baseRevision: project.currentRevision,
+      baseRevision: clips.edits.headVersion(project.id),
     });
     console.log(`Effets proposés (révision ${r.revision}) :`);
     for (const e of r.suggested) console.log(`  ${e.type} — ${e.reason}`);
     if (!r.suggested.length) console.log('  aucun');
     return 0;
   }
-  let revision = project.currentRevision;
+  let revision = clips.edits.headVersion(project.id);
   if (values['enable-allowed-audio']) {
     const view = await clips.view(project.id);
     const allowed = view.audio.selected;

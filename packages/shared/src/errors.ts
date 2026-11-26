@@ -42,6 +42,12 @@ export type AppErrorCode =
   | 'DURATION_OUT_OF_RANGE'
   | 'RENDER_FAILED'
   | 'DISK_SPACE_LOW'
+  | 'EDITOR_REQUIRED'
+  | 'HISTORY_CHANGED'
+  | 'JOURNAL_CORRUPTED'
+  | 'PRECONDITION_FAILED'
+  | 'MASK_RISK_NOT_ACKNOWLEDGED'
+  | 'DOCUMENT_DIVERGED'
   | 'INTERNAL';
 
 export class AppError extends Error {

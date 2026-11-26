@@ -731,6 +731,72 @@ describe.skipIf(!enabled)('Rendus des clips (API, étape 6b)', () => {
     expect(revs.body.revisions.at(-1)!.source).toBe('system');
   }, 240_000);
 
+  it('7b : modification concurrente entre la construction du plan et l’insertion ⇒ VERSION_CONFLICT, rien en file, aucune ligne de rendu (création comme réutilisation)', async () => {
+    const video = await setup();
+    const { project } = await prepare(video);
+    const head = () => services.clips.edits.headVersion(project);
+    const counts = () => ({
+      renders: (db.prepare('SELECT COUNT(*) AS n FROM clip_renders').get() as { n: number }).n,
+      jobs: (
+        db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE type = 'render_clip'`).get() as {
+          n: number;
+        }
+      ).n,
+    });
+    // Modification concurrente (autre client), exécutée exactement entre la construction du plan
+    // et la transaction d'insertion. La révision du plan existe toujours (point de contrôle).
+    let planVersion = 0;
+    const concurrentEdit = (changes: Record<string, unknown>) => async () => {
+      planVersion = head();
+      expect(services.clips.repo.revision(project, planVersion)).not.toBeNull();
+      const r = await call('PATCH', `/api/clip-projects/${project}`, {
+        requestId: randomUUID(),
+        baseRevision: planVersion,
+        changes,
+      });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(head()).toBe(planVersion + 1);
+    };
+
+    // 1. Création : refus immédiat, aucune ligne, aucun traitement en file.
+    const before = counts();
+    services.renders.hooks.beforeRequestLock = concurrentEdit({ mode: 'enrichi' });
+    const refused = await requestRender(project, 'preview');
+    delete services.renders.hooks.beforeRequestLock;
+    expect(refused.status).toBe(409);
+    expect(refused.body.error?.code).toBe('VERSION_CONFLICT');
+    expect((refused.body.error as { details?: unknown }).details).toEqual({
+      currentRevision: planVersion + 1,
+      planRevision: planVersion,
+    });
+    expect(counts()).toEqual(before);
+
+    // 2. Réutilisation : un rendu identique existe pour la version du plan ; la tête avance
+    //    pendant la préparation ⇒ refus, l'ancien rendu n'est PAS renvoyé comme à jour.
+    const first = await requestRender(project, 'preview');
+    expect(first.status, JSON.stringify(first.body)).toBe(202);
+    expect(first.body.created).toBe(true);
+    await services.runner.idle();
+    const afterFirst = counts();
+    // Modification qui change le plan (sous-titres retirés) : l'étape 3 crée un nouveau rendu.
+    services.renders.hooks.beforeRequestLock = concurrentEdit({ captions: { enabled: false } });
+    const reused = await requestRender(project, 'preview');
+    delete services.renders.hooks.beforeRequestLock;
+    expect(reused.status).toBe(409);
+    expect(reused.body.error?.code).toBe('VERSION_CONFLICT');
+    expect(counts()).toEqual(afterFirst);
+
+    // 3. Sans concurrence, la demande suivante porte sur la version courante.
+    const ok = await requestRender(project, 'preview');
+    expect(ok.status, JSON.stringify(ok.body)).toBe(202);
+    expect(ok.body.created).toBe(true);
+    expect(
+      db.prepare('SELECT revision FROM clip_renders WHERE id = ?').get(ok.body.render.id),
+    ).toEqual({ revision: head() });
+    await services.runner.idle();
+    services.renders.hooks = {};
+  }, 300_000);
+
   /* ------------------------------ Étape 6c ------------------------------ */
 
   interface ProjectBody {
@@ -853,13 +919,15 @@ describe.skipIf(!enabled)('Rendus des clips (API, étape 6b)', () => {
     expect(v.document.effects.map((e) => [e.id, e.enabled])).toEqual(
       v.document.effects.map((e) => [e.id, e.id === chosen]),
     );
-    // Révision précédente jamais réécrite.
-    const old = db
-      .prepare(
-        'SELECT document_hash FROM clip_project_revisions WHERE project_id = ? AND revision = ?',
-      )
-      .get(project, revBefore) as { document_hash: string };
-    expect(old.document_hash).toBe(hashBefore);
+    // Version précédente jamais réécrite (étape 7b : versions = révisions d'origine + journal en
+    // ajout seul ; empreinte de la version inchangée).
+    const versions = await call<{ revisions: { revision: number; documentHash: string }[] }>(
+      'GET',
+      `/api/clip-projects/${project}/revisions`,
+    );
+    expect(versions.body.revisions.find((r) => r.revision === revBefore)?.documentHash).toBe(
+      hashBefore,
+    );
   }, 300_000);
 
   it('6c : image fixe — demande remplacée, plafond global, client déconnecté (FFmpeg non mené à terme)', async () => {

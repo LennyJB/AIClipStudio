@@ -834,6 +834,55 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX clip_renders_project_idx ON clip_renders(project_id, created_at);
     `,
   },
+  {
+    // Étape 7b : journal d'édition en ajout seul et tête de chaque projet (docs/plan-etape-7.md
+    // §6). Les révisions existantes deviennent des points de contrôle ; aucune n'est modifiée.
+    version: 8,
+    name: 'clip_project_edits',
+    sql: `
+      -- Tête : version courante (numéro de la dernière entrée) et dernier point de contrôle.
+      CREATE TABLE clip_project_heads (
+        project_id           TEXT PRIMARY KEY REFERENCES clip_projects(id) ON DELETE CASCADE,
+        head_seq             INTEGER NOT NULL CHECK (head_seq >= 1),
+        checkpoint_revision  INTEGER NOT NULL CHECK (checkpoint_revision >= 1),
+        updated_at           TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK (checkpoint_revision <= head_seq)
+      );
+      -- Projets existants : la tête est leur révision courante (aucune donnée modifiée).
+      INSERT INTO clip_project_heads (project_id, head_seq, checkpoint_revision)
+        SELECT id, current_revision, current_revision FROM clip_projects;
+
+      CREATE TABLE clip_project_edits (
+        project_id          TEXT NOT NULL REFERENCES clip_projects(id) ON DELETE CASCADE,
+        seq                 INTEGER NOT NULL CHECK (seq >= 2),
+        kind                TEXT NOT NULL CHECK (kind IN ('do','undo','redo','system')),
+        target_seq          INTEGER,
+        ops_json            TEXT NOT NULL CHECK (json_valid(ops_json)),
+        inverse_json        TEXT NOT NULL CHECK (json_valid(inverse_json)),
+        preconditions_json  TEXT NOT NULL CHECK (json_valid(preconditions_json)),
+        hash_after          TEXT NOT NULL CHECK (length(hash_after) = 64),
+        base_revision       INTEGER NOT NULL CHECK (base_revision >= 1),
+        base_seq            INTEGER NOT NULL CHECK (base_seq >= 1 AND base_seq < seq),
+        client_id           TEXT CHECK (client_id IS NULL OR length(client_id) <= 64),
+        request_id          TEXT NOT NULL,
+        request_hash        TEXT NOT NULL CHECK (length(request_hash) = 64),
+        summary             TEXT CHECK (summary IS NULL OR length(summary) <= 500),
+        source              TEXT NOT NULL CHECK (source IN ('ui','cli','api','system')),
+        created_at          TEXT NOT NULL DEFAULT (${NOW}),
+        PRIMARY KEY (project_id, seq),
+        UNIQUE (project_id, request_id),
+        CHECK ((kind IN ('undo','redo')) = (target_seq IS NOT NULL)),
+        CHECK (target_seq IS NULL OR target_seq < seq)
+      );
+      -- Journal en ajout seul : une entrée n'est jamais modifiée ni supprimée (sauf suppression du
+      -- projet lui-même, par cascade).
+      CREATE TRIGGER clip_project_edits_no_update BEFORE UPDATE ON clip_project_edits
+      BEGIN SELECT RAISE(ABORT, 'clip_project_edits : journal en ajout seul'); END;
+      CREATE TRIGGER clip_project_edits_no_delete BEFORE DELETE ON clip_project_edits
+      WHEN EXISTS (SELECT 1 FROM clip_projects WHERE id = OLD.project_id)
+      BEGIN SELECT RAISE(ABORT, 'clip_project_edits : journal en ajout seul'); END;
+    `,
+  },
 ];
 
 export function openDatabase(
