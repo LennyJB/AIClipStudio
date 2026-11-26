@@ -259,7 +259,7 @@ describe('horloge et double tampon (média simulé)', () => {
     expect(c.now()).toBe(5_000);
   });
 
-  const fake = (): VideoLike & { seeks: number } => {
+  const fake = (): VideoLike & { seeks: number; t: number } => {
     const v = {
       t: 0,
       seeks: 0,

@@ -70,6 +70,10 @@ test('aperçu canvas : zone sensible visible sans masque (contre-épreuve), apla
   page,
 }) => {
   await open(page);
+  // Sous-titres : seules les sources autorisées (micro), textes pseudonymisés par le serveur.
+  await expect(page.getByText(/\[Coéquipier 1\]/u).first()).toBeVisible();
+  await expect(page.getByText(/SECRET/u)).toHaveCount(0);
+  await expect(page.getByText(/Théo/u)).toHaveCount(0);
   await expect
     .poll(
       async () => (await canvasPixels(page, ZONE)).filter((p) => p.every((v) => v > 220)).length,

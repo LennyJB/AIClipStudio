@@ -945,8 +945,9 @@ réaction** de la 6a s'appliquent toujours au premier et au dernier segment.
 | 7a — Modèle v2, opérations et scène               | fusionnée (PR #18)                                             |
 | 7b — Journal d'édition, points de contrôle et API | fusionnée (PR #19)                                             |
 | 7c — Moteur multi-segments                        | fusionnée (PR #20)                                             |
-| 7d — Médias de travail de l'éditeur               | en revue                                                       |
-| 7e à 7k                                           | non commencées (chacune attend la validation de la précédente) |
+| 7d — Médias de travail de l'éditeur               | fusionnée (PR #21)                                             |
+| 7e — Éditeur complet (anciennes 7e à 7i, § 18)    | en revue                                                       |
+| 7f — Bibliothèque de médias et finalisation       | non commencée (anciennes 7j et 7k, attend la validation de 7e) |
 
 ---
 
@@ -1213,3 +1214,86 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   `.ttf`/`.otf`), connexion locale et `Host` autorisé.
 - **`npm run doctor`** : avertissement si `API_HOST` n'est pas une adresse de bouclage.
 - **Code d'erreur ajouté** : `FORBIDDEN` (403).
+
+## 18. Précisions de mise en œuvre (PR 7e : éditeur complet)
+
+- **Regroupement décidé par le créateur** : la PR 7e réunit les anciennes PR 7e à 7i (socle de
+  l'éditeur, timeline et segments, sous-titres, cadrage libre et masques temporels, effets
+  visuels et sonores). La PR 7f réunira les anciennes 7j (bibliothèque de médias, calques image
+  et mèmes, effets sonores, migration 10) et 7k (cohérence aperçu / export mesurée, performances,
+  guide). Le périmètre et les règles du plan v4 sont inchangés.
+- **Moteur de rendu** : tout le document v2 est rendu, sauf ce qui dépend de la bibliothèque de
+  médias (calques image et mèmes, effets sonores), toujours refusé explicitement
+  (`RENDER_FEATURE_UNSUPPORTED`). Un clip d'un segment sans fonction de l'éditeur garde le graphe
+  de l'étape 6 (12 empreintes de référence inchangées) ; sinon, graphe de l'éditeur (une branche
+  par segment, même pour un seul segment). Les textes ne changent jamais le graphe (ASS).
+  - **Masques temporels** : aplat opaque sur l'image source de chaque branche, activé sur sa plage
+    **élargie de 100 ms de chaque côté** (`MASK_TIME_MARGIN_MS`, aperçu et export) : l'image
+    affichée peut venir d'une image source voisine selon la cadence et la version de FFmpeg ;
+    jamais moins masqué. Statique pendant un arrêt sur image et dans l'image exacte.
+  - **Disposition libre et surcharges par segment** : fond uni de la couleur du document, chaque
+    calque = recadrage de l'image source (aplats posés) redimensionné dans son cadre, dans l'ordre
+    d'empilement ; mêmes rectangles que le canvas (`segmentLayers`, géométrie partagée). Le zoom
+    de la facecam (`reaction_hold`) s'applique aux calques facecam.
+  - **Effets** : catalogue `defineEffect` (`@acs/timeline`, paramètres validés, valeurs par défaut,
+    catégorie, espace d'application) ; enveloppes pures partagées par l'aperçu et l'export, avec
+    une table `EFFECT_FFMPEG` côté moteur. Un test évalue numériquement les expressions FFmpeg
+    produites et les compare aux enveloppes de l'aperçu (propriétés `fast-check`).
+    - `blur_region` : flou de la zone APRÈS les aplats, avant la disposition ; actif en mode
+      fidèle (ce n'est pas un mouvement) ; jamais compté comme un masque (contre-épreuve FFmpeg :
+      sans aplat, la zone reste visible sous le flou) ;
+    - `zoom` : zoom progressif (rampes de 0,25 s) de l'image composée, centré sur le point de
+      sortie où apparaît le centre de la zone (calque le plus haut qui la montre) ;
+    - `shake` : image composée recopiée décalée sur elle-même (9 Hz et 7 Hz, pixels entiers) ;
+    - `flash` : voile blanc d'opacité intensité × (1 − progression) ;
+    - `duck` : toutes les pistes de l'enregistrement atténuées (rampes de 20 ms) ;
+    - `bleep` : pistes de l'enregistrement coupées (rampes de 5 ms) et ton sinusoïdal à −12 dBFS ;
+    - `fade_in` / `fade_out` : rampe linéaire du mixage complet sur la plage de l'effet, APRÈS la
+      normalisation ;
+    - automatisation du gain : interpolation linéaire en dB, en temps source, dans chaque branche.
+      Les gains variables sont évalués par trames de 64 échantillons (≈ 1,3 ms) : un bip ne laisse
+      pas passer la parole censurée.
+  - **Textes** (`captionLinesV2`, `textOverlayLines`) : lignes communes au canvas et à l'ASS.
+    Horaires réglés (±2 s), style propre (styles ASS `S1`, `S2`… en plus de `Default`), position
+    (`\an5\pos`), sous-titres manuels. Calques texte : centrés dans leur cadre, police à 70 % de
+    sa hauteur, contour noir, opacité ; au-dessus des sous-titres. Tous ces textes sont
+    **pseudonymisés par le serveur** (comme la transcription) ; un texte affiché manquant est un
+    refus, jamais un affichage en clair.
+- **API** : `GET /document` renvoie aussi la décision d'audio exporté du serveur et les
+  caractéristiques de la vidéo (aucun chemin) ; `GET /api/clip-projects/:id/texts` renvoie les
+  textes affichés (pseudonymisés) de la version courante ; `POST /api/clip-projects/:id/checkpoint`
+  (« Enregistrer une version ») ; la libération des médias de l'éditeur crée aussi un point de
+  contrôle (§ 6.1).
+- **Page de l'éditeur** : `#/editeur/<projet>`, ouverte depuis « Clips ».
+  - État (`zustand`) : document affiché = document du serveur + lots en attente, appliqués par le
+    même réducteur avec la décision d'audio du serveur. Chaque lot porte l'empreinte attendue : un
+    résultat différent sur le serveur est refusé (`DOCUMENT_DIVERGED`), jamais réappliqué en
+    silence. Un lot réappliqué par le serveur (`rebased`) relit le document ; les gestes suivants
+    passent alors par « Réappliquer », un par un.
+  - Brouillon IndexedDB écrit avant chaque envoi et rejoué au chargement avec le même
+    `requestId` (le montage double de React ne renvoie rien en double : chargement unique).
+    IndexedDB indisponible : avertissement, file en mémoire.
+  - Annuler un lot non envoyé le retire de la file ; pendant un envoi, l'annulation attend la
+    confirmation. Libellés « autre onglet », « système », « ligne de commande ». Masque retiré par
+    une annulation : confirmation explicite.
+- **Lecteur** : canvas 540 × 960 (géométrie de l'aperçu FFmpeg) ; le proxy NON masqué n'est lu que
+  dans des éléments `<video>` cachés et dessiné dans un tampon hors écran où les aplats sont posés
+  avant toute copie. Horloge maître `AudioContext` (horloge du navigateur sans son) ; vidéo recalée
+  au-delà de 80 ms ; deux éléments vidéo en double tampon. Web Audio : seules les pistes préparées
+  par le serveur (autorisées et activées) ; silence des arrêts sur image et des vides ; fondus de
+  raccord, gains, automatisation, atténuation, bips et fondus identiques à l'export. Polices OFL
+  servies par l'API. « Image exacte » (FFmpeg) affichée à côté du canvas.
+- **Timeline** : pistes Vidéo (vignettes masquées, vides hachurés, arrêts marqués), Calques,
+  Sous-titres (sources choisies ET autorisées, textes du serveur), Effets, une piste par source
+  audio (forme d'onde en temps montage, aucune pendant un arrêt ou un vide), Effets sonores (vide
+  jusqu'à la 7f). Poignées de rognage, déplacement, aimantation (tête de lecture, bords, mots,
+  sous-titres), zoom, raccourcis du § 4.
+- **Tests** : `npm run test:unit` exécute désormais aussi les tests de l'interface (projet `web`,
+  jsdom), qui n'étaient lancés par aucun job de la CI. Parcours Playwright (`npm run test:e2e`) avec
+  l'API RÉELLE (`tests/e2e/server.ts` : vidéo lavfi, transcription simulée, faux modèle), Vite et
+  Chromium : job dédié de la CI. Le scénario de la 7d « à travers Vite avec un navigateur » y est
+  réalisé (vraie balise `<video>`, autre origine refusée).
+- **Limites connues** (à traiter en 7f, mesure de cohérence) : rendu du texte canvas contre libass
+  (quelques pixels) ; normalisation `loudnorm` absente de l'aperçu ; bords du flou (canvas contre
+  `gblur`) ; J recule d'une seconde (aucune lecture arrière) ; zones masquées réglées par valeurs
+  numériques (les poignées sur l'aperçu concernent les calques de cadrage).

@@ -155,7 +155,7 @@ async function main() {
     JSON.stringify({ projectId: project, recordingId: rec.id, proposalId: proposal.id }),
   );
   await app.listen({ host: '127.0.0.1', port: E2E.apiPort });
-  console.log(`API e2e prête sur ${E2E.apiPort} (projet ${project})`);
+  console.warn(`API e2e prête sur ${E2E.apiPort} (projet ${project})`);
 }
 
 main().catch((err: unknown) => {

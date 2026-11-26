@@ -229,7 +229,8 @@ describe.skipIf(!enabled)('fonctions de l’éditeur (FFmpeg réel)', () => {
     const out = await render(pl, layoutVideo);
     const [mx, my] = P(rect.x + 150, rect.y + 150);
     const [wx, wy] = P(Z.mask.x + Z.mask.w / 2, Z.mask.y + Z.mask.h / 2);
-    for (const t of [2.05, 2.5, 3.5, 3.95]) {
+    // 1,95 s et 4,05 s : hors de la plage nominale, dans la marge de sécurité (jamais moins masqué).
+    for (const t of [1.95, 2.05, 2.5, 3.5, 3.95, 4.05]) {
       const f = frameAt(out, t);
       expect(black(f.rgb(mx, my)), `masque temporel à ${t} s`).toBe(true);
       expect(black(f.rgb(wx, wy)), `zone sensible à ${t} s`).toBe(true);
