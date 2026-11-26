@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AppError } from '@acs/shared';
-import { defaultPythonPath, loadConfig } from './config';
+import { defaultPythonPath, isLoopbackHost, loadConfig, parseLocalOrigin } from './config';
 
 const ROOT = path.resolve('/tmp/acs-root');
 
@@ -87,5 +87,46 @@ describe('loadConfig', () => {
       path.join(ROOT, '.venv', 'Scripts', 'python.exe'),
     );
     expect(defaultPythonPath(ROOT, 'linux')).toBe(path.join(ROOT, '.venv', 'bin', 'python'));
+  });
+
+  it('EDITOR_ALLOWED_ORIGINS : origines http locales par défaut ; Host DÉDUITS (une origine ajoutée = un Host de plus)', () => {
+    const def = loadConfig({}, ROOT).editor;
+    expect(def.allowedOrigins).toEqual(['http://127.0.0.1:5173', 'http://localhost:5173']);
+    expect(def.allowedHosts).toEqual(['127.0.0.1:5173', 'localhost:5173']);
+    const more = loadConfig(
+      { EDITOR_ALLOWED_ORIGINS: 'http://127.0.0.1:5173,http://localhost:5173,http://[::1]:5174' },
+      ROOT,
+    ).editor;
+    expect(more.allowedHosts).toEqual(['127.0.0.1:5173', 'localhost:5173', '[::1]:5174']);
+    // Jamais le port de l'API : aucun usage légitime n'y appelle les routes du proxy.
+    expect(def.allowedHosts).not.toContain(`127.0.0.1:${loadConfig({}, ROOT).server.port}`);
+  });
+
+  it('EDITOR_ALLOWED_ORIGINS : toute origine non locale, non http, avec chemin ou identifiants ⇒ démarrage refusé', () => {
+    for (const bad of [
+      'http://192.168.1.10:5173',
+      'http://evil.example:5173',
+      'https://127.0.0.1:5173',
+      'http://127.0.0.1:5173/chemin',
+      'http://user:pw@127.0.0.1:5173',
+      'http://127.0.0.1.evil.example:5173',
+      'null',
+      '*',
+      '',
+    ]) {
+      expect(() => loadConfig({ EDITOR_ALLOWED_ORIGINS: bad }, ROOT), bad).toThrow(
+        expect.objectContaining({ code: 'CONFIG_INVALID' }),
+      );
+    }
+    expect(parseLocalOrigin('http://localhost:5173/')).toBe('http://localhost:5173');
+  });
+
+  it('API_HOST : adresses de bouclage reconnues (avertissement de doctor sinon)', () => {
+    for (const h of ['127.0.0.1', '127.0.0.2', 'localhost', '::1', '[::1]']) {
+      expect(isLoopbackHost(h), h).toBe(true);
+    }
+    for (const h of ['0.0.0.0', '192.168.1.5', '::', 'mon-pc.local']) {
+      expect(isLoopbackHost(h), h).toBe(false);
+    }
   });
 });

@@ -6,6 +6,7 @@ import type { Db } from './db';
 import { loggerOptions } from './logger';
 import { registerAnalysisRoutes } from './routes/analysis';
 import { registerClipRoutes } from './routes/clips';
+import { registerEditorMediaRoutes } from './routes/editor-media';
 import { registerReviewRoutes } from './routes/review';
 import { registerRecordingRoutes } from './routes/recordings';
 import { registerStorageRoutes } from './routes/storage';
@@ -58,6 +59,7 @@ const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   MASK_RISK_NOT_ACKNOWLEDGED: 422,
   DOCUMENT_DIVERGED: 409,
   RENDER_FEATURE_UNSUPPORTED: 409,
+  FORBIDDEN: 403,
   PROPOSAL_NOT_REVIEWABLE: 409,
   AUDIO_TRACK_MISSING: 409,
   NOT_READY: 409,
@@ -121,6 +123,7 @@ export function buildApp({ config, db, model }: AppDeps): {
   registerAnalysisRoutes(app, services);
   registerReviewRoutes(app, services);
   registerClipRoutes(app, services);
+  registerEditorMediaRoutes(app, services);
   app.addHook('onClose', async () => {
     await services.runner.stop();
   });

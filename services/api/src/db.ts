@@ -883,6 +883,25 @@ export const MIGRATIONS: readonly Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'clip_project_edits : journal en ajout seul'); END;
     `,
   },
+  {
+    // Étape 7d : baux sur les médias de travail de l'éditeur (docs/plan-etape-7.md §5.2). Le bail
+    // porte sur la CLÉ DE CACHE du média attendu (pas sur une ligne) : un média encore en cours de
+    // préparation est protégé dès sa création. Un dérivé dont la clé est sous bail actif n'est
+    // jamais supprimé par le nettoyage ; un bail expiré ne protège plus rien.
+    version: 9,
+    name: 'derivative_leases',
+    sql: `
+      CREATE TABLE derivative_leases (
+        cache_key      TEXT NOT NULL CHECK (length(cache_key) = 64),
+        holder         TEXT NOT NULL CHECK (length(holder) BETWEEN 1 AND 200),
+        expires_at     TEXT NOT NULL CHECK (expires_at GLOB '[0-9][0-9][0-9][0-9]-*Z'),
+        created_at     TEXT NOT NULL DEFAULT (${NOW}),
+        PRIMARY KEY (cache_key, holder)
+      );
+      CREATE INDEX derivative_leases_expiry ON derivative_leases(expires_at);
+      CREATE INDEX derivative_leases_holder ON derivative_leases(holder);
+    `,
+  },
 ];
 
 export function openDatabase(

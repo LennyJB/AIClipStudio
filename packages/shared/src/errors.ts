@@ -49,6 +49,7 @@ export type AppErrorCode =
   | 'MASK_RISK_NOT_ACKNOWLEDGED'
   | 'DOCUMENT_DIVERGED'
   | 'RENDER_FEATURE_UNSUPPORTED'
+  | 'FORBIDDEN'
   | 'INTERNAL';
 
 export class AppError extends Error {

@@ -13,3 +13,5 @@ export * from './tracks';
 export * from './wav';
 export * from './waveform';
 export * from './integrity';
+export * from './proxy';
+export * from './thumbnails';

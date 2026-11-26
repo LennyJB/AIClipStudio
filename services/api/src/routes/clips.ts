@@ -13,7 +13,7 @@ import type { Services } from '../services';
 import { parse } from './validation';
 
 /** Envoie un fichier ouvert, avec requêtes partielles (Range) et HEAD. */
-function sendFile(
+export function sendFile(
   req: FastifyRequest,
   reply: FastifyReply,
   file: OpenedFile,
