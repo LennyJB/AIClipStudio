@@ -87,6 +87,13 @@ async function main() {
           `${toTranscribe.has(t.audioIndex) ? '  → à transcrire' : ''}`,
       );
     }
+    console.log(
+      `  état      ${recording.health.status === 'ok' ? 'lisible' : `PARTIELLEMENT EXPLOITABLE (${recording.health.issues.join(', ')})`}` +
+        `${recording.durationSource === 'scan' ? ' — durée mesurée en lisant le fichier' : ''}`,
+    );
+    if (recording.audioTracks.length === 1) {
+      console.log('  piste unique : « Tout » (son mixé d’origine, jamais séparé)');
+    }
     if (recording.warnings.length)
       console.log(`  avertissements : ${recording.warnings.join(', ')}`);
 

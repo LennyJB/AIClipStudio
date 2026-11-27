@@ -12,7 +12,11 @@ export type TrackRole = z.infer<typeof TrackRoleSchema>;
 
 export type TrackRoleSource = 'override' | 'title' | 'config' | 'single_track' | 'default';
 
-export const SUPPORTED_EXTENSIONS = ['.mkv', '.mp4'] as const;
+/**
+ * Conteneurs acceptés : MKV et MP4 (OBS, rediffusions Twitch téléchargées), MOV/M4V, et MPEG-TS
+ * (`.ts`, flux Twitch enregistré tel quel). Le CONTENU est revérifié par ffprobe.
+ */
+export const SUPPORTED_EXTENSIONS = ['.mkv', '.mp4', '.mov', '.m4v', '.ts'] as const;
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'cancelled';
 export type JobType =

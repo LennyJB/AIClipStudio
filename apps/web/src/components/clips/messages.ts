@@ -43,9 +43,11 @@ const DECLARATION_LABELS: Record<string, string> = {
 export function describeMissing(missing: readonly MissingRequirement[]): string {
   return missing
     .map((m) =>
-      m.kind === 'declaration'
-        ? (DECLARATION_LABELS[m.subject] ?? m.subject)
-        : `accord requis : ${CATEGORY_LABELS[m.subject]}`,
+      m.kind === 'confirmation'
+        ? 'rôle des pistes supposé (pistes sans nom) : confirmez les rôles'
+        : m.kind === 'declaration'
+          ? (DECLARATION_LABELS[m.subject] ?? m.subject)
+          : `accord requis : ${CATEGORY_LABELS[m.subject]}`,
     )
     .join(' ; ');
 }

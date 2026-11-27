@@ -2,7 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { loadGameProfile, GENERIC_GAME_PROFILE_ID } from '@acs/editorial';
-import { fingerprintFile, probeMedia, resolveTrackRoles } from '@acs/media';
+import {
+  applyScan,
+  fingerprintFile,
+  mediaHealth,
+  probeMedia,
+  resolveTrackRoles,
+  scanMedia,
+} from '@acs/media';
 import { AppError, SUPPORTED_EXTENSIONS, type TrackRole } from '@acs/shared';
 import type { AppContext } from '../context';
 import { RecordingRepository, type RecordingDto } from './repository';
@@ -28,7 +35,7 @@ export async function validateSourcePath(rawPath: string): Promise<{ path: strin
   if (!(SUPPORTED_EXTENSIONS as readonly string[]).includes(ext)) {
     throw new AppError(
       'MEDIA_UNSUPPORTED',
-      `Format non pris en charge (${ext || 'aucune extension'}) : MKV ou MP4 attendu`,
+      `Format non pris en charge (${ext || 'aucune extension'}) : MKV, MP4, MOV, M4V ou TS attendu`,
     );
   }
   let st;
@@ -63,7 +70,10 @@ export async function importRecording(ctx: AppContext, input: ImportInput): Prom
   }
 
   const started = Date.now();
-  const media = await probeMedia(ctx.config.tools.ffprobe, source.path);
+  const probed = await probeMedia(ctx.config.tools.ffprobe, source.path);
+  // Contrôle de lecture : début, fin annoncée, et durée MESURÉE si elle est absente, estimée ou
+  // fausse. Un fichier incomplet est signalé (`degraded`), jamais présenté comme valide.
+  let media = applyScan(probed, await scanMedia(ctx.config.tools.ffmpeg, source.path, probed));
   if (!media.audioTracks.length) {
     throw new AppError(
       'MEDIA_UNSUPPORTED',
@@ -76,7 +86,18 @@ export async function importRecording(ctx: AppContext, input: ImportInput): Prom
       `${input.trackRoles.length} rôle(s) fourni(s) pour ${media.audioTracks.length} piste(s) audio`,
     );
   }
-  const tracks = resolveTrackRoles(media.audioTracks, ctx.config.audioTrackRoles, input.trackRoles);
+  const tracks = resolveTrackRoles(
+    media.audioTracks,
+    ctx.config.audioTrackRoles,
+    input.trackRoles,
+    {
+      configOrder: media.container === 'mkv' || media.container === 'mp4',
+    },
+  );
+  if (tracks.some((t) => t.roleSource === 'config')) {
+    // Rôles déduits de l'ordre configuré (pistes sans nom) : à vérifier par le créateur.
+    media = { ...media, warnings: [...media.warnings, 'track_roles_from_config'] };
+  }
 
   const id = randomUUID();
   repo.insert({
@@ -98,6 +119,7 @@ export async function importRecording(ctx: AppContext, input: ImportInput): Prom
       durationSec: media.durationSec,
       audioTracks: tracks.map((t) => t.role),
       warnings: media.warnings,
+      health: mediaHealth(media.warnings).status,
       elapsedMs: Date.now() - started,
     },
     'Enregistrement importé',

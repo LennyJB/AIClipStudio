@@ -59,11 +59,19 @@ export type TrackRoleIn = 'mic' | 'discord' | 'game' | 'mix' | 'unknown';
 export interface TrackIn {
   audioIndex: number;
   role: TrackRoleIn;
+  /**
+   * Provenance du rôle (étape 8). `config` : rôle SUPPOSÉ d'après l'ordre `AUDIO_TRACK_ROLES`
+   * (pistes sans nom) ; il n'est qu'une suggestion : la piste n'est ni exportable ni sous-titrée
+   * tant que le créateur n'a pas confirmé explicitement les rôles (provenance `override`).
+   * Absent : rôle établi (compatibilité des appelants antérieurs).
+   */
+  roleSource?: string;
 }
 
 export type MissingRequirement =
   | { kind: 'declaration'; subject: 'mix_composition' | 'game_composition' | 'mic_composition' }
-  | { kind: 'consent'; subject: VoiceCategory };
+  | { kind: 'consent'; subject: VoiceCategory }
+  | { kind: 'confirmation'; subject: 'track_roles' };
 
 export interface TrackVerdict {
   audioIndex: number;
@@ -139,6 +147,9 @@ function categoriesFor(
 export function trackVerdict(t: TrackIn, s: ExportAudioState): TrackVerdict {
   const { needs, missingDeclaration } = categoriesFor(t.role, s);
   const missing: MissingRequirement[] = [];
+  // Rôle supposé (ordre configuré) : jamais exportable avant confirmation explicite. Une
+  // déclaration de composition ne vaut PAS confirmation du rôle de la piste.
+  if (t.roleSource === 'config') missing.push({ kind: 'confirmation', subject: 'track_roles' });
   // Sans déclaration, la piste est refusée même si tous les consentements existent : la
   // déclaration est un fait à établir par le créateur, jamais supposé.
   if (missingDeclaration) missing.push(missingDeclaration);
@@ -170,9 +181,11 @@ function exportableReason(role: TrackRoleIn, needs: readonly VoiceCategory[], s:
 export function describeMissing(missing: readonly MissingRequirement[]): string {
   return missing
     .map((m) =>
-      m.kind === 'declaration'
-        ? DECLARATION_LABELS[m.subject]
-        : `accord requis : ${CATEGORY_LABELS[m.subject]}`,
+      m.kind === 'confirmation'
+        ? 'rôle des pistes supposé (pistes sans nom) : confirmez les rôles'
+        : m.kind === 'declaration'
+          ? DECLARATION_LABELS[m.subject]
+          : `accord requis : ${CATEGORY_LABELS[m.subject]}`,
     )
     .join(' ; ');
 }

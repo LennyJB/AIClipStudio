@@ -1,5 +1,5 @@
 import type { JobLane, JobStatus, JobType, TrackRole, TrackRoleSource } from '@acs/shared';
-import type { MediaInfo, MediaWarning } from '@acs/media';
+import { mediaHealth, type MediaInfo, type MediaScanSummary, type MediaWarning } from '@acs/media';
 import type { Db } from '../db';
 
 /* ---------------------------- Types exposés ---------------------------- */
@@ -27,6 +27,13 @@ export interface RecordingDto {
   gameId: string;
   video: MediaInfo['video'];
   warnings: MediaWarning[];
+  /**
+   * État du fichier (étape 8) : `degraded` dès qu'une anomalie grave est connue (tronqué, erreurs
+   * de lecture, durée inconnue ou incohérente, piste audio trop courte, métadonnées absentes).
+   */
+  health: { status: 'ok' | 'degraded'; issues: MediaWarning[] };
+  /** Contrôle de lecture fait à l'import (absent pour un enregistrement importé avant l'étape 8). */
+  scan: MediaScanSummary | null;
   createdAt: string;
   audioTracks: AudioTrackDto[];
 }
@@ -216,6 +223,11 @@ export class RecordingRepository {
       .prepare('SELECT * FROM audio_tracks WHERE recording_id = ? ORDER BY audio_index')
       .all(id) as TrackRow[];
     const media = JSON.parse(row.media_info_json) as MediaInfo;
+    const audioTracks = tracks.map(toTrack);
+    // Rôles corrigés par le créateur : l'avertissement « rôles supposés » ne s'applique plus.
+    const warnings = (JSON.parse(row.warnings_json) as MediaWarning[]).filter(
+      (w) => w !== 'track_roles_from_config' || audioTracks.some((t) => t.roleSource === 'config'),
+    );
     return {
       id: row.id,
       sourcePath: row.source_path,
@@ -226,9 +238,11 @@ export class RecordingRepository {
       durationSource: row.duration_source as RecordingDto['durationSource'],
       gameId: row.game_id,
       video: media.video,
-      warnings: JSON.parse(row.warnings_json) as MediaWarning[],
+      warnings,
+      health: mediaHealth(warnings),
+      scan: media.scan ?? null,
       createdAt: row.created_at,
-      audioTracks: tracks.map(toTrack),
+      audioTracks,
     };
   }
 

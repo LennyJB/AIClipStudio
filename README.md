@@ -208,14 +208,22 @@ valeur.
 - L'enregistrement est **référencé par son chemin**, jamais copié ni modifié. Une empreinte
   (taille + 1er et dernier Mo) est enregistrée : un fichier déplacé ou modifié est détecté avant
   tout traitement, et réimporter le même fichier ne crée pas de doublon.
-- Formats acceptés : **MKV** (enregistrements OBS) et **MP4** (fichier de secours à piste
-  unique, traité comme un mix).
+- Formats acceptés : **MKV** (enregistrements OBS), **MP4**, **MOV/M4V** et **MPEG-TS** (`.ts`) :
+  rediffusions Twitch téléchargées, fichiers de secours. Aucune connexion à Twitch, aucune API ni
+  téléchargement automatique : on importe un fichier déjà présent sur le disque. Le contenu est
+  revérifié par ffprobe quelle que soit l'extension.
+- **Contrôle de lecture à l'import** (étape 8) : début et fin du fichier sont décodés ; la durée
+  est **mesurée** (lecture des paquets) quand elle est absente, estimée (MPEG-TS) ou fausse. Un
+  fichier tronqué, illisible par endroits, dont une piste audio s'arrête bien avant la fin ou dont
+  les métadonnées audio manquent est marqué **« partiellement exploitable »** (`health.status:
+degraded`) : il n'est jamais présenté comme parfaitement valide. Un MP4 dont l'index est absent
+  (téléchargement interrompu) est refusé. Détails : [`docs/import-twitch.md`](docs/import-twitch.md).
 - Le WAV est **aligné sur la timeline de la vidéo** : un décalage de départ ou un trou dans
   l'audio (images perdues par OBS) est comblé par du silence, pour que les timestamps de la
   transcription correspondent exactement à la vidéo. Écart mesuré entre l'extraction d'une
   portion et celle de l'enregistrement complet : **3,6 ms** (moins d'un quart d'image à 60 i/s).
 - Un MKV d'un OBS qui a planté n'a souvent pas de durée lisible : il est accepté, et la durée est
-  déduite de l'audio extrait.
+  mesurée à l'import (déduite de l'audio extrait pour un import antérieur à l'étape 8).
 
 ### Fichiers dérivés (produits à la demande, mis en cache)
 
@@ -237,13 +245,20 @@ valeur.
 Par ordre de priorité :
 
 1. rôles imposés à l'import (`--roles` ou champ `trackRoles` de l'API) ;
-2. fichier à piste unique → `mix` ;
+2. fichier à piste unique → `mix` (« Tout ») : **jamais** supposé être le micro, le jeu ou
+   Discord ; le son mixé d'origine est conservé tel quel (aucune séparation des voix) ;
 3. **nom de la piste dans OBS** (Paramètres → Sortie → Audio → Nom) : un nom contenant
    « Micro », « Discord », « Tout »/« Mix » ou « Jeu » est reconnu ;
-4. ordre défini par `AUDIO_TRACK_ROLES` dans `.env`.
+4. ordre défini par `AUDIO_TRACK_ROLES` dans `.env`, **seulement pour MKV et MP4** (conteneurs
+   d'OBS), à titre de **suggestion** : ces pistes ne sont ni exportées ni sous-titrées tant que
+   les rôles ne sont pas **confirmés explicitement** (« Confirmer ces rôles ») ; ailleurs (MPEG-TS, MOV), les pistes sans nom restent
+   **inconnues** (traitées comme « Tout » : une seule utilisée, composition à déclarer).
 
 Le plus fiable est de **nommer les pistes dans OBS** (« Tout », « Micro », « Discord ») : les
 futurs enregistrements seront alors reconnus quel que soit l'ordre des pistes.
+
+Dans l'interface, **« Enregistrements » → Importer** (chemin absolu du fichier) affiche l'état du
+fichier, ses pistes et ses anomalies.
 
 ### En ligne de commande (tests sur de vrais enregistrements)
 

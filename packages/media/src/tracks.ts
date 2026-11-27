@@ -27,14 +27,18 @@ export function roleFromTitle(title: string | null): TrackRole | null {
  *  1. rôles imposés à l'import (override) ;
  *  2. fichier à piste unique (MP4 de secours) → mix ;
  *  3. nom de piste OBS reconnu ;
- *  4. ordre configuré (AUDIO_TRACK_ROLES) ;
+ *  4. ordre configuré (AUDIO_TRACK_ROLES), seulement pour les conteneurs d'OBS (MKV, MP4) :
+ *     ailleurs (MPEG-TS, MOV…), l'ordre des pistes d'OBS n'a aucun sens, rien n'est supposé ;
  *  5. inconnu.
+ * Une piste UNIQUE est toujours « Tout » (mix) : jamais supposée être le micro, le jeu ou Discord.
  */
 export function resolveTrackRoles(
   tracks: readonly AudioTrackInfo[],
   configured: readonly TrackRole[],
   override?: readonly TrackRole[],
+  opts: { configOrder?: boolean } = {},
 ): ResolvedTrack[] {
+  const useConfig = opts.configOrder !== false;
   return tracks.map((t) => {
     const forced = override?.[t.audioIndex];
     if (forced) return { audioIndex: t.audioIndex, role: forced, roleSource: 'override' };
@@ -42,7 +46,7 @@ export function resolveTrackRoles(
       return { audioIndex: t.audioIndex, role: 'mix', roleSource: 'single_track' };
     const fromTitle = roleFromTitle(t.title);
     if (fromTitle) return { audioIndex: t.audioIndex, role: fromTitle, roleSource: 'title' };
-    const fromConfig = configured[t.audioIndex];
+    const fromConfig = useConfig ? configured[t.audioIndex] : undefined;
     if (fromConfig) return { audioIndex: t.audioIndex, role: fromConfig, roleSource: 'config' };
     return { audioIndex: t.audioIndex, role: 'unknown', roleSource: 'default' };
   });
