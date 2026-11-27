@@ -404,6 +404,20 @@ export interface CreateProjectInput {
    * fenêtre ajustable de l'étape 6 (proposition ±10 s).
    */
   captionsWindow?: { startMs: number; endMs: number };
+  /**
+   * Style VALIDÉ du créateur pour ce passage (étape 10). Absent : document identique à celui
+   * d'avant l'étape 10. Seuls des réglages représentables sont appliqués, et jamais au-delà de ce
+   * que le cadrage et l'audio autorisent (pas de facecam sans facecam validée, pas de sous-titres
+   * sans piste autorisée).
+   */
+  style?: {
+    captionStyle?: Partial<CaptionStyle>;
+    captionsEnabled?: boolean;
+    layoutPreset?: (typeof LAYOUT_PRESETS)[number];
+    facecamShare?: number;
+    mode?: 'fidele' | 'enrichi';
+    loudnorm?: boolean;
+  } | null;
 }
 
 const FULL_FRAME = { x: 0, y: 0, w: 1, h: 1 };
@@ -458,6 +472,12 @@ export function projectFromProposal(input: CreateProjectInput): {
     });
   }
 
+  const st = input.style ?? null;
+  const defaultPreset = framing?.facecam ? 'facecam_top' : 'blurred_fit';
+  const preset =
+    st?.layoutPreset && (st.layoutPreset !== 'facecam_top' || framing?.facecam)
+      ? st.layoutPreset
+      : defaultPreset;
   const project: ClipProject = {
     schemaVersion: PROJECT_SCHEMA_VERSION,
     origin: {
@@ -484,12 +504,15 @@ export function projectFromProposal(input: CreateProjectInput): {
       reactionEndMs: pr.reactionEndMs,
     },
     layout: {
-      preset: framing?.facecam ? 'facecam_top' : 'blurred_fit',
+      preset,
       gameplayRect: framing?.gameplay ?? FULL_FRAME,
       facecamRect: framing?.facecam ?? null,
       framingProfile: framing ? { id: framing.id, hash: framing.hash } : null,
       focusX: 0.5,
-      facecamShare: 0.33,
+      facecamShare:
+        st?.facecamShare !== undefined && st.facecamShare >= 0.25 && st.facecamShare <= 0.45
+          ? st.facecamShare
+          : 0.33,
       masks: (framing?.masks ?? []).map((m) => ({
         rect: { x: m.x, y: m.y, w: m.w, h: m.h },
         label: m.label,
@@ -497,9 +520,12 @@ export function projectFromProposal(input: CreateProjectInput): {
       })),
     },
     captions: {
-      enabled: sources.length > 0,
+      // Jamais de sous-titres sans source autorisée, même si le style les demande.
+      enabled: sources.length > 0 && st?.captionsEnabled !== false,
       sources,
-      style: DEFAULT_CAPTION_STYLE,
+      style: st?.captionStyle
+        ? CaptionStyleSchema.parse({ ...DEFAULT_CAPTION_STYLE, ...st.captionStyle })
+        : DEFAULT_CAPTION_STYLE,
       pseudonymize: true,
       items,
       corrections: [],
@@ -509,9 +535,10 @@ export function projectFromProposal(input: CreateProjectInput): {
     audio: {
       tracks: input.audio.tracks.map((t) => ({ ...t, gainDb: 0, enabled: true })),
       silent: false,
-      loudnorm: { enabled: true, targetLufs: -14 },
+      loudnorm: { enabled: st?.loudnorm ?? true, targetLufs: -14 },
     },
-    mode: pr.editingMode ?? input.defaults.mode,
+    // L'indication de la proposition prime, puis le style validé, puis le profil créateur.
+    mode: pr.editingMode ?? st?.mode ?? input.defaults.mode,
     durationPolicy: {
       minMs: input.defaults.minMs,
       maxMs: input.defaults.maxMs,
