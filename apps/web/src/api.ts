@@ -892,6 +892,8 @@ export interface ContentTypesView {
     segments: ContentSegment[];
     summary: ContentSummary;
   } | null;
+  /** Ce que l'analyse éditoriale fera de la segmentation (même règle que le serveur). */
+  analysis: 'none' | 'stale_detection' | 'not_relevant' | 'used' | null;
   job: Job | null;
 }
 

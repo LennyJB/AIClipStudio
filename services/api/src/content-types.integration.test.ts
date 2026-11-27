@@ -3,14 +3,22 @@
  * simulée), corrections du créateur, et prise en compte par l'analyse éditoriale (FAUX modèle :
  * aucun appel à Claude API).
  */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { FakeModel, type ModelRequest } from '@acs/editorial';
+import { CONTENT_DETECTOR_VERSION, FakeModel, type ModelRequest } from '@acs/editorial';
 import { fingerprintFile } from '@acs/media';
 import {
   createTalkVideo,
@@ -21,9 +29,10 @@ import {
 import type { AnalysisRunDto } from './analysis/repository';
 import { buildApp } from './app';
 import { loadConfig, ROOT_DIR, type AppConfig } from './config';
+import { contentDetectionKey } from './content/key';
 import type { ContentTypesView } from './content/service';
 import { openDatabase, type Db } from './db';
-import type { JobDto, RecordingDto } from './recordings/repository';
+import { RecordingRepository, type JobDto, type RecordingDto } from './recordings/repository';
 import type { Services } from './services';
 
 const FAKE_WORKER = fileURLToPath(
@@ -62,7 +71,7 @@ const noMoments = (req: ModelRequest) =>
     ? { kind: 'json' as const, value: { moments: [], streamSummary: 'Stream mixte.' } }
     : { kind: 'json' as const, value: { moments: [], noClipReason: 'Rien de notable.' } };
 
-async function setup() {
+async function setup(root: string = ROOT_DIR) {
   const storage = await mkdtemp(path.join(tmpdir(), 'acs-ct-'));
   mkdirSync(path.join(storage, 'config'), { recursive: true });
   writeFileSync(
@@ -78,7 +87,7 @@ async function setup() {
       WHISPER_WORKER_COMMAND: JSON.stringify([process.execPath, FAKE_WORKER]),
       ANALYSIS_PRIVACY_FILE: path.join(storage, 'config', 'privacy.json'),
     },
-    ROOT_DIR,
+    root,
   );
   db = openDatabase(':memory:');
   model = new FakeModel(noMoments);
@@ -161,7 +170,7 @@ describe.skipIf(!enabled)('Étape 9 : types de contenu (FFmpeg réel, aucun appe
     await services.runner.idle();
 
     const v = await view(rec.id);
-    expect(v.detection).toMatchObject({ detectorVersion: 'content-v1', stale: false });
+    expect(v.detection).toMatchObject({ detectorVersion: CONTENT_DETECTOR_VERSION, stale: false });
     const segs = v.detection!.detection.segments;
     expect(segs[0]!.startMs).toBe(0);
     expect(segs.at(-1)!.endMs).toBe(v.detection!.detection.durationMs);
@@ -331,5 +340,133 @@ describe.skipIf(!enabled)('Étape 9 : types de contenu (FFmpeg réel, aucun appe
     // Prompts système inchangés (mis en cache), confidentialité Discord préservée.
     expect(all).not.toMatch(/SECRETDISCORD|SECRETBIS/u);
     for (const c of model.calls) expect(c.system).not.toContain('Just Chatting');
+  });
+  /** Texte de toutes les requêtes préparées d'une analyse (ce qui serait transmis). */
+  const preparedRequests = (run: AnalysisRunDto) => {
+    const dir = path.join(config.paths.storage, run.outputRelDir!, 'requetes');
+    return existsSync(dir)
+      ? readdirSync(dir)
+          .map((f) => readFileSync(path.join(dir, f), 'utf8'))
+          .join('\n')
+      : '';
+  };
+  const detect = async (id: string, force = false) => {
+    await call('POST', `/api/recordings/${id}/content-types/detect`, { force });
+    await services.runner.idle();
+  };
+
+  describe('détections obsolètes : jamais utilisées par une nouvelle analyse', () => {
+    it('transcription refaite : détection ignorée (aucun contexte, aucune pondération), puis réutilisée après une nouvelle détection', async () => {
+      await setup();
+      const rec = await importAndTranscribe();
+      await detect(rec.id);
+      const fresh = await view(rec.id);
+      expect(fresh).toMatchObject({ analysis: 'used', detection: { stale: false } });
+      const used = await dryRun(rec.id);
+      expect(preparedRequests(used.run)).toContain('Type de contenu de ce passage');
+
+      // Nouvelle transcription : la détection a été faite sur d'autres entrées.
+      await call('POST', `/api/recordings/${rec.id}/transcriptions`, { force: true });
+      await services.runner.idle();
+      const v = await view(rec.id);
+      expect(v).toMatchObject({ analysis: 'stale_detection', detection: { stale: true } });
+      const inp = await services.analysis.inputs(rec.id);
+      expect(inp.content).toBeNull();
+      expect(inp.contentStatus).toBe('stale_detection');
+      const ignored = await dryRun(rec.id);
+      expect(ignored.run.inputKey).not.toBe(used.run.inputKey);
+      expect(preparedRequests(ignored.run)).not.toContain('Type de contenu');
+
+      // Nouvelle détection : à jour, de nouveau utilisée (et la clé d'analyse change).
+      await detect(rec.id);
+      expect((await view(rec.id)).analysis).toBe('used');
+      const again = await dryRun(rec.id);
+      expect(again.run.inputKey).not.toBe(ignored.run.inputKey);
+      expect(preparedRequests(again.run)).toContain('Type de contenu de ce passage');
+    });
+
+    it('profil de contenu modifié : détection obsolète ignorée ; une correction du créateur reste appliquée, avec la clé des profils actuels', async () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'acs-ct-root-'));
+      cpSync(path.join(ROOT_DIR, 'profiles'), path.join(root, 'profiles'), { recursive: true });
+      await setup(root);
+      const rec = await importAndTranscribe();
+      await detect(rec.id);
+      expect((await view(rec.id)).analysis).toBe('used');
+
+      const file = path.join(root, 'profiles', 'content', 'just-chatting.json');
+      const edit = (hint: string) => {
+        const p = JSON.parse(readFileSync(file, 'utf8')) as { analysisHints: string[] };
+        p.analysisHints.push(hint);
+        writeFileSync(file, JSON.stringify(p));
+      };
+      edit('Nouveau critère de test');
+      expect(await view(rec.id)).toMatchObject({
+        analysis: 'stale_detection',
+        detection: { stale: true },
+      });
+      expect((await services.analysis.inputs(rec.id)).content).toBeNull();
+
+      // Règle explicite : la correction porte sur la timeline de l'original, elle ne périme pas.
+      const duration = (await view(rec.id)).durationMs!;
+      await correct(rec.id, [
+        { startMs: 0, endMs: 60 * S, type: 'gaming' },
+        { startMs: 60 * S, endMs: duration, type: 'just_chatting' },
+      ]);
+      const before = await services.analysis.inputs(rec.id);
+      expect(before).toMatchObject({ contentStatus: 'used', content: { source: 'manual' } });
+      expect((await view(rec.id)).analysis).toBe('used');
+      // Les profils servent aux critères : leur modification change la clé d'analyse.
+      edit('Second critère de test');
+      const after = await services.analysis.inputs(rec.id);
+      expect(after.content?.source).toBe('manual');
+      expect(after.inputKey).not.toBe(before.inputKey);
+      const run = await dryRun(rec.id);
+      expect(preparedRequests(run.run)).toContain('Second critère de test');
+    });
+
+    it('détection d’une ancienne version du détecteur : ignorée', async () => {
+      await setup();
+      const rec = await importAndTranscribe();
+      await detect(rec.id);
+      const current = services.contentTypes.repo.latestDetection(rec.id)!;
+      // Même contenu, enregistré par une version antérieure (sa clé d'entrée était autre).
+      const inp = await services.analysis.inputs(rec.id);
+      const oldKey = contentDetectionKey(
+        {
+          fingerprint: new RecordingRepository(db).getSource(rec.id)?.fingerprint,
+          transcriptions: inp.transcriptions,
+          audioTracks: inp.rec.audioTracks,
+          game: inp.game,
+          contentProfiles: inp.content!.profiles,
+          hasVideo: Boolean(inp.rec.video?.width),
+        },
+        'content-v1',
+      );
+      expect(oldKey).not.toBe(current.inputKey);
+      services.contentTypes.repo.insertDetection(rec.id, oldKey, {
+        ...current.detection,
+        detectorVersion: 'content-v1',
+      });
+      expect(await view(rec.id)).toMatchObject({
+        analysis: 'stale_detection',
+        detection: { stale: true },
+      });
+      expect((await services.analysis.inputs(rec.id)).content).toBeNull();
+    });
+
+    it('correction du créateur : conservée après une nouvelle transcription', async () => {
+      await setup();
+      const rec = await importAndTranscribe();
+      await detect(rec.id);
+      const duration = (await view(rec.id)).durationMs!;
+      await correct(rec.id, [{ startMs: 0, endMs: duration, type: 'podcast' }]);
+      await call('POST', `/api/recordings/${rec.id}/transcriptions`, { force: true });
+      await services.runner.idle();
+      const inp = await services.analysis.inputs(rec.id);
+      expect(inp).toMatchObject({ contentStatus: 'used', content: { source: 'manual' } });
+      expect(inp.content!.segments).toEqual([
+        { startMs: 0, endMs: duration, type: 'podcast', confidence: 1, source: 'manual' },
+      ]);
+    });
   });
 });

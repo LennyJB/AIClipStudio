@@ -31,6 +31,8 @@ export interface EffectiveContent {
   segments: EffectiveContentSegment[];
   detectionId: number | null;
   correctionId: number | null;
+  /** Détection automatique : clé de ses entrées (null pour une correction). */
+  detectionInputKey: string | null;
 }
 
 interface DetectionRow {
@@ -137,7 +139,11 @@ export class ContentRepository {
     );
   }
 
-  /** Segmentation effective : la correction du créateur l'emporte toujours. */
+  /**
+   * Segmentation effective BRUTE : la correction du créateur l'emporte toujours. La validité d'une
+   * détection automatique (entrées inchangées) est vérifiée par `resolveContent` : ne jamais
+   * utiliser ce résultat directement pour l'analyse.
+   */
   effective(recordingId: string): EffectiveContent | null {
     const correction = this.latestCorrection(recordingId);
     if (correction?.segments) {
@@ -146,6 +152,7 @@ export class ContentRepository {
         segments: correction.segments,
         detectionId: correction.basedOnDetectionId,
         correctionId: correction.id,
+        detectionInputKey: null,
       };
     }
     const detection = this.latestDetection(recordingId);
@@ -161,6 +168,7 @@ export class ContentRepository {
       })),
       detectionId: detection.id,
       correctionId: correction?.id ?? null,
+      detectionInputKey: detection.inputKey,
     };
   }
 }

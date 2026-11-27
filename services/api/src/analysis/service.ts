@@ -74,7 +74,8 @@ import {
   type JobDto,
   type RecordingDto,
 } from '../recordings/repository';
-import { ContentRepository } from '../content/repository';
+import { contentDetectionKey } from '../content/key';
+import { ContentRepository, type EffectiveContent } from '../content/repository';
 import { toAbs } from '../storage/paths';
 import { TranscriptionRepository, type TranscriptionDto } from '../transcriptions/repository';
 import { LlmCallRepository } from './calls';
@@ -175,6 +176,38 @@ export interface Inputs {
     segments: EffectiveContentSegment[];
     profiles: Record<ContentType, ContentProfile>;
   } | null;
+  /** Pourquoi la segmentation est (ou n'est pas) utilisée : affichée et vérifiée par les tests. */
+  contentStatus: ContentStatus;
+}
+
+/**
+ * - `none` : ni détection ni correction ;
+ * - `stale_detection` : détection automatique dont les entrées ont changé (transcription, profils,
+ *   version du détecteur…) : IGNORÉE jusqu'à une nouvelle détection ;
+ * - `not_relevant` : segmentation valable mais entièrement gaming ou indéterminée : sans effet ;
+ * - `used` : segmentation utilisée (correction du créateur, ou détection à jour).
+ */
+export type ContentStatus = 'none' | 'stale_detection' | 'not_relevant' | 'used';
+
+/**
+ * Règle de validité de la segmentation pour l'analyse (étape 9) :
+ *  - une CORRECTION du créateur reste valable tant qu'il ne la remplace pas : elle porte sur la
+ *    timeline de l'original (SourceMs), qui ne change jamais ; une nouvelle transcription, un
+ *    profil ou un détecteur modifiés ne la périment pas ;
+ *  - une DÉTECTION AUTOMATIQUE n'est valable que si sa clé d'entrée est celle d'aujourd'hui ;
+ *    sinon elle est ignorée (analyse comme sans segmentation).
+ */
+export function resolveContent(
+  eff: EffectiveContent | null,
+  currentDetectionKey: () => string,
+): { status: ContentStatus; used: EffectiveContent | null } {
+  if (!eff) return { status: 'none', used: null };
+  if (eff.source === 'auto' && eff.detectionInputKey !== currentDetectionKey()) {
+    return { status: 'stale_detection', used: null };
+  }
+  return contentMatters(eff.segments)
+    ? { status: 'used', used: eff }
+    : { status: 'not_relevant', used: null };
 }
 
 const RunJobParams = z.object({ runId: z.uuid() }).strict();
@@ -550,17 +583,33 @@ export class AnalysisService {
       game: { id: game.id, hash: profileHash(game) },
       framing: framing ? { id: framing.id, hash: profileHash(framing) } : null,
     };
-    // Types de contenu : la correction du créateur l'emporte sur la détection automatique.
+    // Types de contenu : la correction du créateur l'emporte ; une détection automatique n'est
+    // utilisée que si ses entrées n'ont pas changé (`resolveContent`).
+    const src = this.recordings.getSource(recordingId);
     const effective = this.contentRepo.effective(recordingId);
+    // Profils de contenu lus seulement si une segmentation existe : l'analyse d'un enregistrement
+    // jamais segmenté ne dépend pas d'eux (comportement gaming historique).
+    const contentProfiles = effective
+      ? await loadContentProfiles(this.ctx.config.paths.profiles)
+      : null;
+    const resolved = resolveContent(effective, () =>
+      contentDetectionKey({
+        fingerprint: src?.fingerprint,
+        transcriptions,
+        audioTracks: rec.audioTracks,
+        game,
+        contentProfiles,
+        hasVideo: Boolean(rec.video?.width),
+      }),
+    );
     const content =
-      effective && contentMatters(effective.segments)
+      resolved.used && contentProfiles
         ? {
-            source: effective.source,
-            segments: effective.segments,
-            profiles: await loadContentProfiles(this.ctx.config.paths.profiles),
+            source: resolved.used.source,
+            segments: resolved.used.segments,
+            profiles: contentProfiles,
           }
         : null;
-    const src = this.recordings.getSource(recordingId);
     const inputKey = stableHash({
       v: ANALYSIS_PIPELINE_VERSION,
       pricing: PRICING_VERSION,
@@ -597,6 +646,7 @@ export class AnalysisService {
       creator,
       game,
       content,
+      contentStatus: resolved.status,
     };
   }
 

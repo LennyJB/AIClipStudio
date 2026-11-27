@@ -9,8 +9,13 @@ un enregistrement varié.
 ## Ce qui est détecté, et comment
 
 La détection (`packages/editorial/src/content/detect.ts`) est une fonction pure, locale et
-déterministe. Elle n'appelle ni Claude API ni aucun service externe. Elle combine trois familles
-d'indices, observées par blocs de 60 s :
+déterministe. Elle n'appelle ni Claude API ni aucun service externe. Elle observe trois familles
+d'indices par blocs de 60 s, qui n'ont **pas le même rôle** :
+
+- **seuls les mots prononcés désignent un format** (indices spécifiques) : expressions
+  caractéristiques du profil de contenu et, pour le gaming, termes d'un profil de jeu spécifique ;
+- **la structure audio et l'image ne font que corroborer ou contredire** ces indices : elles ne
+  peuvent jamais, seules, faire conclure à un format.
 
 | Indice            | Source                                                                    | Ce qu'il permet                                             |
 | ----------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -24,9 +29,15 @@ d'indices, observées par blocs de 60 s :
   qui bouge. Elle ne sait pas si l'image montre un jeu, une vidéo regardée ou une rue. Ces trois
   cas ne sont départagés que par la transcription. Sans mot caractéristique, la détection ne
   conclut pas.
-- **La transcription seule ne suffit pas.** Une décision qui ne repose que sur la transcription
-  est plafonnée à une confiance de **0,6**. Une décision corroborée par la structure audio ou
-  l'image est plafonnée à **0,9**. Seule la correction du créateur vaut 1.
+- **Pas de format sans indice spécifique.** Sans expression caractéristique (ou terme du jeu),
+  un bloc reste indéterminé, même avec une image très animée ou deux voix équilibrées : une
+  vidéo animée n'est pas une preuve de réaction, une caméra qui bouge pas une preuve d'IRL, une
+  image animée pas une preuve de jeu.
+- **Corroboration, jamais certitude.** Une mesure qui va dans le sens du format ajoute au plus
+  0,2 au score ; une mesure qui va contre (image fixe pour une réaction, image très animée pour
+  un plateau) le diminue. Plafonds de confiance : **0,6** sur la transcription seule, **0,75**
+  avec une mesure qui corrobore (image **ou** répartition des voix), **0,9** avec les deux.
+  Seule la correction du créateur vaut 1.
 - **Piste unique « Tout ».** La répartition de la parole est inconnue et n'est jamais inventée.
 - **Profil de jeu générique.** Les termes du jeu ne servent pas d'indice. Une partie en équipe
   sans image mesurée ressemble alors aussi à une discussion.
@@ -37,6 +48,8 @@ d'indices, observées par blocs de 60 s :
 
 Un bloc reste **indéterminé** dans ces cas :
 
+- aucun format n'a d'indice spécifique suffisant (environ une expression caractéristique toutes
+  les deux minutes) ;
 - le meilleur format obtient moins de 0,35 ;
 - l'écart avec le second est inférieur à 0,1 ;
 - il n'y a ni parole ni image mesurée.
@@ -77,11 +90,21 @@ Règles :
 
 ## Effet sur l'analyse éditoriale
 
-L'analyse utilise la segmentation **effective** :
+L'analyse utilise la segmentation **effective**, selon une règle unique (`resolveContent`,
+`services/api/src/analysis/service.ts`), que le panneau affiche aussi :
 
-- la dernière correction, si elle existe ;
-- sinon la dernière détection ;
+- la dernière **correction** du créateur, si elle existe. Elle reste valable après une nouvelle
+  transcription, une modification des profils ou du détecteur : elle porte sur la timeline de
+  l'original (SourceMs), qui ne change jamais. Elle n'est remplacée que par le créateur ;
+- sinon la dernière **détection automatique**, **seulement si elle est à jour** : sa clé
+  d'entrée (original, transcriptions, rôles des pistes, profil de jeu, profils de contenu,
+  présence de vidéo, version du détecteur ; `services/api/src/content/key.ts`) doit être celle
+  d'aujourd'hui. Une détection obsolète est **ignorée** : l'analyse se fait comme sans
+  segmentation, jusqu'à une nouvelle détection ;
 - sinon aucune.
+
+La clé d'entrée de l'analyse contient exactement la segmentation utilisée (bornes, types,
+provenance) et l'empreinte des profils de contenu ; rien quand aucune n'est utilisée.
 
 1. **Repérage local.** Chaque case de 5 s est notée avec la pondération du format de son
    passage (`localWeights` du profil). Un rire ou une interjection pèse plus en Just Chatting

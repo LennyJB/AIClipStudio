@@ -422,12 +422,13 @@ résumé du contrôle de lecture sont stockés dans les colonnes JSON existantes
 Guide : [`types-de-contenu.md`](types-de-contenu.md). Migration 11 : `content_detections` et
 `content_corrections`, toutes deux en ajout seul.
 
-| Décision                                                                                                  | Raison                                                                           |
-| --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Détection pure et locale (`@acs/editorial/content`), par blocs de 60 s, lissée en segments                | Pas de dépendance externe ni de coût ; déterministe et testable                  |
-| Matériel réutilisé : segments, signaux et profil de jeu de l'analyse (`buildContext`)                     | Une seule chaîne de préparation ; les mêmes mesures que le repérage              |
-| Activité visuelle : `scdet` sur les images clés réduites en 64×36 (`@acs/media/visual`)                   | Seule capacité visuelle locale peu coûteuse ; aucune analyse d'image n'existait  |
-| Indéterminé si le score est trop faible ou trop proche du second ; confiance plafonnée sans corroboration | Ne pas créer de fausse certitude à partir de la transcription seule              |
-| Correction complète, prioritaire, journalisée en ajout seul et idempotente                                | Le créateur reste la référence ; historique conservé                             |
-| Pondération par case (`weightsAt`) et contexte de format dans le message utilisateur                      | Critères adaptés au passage ; prompts système inchangés et cache intact          |
-| Segmentation hors de la clé d'entrée si tout est gaming ou indéterminé                                    | Fonctionnement gaming strictement identique, préparations existantes réutilisées |
+| Décision                                                                                                                                          | Raison                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Détection pure et locale (`@acs/editorial/content`), par blocs de 60 s, lissée en segments                                                        | Pas de dépendance externe ni de coût ; déterministe et testable                         |
+| Matériel réutilisé : segments, signaux et profil de jeu de l'analyse (`buildContext`)                                                             | Une seule chaîne de préparation ; les mêmes mesures que le repérage                     |
+| Activité visuelle : `scdet` sur les images clés réduites en 64×36 (`@acs/media/visual`)                                                           | Seule capacité visuelle locale peu coûteuse ; aucune analyse d'image n'existait         |
+| Seuls les mots (expressions du format, termes du jeu) désignent un format ; image et voix corroborent ou contredisent ; plafonds 0,6 / 0,75 / 0,9 | Une activité d'image n'est pas une reconnaissance de contenu ; pas de fausse certitude  |
+| Détection automatique utilisée seulement si sa clé d'entrée est à jour ; correction du créateur toujours conservée                                | Une détection obsolète n'influence jamais une analyse ; règle unique (`resolveContent`) |
+| Correction complète, prioritaire, journalisée en ajout seul et idempotente                                                                        | Le créateur reste la référence ; historique conservé                                    |
+| Pondération par case (`weightsAt`) et contexte de format dans le message utilisateur                                                              | Critères adaptés au passage ; prompts système inchangés et cache intact                 |
+| Segmentation hors de la clé d'entrée si tout est gaming ou indéterminé                                                                            | Fonctionnement gaming strictement identique, préparations existantes réutilisées        |

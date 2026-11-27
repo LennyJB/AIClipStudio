@@ -191,8 +191,14 @@ export function ContentTypesPanel({ recording, pollMs = 1000 }: Props) {
         </p>
       )}
       {view?.detection?.stale && (
-        <p className="warning small">
-          La transcription ou les profils ont changé depuis la détection : relancez-la.
+        <p className="warning small" data-testid="content-stale">
+          La transcription, les profils ou le détecteur ont changé depuis la détection :
+          relancez-la.{' '}
+          {view.analysis === 'stale_detection'
+            ? 'En attendant, elle est ignorée par l’analyse éditoriale.'
+            : eff?.source === 'manual'
+              ? 'Votre correction reste appliquée.'
+              : ''}
         </p>
       )}
       {eff?.source === 'manual' &&

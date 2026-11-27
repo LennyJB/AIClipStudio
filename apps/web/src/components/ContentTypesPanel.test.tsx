@@ -61,6 +61,7 @@ const detected: ContentTypesView = {
     },
   },
   correction: null,
+  analysis: 'used',
   effective: {
     source: 'auto',
     segments: [
@@ -174,6 +175,17 @@ describe('ContentTypesPanel', () => {
     expect(items[1]!.textContent).toContain('pistes : Réaction, IRL');
     expect(items[2]!.textContent).toContain('incertain (55 %)');
     expect(screen.getByTestId('content-limits').textContent).toContain('piste unique');
+  });
+
+  it('détection obsolète : signalée et présentée comme ignorée par l’analyse', async () => {
+    state.view = {
+      ...detected,
+      detection: { ...detected.detection!, stale: true },
+      analysis: 'stale_detection',
+    };
+    render(<ContentTypesPanel recording={recording} />);
+    const msg = await screen.findByTestId('content-stale');
+    expect(msg.textContent).toContain('ignorée par l’analyse éditoriale');
   });
 
   it('corrige : change un type, coupe, fusionne, enregistre une segmentation complète ; puis revient à l’automatique', async () => {

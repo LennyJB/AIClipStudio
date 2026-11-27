@@ -10,23 +10,22 @@
  */
 import { z } from 'zod';
 import {
-  CONTENT_DETECTOR_VERSION,
   GENERIC_GAME_PROFILE_ID,
   detectContentTypes,
   loadContentProfiles,
   normalizeManualSegments,
-  profileHash,
   stableHash,
   summarizeContent,
   type VisualSample,
 } from '@acs/editorial';
 import { scanVisualActivity } from '@acs/media';
 import { AppError, ContentSegmentInputSchema } from '@acs/shared';
-import type { AnalysisService } from '../analysis/service';
+import type { AnalysisService, ContentStatus } from '../analysis/service';
 import type { AppContext } from '../context';
 import type { DerivativeService } from '../derivatives/service';
 import type { JobHandler, JobHandlerContext, JobRunner } from '../jobs/runner';
 import { JobRepository, RecordingRepository, type JobDto } from '../recordings/repository';
+import { contentDetectionKey } from './key';
 import {
   ContentRepository,
   type ContentCorrectionDto,
@@ -69,6 +68,11 @@ export interface ContentTypesView {
     }[];
     summary: ReturnType<typeof summarizeContent>;
   } | null;
+  /**
+   * Ce que la prochaine analyse éditoriale fera de cette segmentation (même règle que
+   * `resolveContent`) ; null si l'état ne peut pas être établi (transcription absente…).
+   */
+  analysis: ContentStatus | null;
   job: JobDto | null;
 }
 
@@ -105,19 +109,13 @@ export class ContentTypeService {
   private async detectionKey(recordingId: string) {
     const inp = await this.analysis.inputs(recordingId);
     const profiles = await loadContentProfiles(this.ctx.config.paths.profiles);
-    const src = this.recordings.getSource(recordingId);
-    const key = stableHash({
-      v: CONTENT_DETECTOR_VERSION,
-      fp: src?.fingerprint,
-      transcriptions: inp.transcriptions.map((t) => ({
-        id: t.id,
-        n: t.segmentCount,
-        at: t.completedAt,
-      })),
-      roles: inp.rec.audioTracks.map((t) => [t.audioIndex, t.role]),
-      game: { id: inp.game.id, hash: profileHash(inp.game) },
-      content: profileHash(profiles),
-      video: Boolean(inp.rec.video?.width),
+    const key = contentDetectionKey({
+      fingerprint: this.recordings.getSource(recordingId)?.fingerprint,
+      transcriptions: inp.transcriptions,
+      audioTracks: inp.rec.audioTracks,
+      game: inp.game,
+      contentProfiles: profiles,
+      hasVideo: Boolean(inp.rec.video?.width),
     });
     return { key, inp, profiles };
   }
@@ -133,12 +131,14 @@ export class ContentTypeService {
     this.recording(recordingId);
     const detection = this.repo.latestDetection(recordingId);
     let stale: boolean | null = null;
-    if (detection) {
-      try {
-        stale = (await this.detectionKey(recordingId)).key !== detection.inputKey;
-      } catch {
-        stale = null; // transcription supprimée, profil invalide… : on ne sait pas.
-      }
+    let analysis: ContentStatus | null = null;
+    try {
+      // Même calcul que l'analyse : une seule source de vérité.
+      const inp = await this.analysis.inputs(recordingId);
+      analysis = inp.contentStatus;
+      if (detection) stale = (await this.detectionKey(recordingId)).key !== detection.inputKey;
+    } catch {
+      // transcription absente, profil invalide… : on ne sait pas.
     }
     const eff = this.repo.effective(recordingId);
     const durationMs = this.durationMs(recordingId);
@@ -147,6 +147,7 @@ export class ContentTypeService {
       durationMs,
       detection: detection ? { ...detection, stale } : null,
       correction: this.repo.latestCorrection(recordingId),
+      analysis,
       effective: eff
         ? {
             source: eff.source,
