@@ -24,6 +24,7 @@ commencée. Voir la [feuille de route](#feuille-de-route).
 - [Configuration](#configuration)
 - [Importer un enregistrement](#importer-un-enregistrement)
 - [Transcription](#transcription)
+- [Éditeur vidéo et bibliothèque de médias](#éditeur-vidéo-et-bibliothèque-de-médias-étape-7)
 - [Architecture](#architecture)
 - [Sécurité](#sécurité)
 - [Workflow de développement](#workflow-de-développement)
@@ -387,8 +388,23 @@ Dans l'interface, la section **Clips** (sous « Revue des propositions ») perme
 opérations sans ligne de commande : audio exporté, cadrage, sous-titres, effets, durée, aperçu et
 export. Guide : [`docs/rendu-clips.md`](docs/rendu-clips.md).
 
-L'éditeur vidéo avec timeline (étape 7) est en cours de réalisation : plan validé dans
-[`docs/plan-etape-7.md`](docs/plan-etape-7.md).
+## Éditeur vidéo et bibliothèque de médias (étape 7)
+
+Lien « Ouvrir l’éditeur » d'un clip : timeline (coupes, arrêts sur image, vides), sous-titres
+réglables, cadrage libre, zones masquées temporelles, effets visuels et sonores, calques texte,
+**images et mèmes**, **effets sonores**, aperçu dans le navigateur et « Image exacte » FFmpeg.
+La **bibliothèque de médias** (page d'accueil) importe images fixes et sons après vérification et
+ré-encodage par le serveur, avec déclaration de droits ; un média utilisé ne peut pas être
+supprimé. Guide : [`docs/editeur.md`](docs/editeur.md) ; plan : [`docs/plan-etape-7.md`](docs/plan-etape-7.md).
+
+| Méthode | Route                               | Rôle                                                     |
+| ------- | ----------------------------------- | -------------------------------------------------------- |
+| GET     | `/api/media-assets[?kind=…]`        | Liste de la bibliothèque (aucun chemin)                  |
+| POST    | `/api/media-assets?name=…&rights=…` | Import (corps `application/octet-stream`)                |
+| GET     | `/api/media-assets/:id`             | Détail et projets qui l'utilisent                        |
+| GET     | `/api/media-assets/:id/file`        | Fichier normalisé (PNG ou WAV)                           |
+| GET     | `/api/media-assets/:id/preview`     | Aperçu d'une image (256 px)                              |
+| DELETE  | `/api/media-assets/:id`             | Suppression (refusée si un projet ou un rendu l'utilise) |
 
 ---
 
@@ -444,6 +460,9 @@ Pipeline du MVP : **Import → Préparation → Transcription → Pré-analyse �
   rien n'est transmis à l'extérieur sans être d'abord consultable (`npm run analyze -- --dry-run`).
 - Les réponses d'erreur ne contiennent ni pile d'appel ni détail interne ; les logs masquent
   les en-têtes d'authentification.
+- Médias importés : format reconnu par son contenu (jamais par l'extension), fichiers piégés
+  refusés, FFmpeg limité au fichier local avec un démultiplexeur imposé, ré-encodage systématique ;
+  aucun chemin n'est accepté ni renvoyé par l'API.
 
 ---
 

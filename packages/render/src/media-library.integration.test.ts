@@ -12,6 +12,7 @@
  *  - export sans son : aucun effet sonore.
  */
 import { copyFileSync, mkdirSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -289,4 +290,53 @@ describe.skipIf(!enabled)('bibliothèque de médias : rendu FFmpeg', () => {
     expect(silent.hasAudio).toBe(false);
     expect(silent.assets ?? []).toEqual([]);
   }, 180_000);
+
+  it('charge : 50 segments, 10 calques image, 20 effets sonores — rendu complet, durée exacte (temps mesuré)', async () => {
+    const segments: SegmentV2[] = Array.from({ length: 50 }, (_, k) => ({
+      id: `s${k}`,
+      kind: 'source',
+      srcStartMs: 500 + k * 180,
+      srcEndMs: 500 + k * 180 + 160,
+      speed: 1,
+    }));
+    const d = doc(
+      {
+        overlays: Array.from({ length: 10 }, (_, k) =>
+          overlay({
+            id: `m${k}`,
+            z: k,
+            timing: { anchor: 'edit', from: 'start', offsetMs: k * 700, durMs: 900 },
+          }),
+        ),
+        audio: {
+          ...doc().audio,
+          sfx: Array.from({ length: 20 }, (_, k) => ({
+            id: `x${String(k).padStart(2, '0')}`,
+            assetId: SND,
+            timing: {
+              anchor: 'edit' as const,
+              from: 'start' as const,
+              offsetMs: k * 390,
+              durMs: 600,
+            },
+            gainDb: -6,
+          })),
+        },
+      },
+      segments,
+    );
+    const pl = buildRenderPlanV2(input(d));
+    expect(pl.durationMs).toBe(8000);
+    const t0 = performance.now();
+    const out = await render(pl);
+    const ms = performance.now() - t0;
+    console.warn(
+      `rendu FFmpeg (50 segments, 10 calques, 20 sons, 8 s, aperçu) : ${(ms / 1000).toFixed(1)} s`,
+    );
+    const s = audioSamples(out);
+    expect(Math.abs(s.length / 48 - 8000)).toBeLessThan(30);
+    expect(toneLevelAt(s, SFX_HZ, 100, 200)).toBeGreaterThan(0.01);
+    expect(isMagenta(frameAt(out, 0.3).rgb(...OPAQUE))).toBe(true);
+    expect(ms).toBeLessThan(150_000);
+  }, 300_000);
 });

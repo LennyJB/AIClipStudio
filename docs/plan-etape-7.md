@@ -940,14 +940,14 @@ réaction** de la 6a s'appliquent toujours au premier et au dernier segment.
 
 ## 13. Avancement
 
-| PR                                                | Statut                                                         |
-| ------------------------------------------------- | -------------------------------------------------------------- |
-| 7a — Modèle v2, opérations et scène               | fusionnée (PR #18)                                             |
-| 7b — Journal d'édition, points de contrôle et API | fusionnée (PR #19)                                             |
-| 7c — Moteur multi-segments                        | fusionnée (PR #20)                                             |
-| 7d — Médias de travail de l'éditeur               | fusionnée (PR #21)                                             |
-| 7e — Éditeur complet (anciennes 7e à 7i, § 18)    | en revue                                                       |
-| 7f — Bibliothèque de médias et finalisation       | non commencée (anciennes 7j et 7k, attend la validation de 7e) |
+| PR                                                | Statut                              |
+| ------------------------------------------------- | ----------------------------------- |
+| 7a — Modèle v2, opérations et scène               | fusionnée (PR #18)                  |
+| 7b — Journal d'édition, points de contrôle et API | fusionnée (PR #19)                  |
+| 7c — Moteur multi-segments                        | fusionnée (PR #20)                  |
+| 7d — Médias de travail de l'éditeur               | fusionnée (PR #21)                  |
+| 7e — Éditeur complet (anciennes 7e à 7i, § 18)    | fusionnée (PR #22)                  |
+| 7f — Bibliothèque de médias et finalisation       | en revue (anciennes 7j et 7k, § 19) |
 
 ---
 
@@ -1327,3 +1327,55 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   (quelques pixels) ; normalisation `loudnorm` absente de l'aperçu ; bords du flou (canvas contre
   `gblur`) ; J recule d'une seconde (aucune lecture arrière) ; zones masquées réglées par valeurs
   numériques (les poignées sur l'aperçu concernent les calques de cadrage).
+
+## 19. Précisions de mise en œuvre (PR 7f : bibliothèque de médias et finalisation)
+
+- **Migration 10 `media_assets`** (verrouillée) : identifiant = sha256 des octets importés
+  (déduplication avant tout ré-encodage) ; seul le fichier NORMALISÉ est conservé, sous
+  `storage/assets/<2 car.>/<id>.png|wav` (chemin relatif contrôlé par la base), avec sa propre
+  empreinte ; déclaration de droits obligatoire (`own`, `licensed`, `public_domain`) ; colonnes du
+  fichier immuables (déclencheur). `storage/assets/` n'est jamais touché par le nettoyage du cache.
+- **Validation** (`@acs/media` `importAsset`), chaque étape refusant seule, raison explicite
+  (`ASSET_REJECTED`, `details.reason`) : taille bornée PENDANT la réception ; format reconnu par
+  sa signature (SVG, HTML, listes de lecture et tout format texte refusés) ; extension cohérente
+  avec le contenu ; structure (données après la fin de l'image : polyglotte ; APNG, WebP animé,
+  GIF de plusieurs images ; dimensions lues dans l'en-tête avant tout décodage) ; ffprobe et
+  FFmpeg avec le démultiplexeur IMPOSÉ et `-protocol_whitelist file` (un fichier importé ne peut
+  faire lire ni un autre fichier ni le réseau) ; ré-encodage PNG RGBA ou WAV PCM 48 kHz stéréo
+  sans métadonnées. L'import d'origine n'est jamais conservé.
+- **API** (`/api/media-assets`) : mêmes contrôles d'accès que les médias de travail (§ 5.2 :
+  socket local, `Host`, `Origin`, `Sec-Fetch-Site`, CORS fermé) ; import en flux
+  `application/octet-stream` uniquement ; aucun chemin reçu ni renvoyé ; fichiers servis avec
+  `nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, CORP `same-origin`, cache
+  immuable (contenu adressé par son empreinte).
+- **Suppression** refusée (`ASSET_IN_USE`) tant qu'un projet référence le média dans une
+  version, un point de contrôle ou son journal (une annulation pourrait le ramener) ou qu'un
+  rendu est en cours ; vérification et suppression sous `BEGIN IMMEDIATE`, comme les lots
+  d'édition, qui vérifient eux-mêmes (dans leur transaction) que chaque média référencé existe et
+  a le bon type (`ASSET_MISSING` sinon).
+- **Fichier manquant ou altéré** : signalé (`status: 'missing'`) ; rendu refusé à la demande
+  (`ASSET_MISSING`) ; réimporter le même fichier le répare. Au démarrage, imports interrompus et
+  fichiers sans ligne en base sont retirés.
+- **Rendu** : calques image posés sur l'image COMPOSÉE (après aplats, disposition, zooms,
+  secousse, éclair ; avant les textes), étirés à leur cadre (arrondi commun `overlayPixelRect`),
+  opacité sur le canal alpha, plage [début, fin[ ; effets sonores : extrait exact (échantillons),
+  gain, placement, mixés AVANT la normalisation, non concernés par `duck` et `bleep`, concernés
+  par les fondus du mixage ; ancrés au contenu, ils suivent les coupes et se taisent pendant les
+  arrêts sur image et les vides ; export sans son ⇒ aucun. Placements PARTAGÉS par l'aperçu et
+  l'export (`imageOverlayPlacements`, `sfxPlacements`). Chaque média est COPIÉ dans le dossier de
+  travail et son empreinte revérifiée avant FFmpeg : sa suppression ou son altération pendant le
+  rendu est sans effet ; une altération avant est un refus explicite. Plus aucune fonction du
+  document n'est refusée par le moteur (`unsupportedRenderFeatures` vide, conservé).
+- **Aperçu** : images chargées une fois par média, libérées dès qu'inutilisées ; un média
+  manquant est dessiné comme tel (hachures, libellé) ; effets sonores décodés seulement si une
+  piste de l'enregistrement est autorisée par la DERNIÈRE décision vérifiée et que l'export a du
+  son (vérification indisponible ⇒ rien n'est chargé), et si la bibliothèque confirme le fichier
+  (bibliothèque illisible ⇒ état inconnu ⇒ aucun effet sonore).
+- **Cohérence aperçu / export mesurée** (Playwright, image exacte à 540 × 960) : rectangle d'un
+  mème identique au pixel près (écart mesuré 0 px, tolérance 2 px), couleur identique, partie
+  transparente sans effet. Contre-épreuve : un décalage de 4 px du canvas fait échouer le test.
+- **Performances** (budgets testés, valeurs journalisées) : clip de 60 s en 50 segments avec
+  50 calques image et 100 effets sonores — plan de rendu ≈ 2 ms, image exacte < 1 ms, scène de
+  l'aperçu ≈ 0,1 ms par image ; rendu FFmpeg réel de 50 segments, 10 calques et 20 sons (8 s,
+  aperçu) ≈ 5 s.
+- **Guide** : [`editeur.md`](editeur.md).

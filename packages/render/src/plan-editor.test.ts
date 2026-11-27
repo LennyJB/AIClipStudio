@@ -429,8 +429,8 @@ describe('audio : automatisation, atténuation, bips, fondus', () => {
   });
 });
 
-describe('restent refusés : calques image et effets sonores (bibliothèque, PR 7f)', () => {
-  it('aucune autre fonction du document v2 n’est refusée', () => {
+describe('toutes les fonctions du document v2 sont rendues (calques image et effets sonores : media-library.integration.test.ts)', () => {
+  it('aucune fonction du document v2 n’est refusée', () => {
     const d = doc({
       mode: 'enrichi',
       effects: (

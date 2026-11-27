@@ -3,14 +3,16 @@
  * (aucun appel à Claude). Base SQLite sur FICHIER : rechargement et deuxième connexion réels.
  */
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { FakeModel } from '@acs/editorial';
+import { solidImage } from '../../../tests/helpers/asset-fixtures';
 import {
   SCENARIO_DISCORD,
   SCENARIO_MIC,
@@ -408,9 +410,9 @@ describe.skipIf(!enabled)('Journal d’édition (API, étape 7b)', () => {
     );
     expect(v.body).toMatchObject({ revision: 3, document: { layout: { preset: initial } } });
 
-    // Calque (fonction de l'éditeur) : l'interface 6c et le PATCH v1 refusent clairement ; le moteur
-    // (qui rend le document v2 depuis la PR 7c) refuse explicitement les calques image (ils
-    // dépendent de la bibliothèque de médias, PR 7f ; les calques texte sont rendus depuis la 7e).
+    // Calque image (fonction de l'éditeur) : un média absent de la bibliothèque est refusé (rien
+    // n'est écrit) ; avec un média importé, l'interface 6c et le PATCH v1 refusent clairement, et
+    // le moteur le rend (bibliothèque de médias, PR 7f).
     const overlay = {
       id: 'titre',
       kind: 'image',
@@ -421,10 +423,27 @@ describe.skipIf(!enabled)('Journal d’édition (API, étape 7b)', () => {
       opacity: 1,
       z: 1,
     };
-    await t.edit({
+    const unknown = await t.edit({
       base: { version: 3 },
       kind: 'do',
       ops: [{ type: 'setEntity', collection: 'overlay', entity: overlay }],
+    });
+    expect(unknown.body.error?.code).toBe('ASSET_MISSING');
+    const png = solidImage(mkdtempSync(path.join(tmpdir(), 'acs-titre-')), 'titre.png', 'white');
+    const asset = await inst.services.assets.import(Readable.from([readFileSync(png)]), {
+      name: 'titre.png',
+      rights: 'own',
+    });
+    await t.edit({
+      base: { version: 3 },
+      kind: 'do',
+      ops: [
+        {
+          type: 'setEntity',
+          collection: 'overlay',
+          entity: { ...overlay, assetId: asset.asset.id },
+        },
+      ],
     });
     const view = await t.call<EditBody>('GET', `/api/clip-projects/${project}`);
     expect(view.status).toBe(409);
@@ -439,8 +458,8 @@ describe.skipIf(!enabled)('Journal d’édition (API, étape 7b)', () => {
       requestId: randomUUID(),
       kind: 'preview',
     });
-    expect(render.status).toBe(409);
-    expect(render.body.error?.code).toBe('RENDER_FEATURE_UNSUPPORTED');
+    expect(render.status, JSON.stringify(render.body)).toBe(202);
+    await inst.services.runner.idle();
     // Le document v2 reste lisible par l'éditeur ; annuler le calque rend le projet de nouveau
     // lisible par l'interface 6c.
     expect((await t.doc()).document.overlays.map((o) => o.id)).toEqual(['titre']);
