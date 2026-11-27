@@ -940,14 +940,14 @@ réaction** de la 6a s'appliquent toujours au premier et au dernier segment.
 
 ## 13. Avancement
 
-| PR                                                | Statut                                                         |
-| ------------------------------------------------- | -------------------------------------------------------------- |
-| 7a — Modèle v2, opérations et scène               | fusionnée (PR #18)                                             |
-| 7b — Journal d'édition, points de contrôle et API | fusionnée (PR #19)                                             |
-| 7c — Moteur multi-segments                        | fusionnée (PR #20)                                             |
-| 7d — Médias de travail de l'éditeur               | fusionnée (PR #21)                                             |
-| 7e — Éditeur complet (anciennes 7e à 7i, § 18)    | en revue                                                       |
-| 7f — Bibliothèque de médias et finalisation       | non commencée (anciennes 7j et 7k, attend la validation de 7e) |
+| PR                                                | Statut                              |
+| ------------------------------------------------- | ----------------------------------- |
+| 7a — Modèle v2, opérations et scène               | fusionnée (PR #18)                  |
+| 7b — Journal d'édition, points de contrôle et API | fusionnée (PR #19)                  |
+| 7c — Moteur multi-segments                        | fusionnée (PR #20)                  |
+| 7d — Médias de travail de l'éditeur               | fusionnée (PR #21)                  |
+| 7e — Éditeur complet (anciennes 7e à 7i, § 18)    | fusionnée (PR #22)                  |
+| 7f — Bibliothèque de médias et finalisation       | en revue (anciennes 7j et 7k, § 19) |
 
 ---
 
@@ -1327,3 +1327,74 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   (quelques pixels) ; normalisation `loudnorm` absente de l'aperçu ; bords du flou (canvas contre
   `gblur`) ; J recule d'une seconde (aucune lecture arrière) ; zones masquées réglées par valeurs
   numériques (les poignées sur l'aperçu concernent les calques de cadrage).
+
+## 19. Précisions de mise en œuvre (PR 7f : bibliothèque de médias et finalisation)
+
+- **Migration 10 `media_assets`** (verrouillée) : identifiant = sha256 des octets importés
+  (déduplication avant tout ré-encodage) ; seul le fichier NORMALISÉ est conservé, sous
+  `storage/assets/<2 car.>/<id>.png|wav` (chemin relatif contrôlé par la base), avec sa propre
+  empreinte ; déclaration de droits obligatoire (`own`, `licensed`, `public_domain`) ; colonnes du
+  fichier immuables (déclencheur). `storage/assets/` n'est jamais touché par le nettoyage du cache.
+- **Validation** (`@acs/media` `importAsset`), chaque étape refusant seule, raison explicite
+  (`ASSET_REJECTED`, `details.reason`) : taille bornée PENDANT la réception ; format reconnu par
+  sa signature (SVG, HTML, listes de lecture et tout format texte refusés) ; extension cohérente
+  avec le contenu ; structure (données après la fin de l'image : polyglotte ; APNG, WebP animé,
+  GIF de plusieurs images ; dimensions lues dans l'en-tête avant tout décodage) ; ffprobe et
+  FFmpeg avec le démultiplexeur IMPOSÉ et `-protocol_whitelist file` (un fichier importé ne peut
+  faire lire ni un autre fichier ni le réseau) ; ré-encodage PNG RGBA ou WAV PCM 48 kHz stéréo
+  sans métadonnées. L'import d'origine n'est jamais conservé.
+- **API** (`/api/media-assets`) : mêmes contrôles d'accès que les médias de travail (§ 5.2 :
+  socket local, `Host`, `Origin`, `Sec-Fetch-Site`, CORS fermé) ; import en flux
+  `application/octet-stream` uniquement ; aucun chemin reçu ni renvoyé ; fichiers servis avec
+  `nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, CORP `same-origin`, cache
+  immuable (contenu adressé par son empreinte).
+- **Suppression** refusée (`ASSET_IN_USE`) tant qu'un projet référence le média dans une
+  version, un point de contrôle ou son journal (une annulation pourrait le ramener) ou qu'un
+  rendu est en cours ; vérification et suppression sous `BEGIN IMMEDIATE`, comme les lots
+  d'édition, qui vérifient eux-mêmes (dans leur transaction) que chaque média référencé existe et
+  a le bon type (`ASSET_MISSING` sinon).
+- **Fichier manquant ou altéré** : signalé (`status: 'missing'`) ; rendu refusé à la demande
+  (`ASSET_MISSING`) ; réimporter le même fichier le répare. Au démarrage, imports interrompus et
+  fichiers sans ligne en base sont retirés.
+- **Rendu** : calques image posés sur l'image COMPOSÉE (après aplats, disposition, zooms,
+  secousse, éclair ; avant les textes), étirés à leur cadre (arrondi commun `overlayPixelRect`),
+  opacité sur le canal alpha, plage [début, fin[ ; effets sonores : extrait exact (échantillons),
+  gain, placement, mixés AVANT la normalisation, non concernés par `duck` et `bleep`, concernés
+  par les fondus du mixage ; ancrés au contenu, ils suivent les coupes et se taisent pendant les
+  arrêts sur image et les vides ; export sans son ⇒ aucun. Placements PARTAGÉS par l'aperçu et
+  l'export (`imageOverlayPlacements`, `sfxPlacements`). Chaque média est COPIÉ dans le dossier de
+  travail et son empreinte revérifiée avant FFmpeg : sa suppression ou son altération pendant le
+  rendu est sans effet ; une altération avant est un refus explicite. Plus aucune fonction du
+  document n'est refusée par le moteur (`unsupportedRenderFeatures` vide, conservé).
+- **Aperçu** : images chargées une fois par média, libérées dès qu'inutilisées ; un média
+  manquant est dessiné comme tel (hachures, libellé) ; effets sonores décodés seulement si une
+  piste de l'enregistrement est autorisée par la DERNIÈRE décision vérifiée et que l'export a du
+  son (vérification indisponible ⇒ rien n'est chargé), et si la bibliothèque confirme le fichier
+  (bibliothèque illisible ⇒ état inconnu ⇒ aucun effet sonore).
+- **Cohérence aperçu / export mesurée** (Playwright, image exacte à 540 × 960) : rectangle d'un
+  mème identique au pixel près (écart mesuré 0 px, tolérance 2 px), couleur identique, partie
+  transparente sans effet. Contre-épreuve : un décalage de 4 px du canvas fait échouer le test.
+- **Performances** (budgets testés, valeurs journalisées) : clip de 60 s en 50 segments avec
+  50 calques image et 100 effets sonores — plan de rendu ≈ 2 ms, image exacte < 1 ms, scène de
+  l'aperçu ≈ 0,1 ms par image ; rendu FFmpeg réel de 50 segments, 10 calques et 20 sons (8 s,
+  aperçu) ≈ 5 s.
+- **Corrections de la revue de la PR 7f** :
+  - **Intégrité des fichiers servis** : l'empreinte du fichier normalisé ET celle de l'aperçu
+    (`preview_sha256`, ajoutée à la migration 10, jamais publiée sur `main` avant cette PR) sont
+    vérifiées avant de déclarer un média intact et avant de servir un fichier : les octets envoyés
+    sont ceux qui ont été vérifiés. Un fichier altéré, même de même taille, est `missing` et son
+    service est refusé (`ASSET_MISSING`). Vérifications de la liste mémorisées par état du fichier
+    (taille, dates de modification et de changement d'inode, inode) : tout remplacement impose une
+    nouvelle vérification. Un rendu est refusé dès la demande si le fichier est altéré.
+  - **Effets sonores de l'aperçu** : chaque son est en cours de chargement, chargé ou en échec
+    (réponse HTTP, réseau, décodage, fichier manquant, bibliothèque illisible) ; un échec est
+    toujours affiché sous l'aperçu et jamais compté comme chargé ; aucune piste autorisée ⇒
+    avertissement explicite.
+  - **Doublon** : signature et extension déclarée vérifiées AVANT la déduplication.
+  - **Médias réellement utilisés** (`renderAssets`, même règle que le plan) : un rendu ne copie
+    et n'exige que les images et mèmes référencés, et les effets sonores SEULEMENT si l'export a
+    du son. Un export sans son fonctionne même si un son référencé est manquant ou altéré ; avec
+    son, ce son est refusé (`ASSET_MISSING`). L'image exacte ne copie que les images ; elle suit
+    les mêmes exigences que l'export (un son manquant d'un export avec son la refuse aussi). La
+    protection contre la suppression porte toujours sur TOUS les médias référencés.
+- **Guide** : [`editeur.md`](editeur.md).

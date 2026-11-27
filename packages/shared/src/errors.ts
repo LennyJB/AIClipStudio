@@ -50,6 +50,9 @@ export type AppErrorCode =
   | 'DOCUMENT_DIVERGED'
   | 'RENDER_FEATURE_UNSUPPORTED'
   | 'FORBIDDEN'
+  | 'ASSET_REJECTED'
+  | 'ASSET_IN_USE'
+  | 'ASSET_MISSING'
   | 'INTERNAL';
 
 export class AppError extends Error {

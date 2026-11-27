@@ -7,7 +7,7 @@
  * commande, 32 Ko sous Windows) : `-/filter_complex fichier` (FFmpeg ≥ 7) ou
  * `-filter_complex_script fichier` (versions antérieures), selon ce que FFmpeg accepte.
  */
-import type { FramePlan, RenderPlan } from './plan';
+import type { FramePlan, PlanAsset, RenderPlan } from './plan';
 
 const sec = (ms: number) => (ms / 1000).toFixed(3);
 
@@ -42,6 +42,21 @@ function inputArgs(plan: RenderPlan, sourcePath: string): string[] {
   ]);
 }
 
+/**
+ * Médias de la bibliothèque : noms RELATIFS au dossier de travail (copies vérifiées), démultiplexeur
+ * imposé et lecture limitée aux fichiers locaux.
+ */
+function assetArgs(assets: readonly PlanAsset[] | undefined): string[] {
+  return (assets ?? []).flatMap((a) => [
+    '-protocol_whitelist',
+    'file',
+    '-f',
+    a.kind === 'image' ? 'png_pipe' : 'wav',
+    '-i',
+    a.file,
+  ]);
+}
+
 export function buildRenderArgs(
   plan: RenderPlan,
   paths: { sourcePath: string; outputPath: string },
@@ -54,6 +69,7 @@ export function buildRenderArgs(
     '-loglevel',
     'error',
     ...inputArgs(plan, paths.sourcePath),
+    ...assetArgs(plan.assets),
     ...filterScriptArgs(syntax),
     '-map',
     '[v]',
@@ -105,6 +121,7 @@ export function buildFrameArgs(
           paths.sourcePath,
         ]
       : []),
+    ...assetArgs(frame.assets),
     ...filterScriptArgs(syntax),
     '-map',
     '[v]',

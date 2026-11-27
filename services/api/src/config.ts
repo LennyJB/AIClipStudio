@@ -153,6 +153,13 @@ export const EnvSchema = z.object({
    */
   EDITOR_WINDOW_MARGIN_SEC: z.coerce.number().int().min(10).max(600).default(60),
   /**
+   * Bibliothèque de médias (étape 7f) : limites d'un fichier importé. Au-delà : refus explicite.
+   * Images : côté maximal en pixels ; sons : durée maximale (effets sonores courts uniquement).
+   */
+  MEDIA_ASSET_MAX_MB: z.coerce.number().int().min(1).max(200).default(25),
+  MEDIA_ASSET_MAX_IMAGE_SIDE: z.coerce.number().int().min(64).max(8192).default(4096),
+  MEDIA_ASSET_MAX_AUDIO_SEC: z.coerce.number().int().min(1).max(300).default(60),
+  /**
    * Éditeur (étape 7d) : origines EXACTES de l'interface autorisées à lire les médias de travail
    * (proxy non masqué, pistes de montage). Uniquement des origines `http:` locales (127.0.0.1,
    * localhost, [::1]) : toute autre valeur fait échouer le démarrage. Les en-têtes `Host`
@@ -230,6 +237,8 @@ export interface AppConfig {
     originals: string;
     processing: string;
     exports: string;
+    /** Bibliothèque de médias normalisés (jamais touchée par le nettoyage du cache). */
+    assets: string;
     database: string;
     profiles: string;
   };
@@ -260,6 +269,7 @@ export interface AppConfig {
   };
   audioTrackRoles: TrackRole[];
   cache: { maxBytes: number };
+  assets: { maxBytes: number; maxImageSide: number; maxImagePixels: number; maxAudioMs: number };
   render: { finalCrf: number; x264Preset: string; previewHeight: number; probeBytes: number };
   clipWindow: { marginMs: number; gridMs: number };
   editor: {
@@ -328,6 +338,7 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
       originals: path.join(storage, 'originals'),
       processing: path.join(storage, 'processing'),
       exports: path.join(storage, 'exports'),
+      assets: path.join(storage, 'assets'),
       database: resolve(e.DATABASE_PATH),
       profiles: path.join(rootDir, 'profiles'),
     },
@@ -364,6 +375,12 @@ export function loadConfig(env: NodeJS.ProcessEnv, rootDir: string = ROOT_DIR): 
     },
     audioTrackRoles: e.AUDIO_TRACK_ROLES,
     cache: { maxBytes: Math.round(e.CACHE_MAX_GB * 1024 ** 3) },
+    assets: {
+      maxBytes: e.MEDIA_ASSET_MAX_MB * 1024 * 1024,
+      maxImageSide: e.MEDIA_ASSET_MAX_IMAGE_SIDE,
+      maxImagePixels: e.MEDIA_ASSET_MAX_IMAGE_SIDE * e.MEDIA_ASSET_MAX_IMAGE_SIDE,
+      maxAudioMs: e.MEDIA_ASSET_MAX_AUDIO_SEC * 1000,
+    },
     render: {
       finalCrf: e.RENDER_FINAL_CRF,
       x264Preset: e.RENDER_X264_PRESET,

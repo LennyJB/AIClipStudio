@@ -18,6 +18,7 @@ import {
   type Mask,
   type Operation,
   type Overlay,
+  type Sfx,
   type TimingV2,
 } from '@acs/timeline';
 import { MIN_SEGMENT_MS, segmentAt } from './timeline-math';
@@ -261,6 +262,102 @@ export function addTextOverlay(
       { type: 'setEntity', collection: 'overlay', entity: o as unknown as Record<string, unknown> },
     ],
     summary: 'calque texte ajouté',
+  };
+}
+
+/* -------------------- Calques image et effets sonores (7f) -------------------- */
+
+/** Média de la bibliothèque choisi par le créateur (identifiant et caractéristiques utiles). */
+export interface PickedAsset {
+  id: string;
+  kind: 'image' | 'audio';
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+}
+
+/**
+ * Cadre initial d'une image : 40 % de la largeur de l'image 9:16, rapport de l'image conservé
+ * (le cadre étire l'image : il est donc initialisé avec son rapport), centré, borné à l'image.
+ */
+export function imageFrame(width: number, height: number) {
+  const W = 1080;
+  const H = 1920;
+  let w = 0.4;
+  let h = (w * W * (height / width)) / H;
+  if (h > 0.5) {
+    w = (w * 0.5) / h;
+    h = 0.5;
+  }
+  const r = (v: number) => Math.round(v * 10_000) / 10_000;
+  return { x: r((1 - w) / 2), y: r(Math.max(0, 0.35 - h / 2)), w: r(w), h: r(h) };
+}
+
+export function addImageOverlay(
+  d: ClipProjectV2,
+  t: number,
+  asset: PickedAsset,
+  kind: 'image' | 'meme',
+  uuid: () => string,
+): Gesture {
+  if (asset.kind !== 'image' || !asset.width || !asset.height) {
+    throw new GestureError('Choisissez une image de la bibliothèque.');
+  }
+  const total = totalEditDuration(segmentsV2(d.segments));
+  const start = Math.max(0, Math.min(Math.round(t), total - 1000));
+  const o: Overlay = {
+    id: shortId(kind === 'meme' ? 'meme' : 'img', uuid),
+    kind,
+    assetId: asset.id,
+    text: null,
+    timing: {
+      anchor: 'edit',
+      from: 'start',
+      offsetMs: start,
+      durMs: Math.min(2000, total - start),
+    },
+    frame: imageFrame(asset.width, asset.height),
+    opacity: 1,
+    z: Math.min(
+      20,
+      d.overlays.reduce((m, x) => Math.max(m, x.z + 1), 0),
+    ),
+  };
+  return {
+    ops: [
+      { type: 'setEntity', collection: 'overlay', entity: o as unknown as Record<string, unknown> },
+    ],
+    summary: kind === 'meme' ? 'mème ajouté' : 'image ajoutée',
+  };
+}
+
+export function addSfx(
+  d: ClipProjectV2,
+  t: number,
+  asset: PickedAsset,
+  uuid: () => string,
+): Gesture {
+  if (asset.kind !== 'audio' || !asset.durationMs) {
+    throw new GestureError('Choisissez un son de la bibliothèque.');
+  }
+  const total = totalEditDuration(segmentsV2(d.segments));
+  const start = Math.max(0, Math.min(Math.round(t), total - 100));
+  const s: Sfx = {
+    id: shortId('sfx', uuid),
+    assetId: asset.id,
+    timing: {
+      anchor: 'edit',
+      from: 'start',
+      offsetMs: start,
+      durMs: Math.max(1, Math.min(asset.durationMs, total - start)),
+    },
+    gainDb: 0,
+  };
+  return {
+    ops: [
+      { type: 'setEntity', collection: 'sfx', entity: s as unknown as Record<string, unknown> },
+    ],
+    summary: 'effet sonore ajouté',
   };
 }
 

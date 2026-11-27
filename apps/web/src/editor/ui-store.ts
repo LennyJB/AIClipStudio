@@ -9,6 +9,7 @@ export type Selection =
   | { kind: 'caption'; id: string }
   | { kind: 'effect'; id: string }
   | { kind: 'overlay'; id: string }
+  | { kind: 'sfx'; id: string }
   | { kind: 'mask'; id: string }
   | { kind: 'layer'; id: string }
   | { kind: 'track'; audioIndex: number };

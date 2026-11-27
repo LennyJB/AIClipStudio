@@ -13,6 +13,7 @@ async function main() {
   // Rendus interrompus en pleine publication : revérifiés (décision, accords, confidentialité,
   // plan) AVANT d'accepter la moindre requête.
   await services.renders.recoverFinalizing();
+  await services.assets.recover();
   // Après recover() (dans buildApp) : aucun traitement n'est actif, les .part sont obsolètes.
   await services.storage.removeStaleTempFiles();
 

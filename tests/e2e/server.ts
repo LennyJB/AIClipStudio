@@ -98,7 +98,8 @@ async function main() {
       WHISPER_WORKER_COMMAND: JSON.stringify([process.execPath, FAKE_WORKER]),
       ANALYSIS_PRIVACY_FILE: privacy,
       RENDER_X264_PRESET: 'ultrafast',
-      RENDER_PREVIEW_HEIGHT: '320',
+      // Image exacte à la taille du canvas (540×960) : comparaison au pixel près (parité, 7f).
+      RENDER_PREVIEW_HEIGHT: '960',
       API_HOST: '127.0.0.1',
       API_PORT: String(E2E.apiPort),
       EDITOR_ALLOWED_ORIGINS: E2E.origin,

@@ -223,7 +223,7 @@ export interface TextOverlayLine {
 
 /**
  * Calques texte visibles (plages en temps montage). Les calques image et mème sont traités par la
- * bibliothèque de médias (PR 7f) : ils ne sont pas produits ici.
+ * bibliothèque de médias (`imageOverlayPlacements`, PR 7f) : ils ne sont pas produits ici.
  */
 export function textOverlayLines(
   d: ClipProjectV2,

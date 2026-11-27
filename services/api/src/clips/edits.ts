@@ -145,6 +145,12 @@ export class EditService {
   readonly repo: EditRepository;
   private readonly cache = new Map<string, { doc: ClipProjectV2; hash: string }>();
 
+  /**
+   * Garde de la bibliothèque de médias (étape 7f) : appelée DANS la transaction de chaque lot,
+   * annulation ou rétablissement, sur le document obtenu. Tout média référencé doit exister.
+   */
+  assetGuard: ((d: ClipProjectV2) => void) | null = null;
+
   constructor(
     private readonly db: Db,
     private readonly clips: ClipRepository,
@@ -443,6 +449,7 @@ export class EditService {
           }
           targetSeq = b.targetSeq;
         }
+        this.assetGuard?.(doc);
         const r = this.append(projectId, {
           head: h.headSeq,
           checkpoint: h.checkpointRevision,

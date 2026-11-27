@@ -1,5 +1,6 @@
 import { ClaudeModel, type EditorialModel } from '@acs/editorial';
 import { AnalysisService } from './analysis/service';
+import { AssetService } from './assets/service';
 import type { AppContext } from './context';
 import { DerivativeService } from './derivatives/service';
 import { LeaseRepository } from './derivatives/leases';
@@ -25,6 +26,8 @@ export interface Services {
   renders: RenderService;
   /** Médias de travail de l'éditeur (étape 7d) : préparation, baux, accès protégé. */
   editorMedia: EditorMediaService;
+  /** Bibliothèque de médias (étape 7f) : images fixes et effets sonores importés. */
+  assets: AssetService;
 }
 
 export interface ServiceOptions {
@@ -54,7 +57,9 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
   const review = new ReviewService(ctx, transcriptions, derivatives);
   const exportAudio = new ExportAudioService(ctx);
   const clips = new ClipProjectService(ctx, review, analysis, exportAudio);
-  const renders = new RenderService(ctx, clips, exportAudio, () => runner);
+  const assets = new AssetService(ctx);
+  clips.edits.assetGuard = (d) => assets.assertReferencable(d);
+  const renders = new RenderService(ctx, clips, exportAudio, () => runner, assets);
   const editorMedia = new EditorMediaService(
     ctx,
     clips,
@@ -91,6 +96,7 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
     clips,
     renders,
     editorMedia,
+    assets,
   };
 }
 
