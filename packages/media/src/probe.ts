@@ -66,22 +66,84 @@ export interface VideoInfo {
   width: number | null;
   height: number | null;
   fps: number | null;
+  /** Début du flux vidéo relativement au début du fichier (secondes). */
+  startOffsetSec: number;
+  durationSec: number | null;
 }
 
+/**
+ * Anomalies détectées. Gravité (`MEDIA_WARNING_SEVERITY`) :
+ *  - `degraded` : le fichier n'est exploitable qu'en partie, ou une mesure essentielle est
+ *    incertaine ; il n'est JAMAIS présenté comme parfaitement valide ;
+ *  - `info`     : particularité prise en charge (décalage compensé, durée estimée…).
+ */
 export type MediaWarning =
-  'duration_unknown' | 'no_audio' | 'no_video' | 'audio_track_offset' | 'unexpected_container';
+  | 'duration_unknown'
+  | 'no_audio'
+  | 'no_video'
+  | 'audio_track_offset'
+  | 'unexpected_container'
+  // Étape 8 : rediffusions Twitch, fichiers incomplets, métadonnées absentes.
+  | 'video_track_offset'
+  | 'duration_estimated'
+  | 'duration_mismatch'
+  | 'audio_track_short'
+  | 'audio_metadata_incomplete'
+  | 'truncated'
+  | 'decode_errors'
+  | 'track_roles_from_config';
+
+export const MEDIA_WARNING_SEVERITY: Record<MediaWarning, 'degraded' | 'info'> = {
+  duration_unknown: 'degraded',
+  no_audio: 'degraded',
+  no_video: 'info',
+  audio_track_offset: 'info',
+  unexpected_container: 'info',
+  video_track_offset: 'info',
+  duration_estimated: 'info',
+  duration_mismatch: 'degraded',
+  audio_track_short: 'degraded',
+  audio_metadata_incomplete: 'degraded',
+  truncated: 'degraded',
+  decode_errors: 'degraded',
+  track_roles_from_config: 'info',
+};
+
+/** État d'un enregistrement : `degraded` dès qu'une anomalie grave est connue. */
+export function mediaHealth(warnings: readonly MediaWarning[]): {
+  status: 'ok' | 'degraded';
+  issues: MediaWarning[];
+} {
+  const issues = warnings.filter((w) => MEDIA_WARNING_SEVERITY[w] === 'degraded');
+  return { status: issues.length ? 'degraded' : 'ok', issues };
+}
 
 export interface MediaInfo {
-  container: 'mkv' | 'mp4' | 'other';
+  /** `mpegts` : rediffusions Twitch enregistrées en flux de transport (`.ts`). */
+  container: 'mkv' | 'mp4' | 'mpegts' | 'other';
   formatName: string | null;
   durationSec: number | null;
-  durationSource: 'format' | 'stream' | 'tag' | null;
+  /** `scan` : durée MESURÉE en lisant les paquets (durée absente, estimée ou fausse). */
+  durationSource: 'format' | 'stream' | 'tag' | 'scan' | null;
   sizeBytes: number | null;
   bitRate: number | null;
   video: VideoInfo | null;
   audioTracks: AudioTrackInfo[];
   tags: Record<string, string>;
   warnings: MediaWarning[];
+  /** Contrôle de lecture (étape 8) : absent tant qu'il n'a pas été fait. */
+  scan?: MediaScanSummary;
+}
+
+/** Résumé du contrôle de lecture (aucun message brut : ils peuvent contenir des chemins). */
+export interface MediaScanSummary {
+  headErrors: number;
+  tailErrors: number;
+  /** Durée réellement décodée dans les dernières secondes annoncées (null : non mesurable). */
+  tailDecodedSec: number | null;
+  /** Durée mesurée par lecture de tous les paquets (null : lecture complète non faite). */
+  measuredDurationSec: number | null;
+  scanErrors: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -126,10 +188,13 @@ function detectContainer(formatName: string | undefined): MediaInfo['container']
   if (!formatName) return 'other';
   if (formatName.includes('matroska')) return 'mkv';
   if (formatName.includes('mp4') || formatName.includes('mov')) return 'mp4';
+  if (formatName.includes('mpegts')) return 'mpegts';
   return 'other';
 }
 
 const OFFSET_TOLERANCE_SEC = 0.05;
+/** Écart toléré entre deux durées : max(1 s, 2 %). */
+const durationGap = (ref: number) => Math.max(1, ref * 0.02);
 
 /** Transforme la sortie brute de ffprobe en modèle normalisé (fonction pure, testable). */
 export function normalizeProbe(raw: unknown): MediaInfo {
@@ -165,6 +230,7 @@ export function normalizeProbe(raw: unknown): MediaInfo {
     });
 
   const v = streams.find((s) => s.codec_type === 'video');
+  const vStart = v ? parseNumber(v.start_time) : null;
   const video: VideoInfo | null = v
     ? {
         streamIndex: v.index,
@@ -172,6 +238,8 @@ export function normalizeProbe(raw: unknown): MediaInfo {
         width: v.width ?? null,
         height: v.height ?? null,
         fps: parseFrameRate(v.avg_frame_rate) ?? parseFrameRate(v.r_frame_rate),
+        startOffsetSec: vStart === null ? 0 : Math.max(0, vStart - formatStart),
+        durationSec: streamDuration(v),
       }
     : null;
 
@@ -208,6 +276,35 @@ export function normalizeProbe(raw: unknown): MediaInfo {
     warnings.push('audio_track_offset');
   }
   if (container === 'other') warnings.push('unexpected_container');
+  if (video && video.startOffsetSec > OFFSET_TOLERANCE_SEC) warnings.push('video_track_offset');
+  // MPEG-TS : aucune durée stockée, ffprobe l'estime (débit, horodatages) ; elle est MESURÉE au
+  // contrôle de lecture.
+  if (container === 'mpegts' && durationSec !== null) warnings.push('duration_estimated');
+  if (durationSec !== null) {
+    // Durées de flux incohérentes avec le conteneur (métadonnées fausses ou fichier recollé).
+    const streamDurations = [
+      ...(video?.durationSec != null ? [video.startOffsetSec + video.durationSec] : []),
+      ...audioTracks
+        .filter((t) => t.durationSec !== null)
+        .map((t) => t.startOffsetSec + t.durationSec!),
+    ];
+    if (streamDurations.some((d) => d > durationSec! + durationGap(durationSec!))) {
+      warnings.push('duration_mismatch');
+    }
+    // Piste audio nettement plus courte que l'enregistrement : la fin serait muette.
+    if (
+      audioTracks.some(
+        (t) =>
+          t.durationSec !== null &&
+          t.startOffsetSec + t.durationSec < durationSec! - durationGap(durationSec!),
+      )
+    ) {
+      warnings.push('audio_track_short');
+    }
+  }
+  if (audioTracks.some((t) => t.codec === null || t.sampleRate === null || t.channels === null)) {
+    warnings.push('audio_metadata_incomplete');
+  }
 
   return {
     container,

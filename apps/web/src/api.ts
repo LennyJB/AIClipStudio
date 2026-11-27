@@ -19,15 +19,25 @@ export async function fetchHealth(signal?: AbortSignal): Promise<HealthResponse>
 export interface AudioTrack {
   audioIndex: number;
   role: string;
+  roleSource?: string;
   title: string | null;
+  codec?: string | null;
+  channels?: number | null;
+  sampleRate?: number | null;
+  startOffsetSec?: number;
 }
 
 export interface Recording {
   id: string;
   fileName: string;
   durationSec: number | null;
+  durationSource?: string | null;
+  container?: string;
   gameId: string;
   audioTracks: AudioTrack[];
+  warnings?: string[];
+  /** État du fichier (étape 8) : `degraded` si une anomalie grave est connue. */
+  health?: { status: 'ok' | 'degraded'; issues: string[] };
 }
 
 export interface Transcription {
@@ -111,6 +121,9 @@ export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   recordings: () => getJson<{ recordings: Recording[] }>('/api/recordings'),
+  /** Importe un fichier local (référencé, jamais copié ni modifié) par son chemin absolu. */
+  importRecording: (body: { path: string; gameId?: string }) =>
+    getJson<{ recording: Recording; created: boolean }>('/api/recordings', send('POST', body)),
   transcriptionConfig: () => getJson<TranscriptionConfig>('/api/transcription/config'),
   transcriptions: (recordingId: string) =>
     getJson<{ transcriptions: Transcription[]; comparisons: ComparisonGroup[] }>(

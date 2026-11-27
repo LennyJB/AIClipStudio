@@ -404,3 +404,15 @@ Plan : `docs/plan-etape-7.md` (§ 14 à 18 pour les précisions de mise en œuvr
 | Tests Playwright avec l'API réelle, Vite et Chromium (job dédié de la CI)                                                                                                                                                           | Les parcours (onglets, rechargement, brouillon, conflit, pixels masqués, proxy) sont vérifiés dans un vrai navigateur |
 | Bibliothèque de médias (PR 7f, migration 10) : identifiant = empreinte des octets importés, fichier ré-encodé (PNG, WAV) sous `storage/assets/`, déclaration de droits, suppression refusée tant qu'un projet ou un rendu l'utilise | Médias piégés neutralisés ; aucun doublon ; jamais un média utilisé supprimé ; aucun chemin exposé                    |
 | Calques image et effets sonores rendus par FFmpeg et l'aperçu à partir des mêmes placements ; calques posés sur l'image composée ; médias copiés et revérifiés dans le dossier de travail du rendu                                  | Parité mesurée au pixel ; une zone masquée n'est jamais découverte ; un fichier modifié en cours de rendu sans effet  |
+
+## 16. Rediffusions Twitch et fichiers mono-piste, étape 8
+
+Guide : [`import-twitch.md`](import-twitch.md). Aucune migration : les nouvelles anomalies et le
+résumé du contrôle de lecture sont stockés dans les colonnes JSON existantes.
+
+| Décision                                                                                                                                       | Raison                                                                                           |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Conteneurs MOV/M4V et MPEG-TS acceptés ; contenu revérifié par ffprobe ; intégrité par fichier entier quand la structure n'est pas analysable  | Rediffusions Twitch téléchargées ou enregistrées telles quelles, sans connexion à Twitch         |
+| Contrôle de lecture à l'import (début, fin annoncée, lecture des paquets si la durée est absente, estimée ou fausse) ; état `ok` / `degraded`  | Un fichier tronqué ou illisible par endroits n'est jamais présenté comme valide ; durées exactes |
+| Piste unique toujours « Tout » ; ordre `AUDIO_TRACK_ROLES` appliqué seulement aux conteneurs d'OBS (MKV, MP4) et signalé ; sinon rôle inconnu  | Aucune piste supposée être le micro ou Discord ; comportement OBS inchangé                       |
+| Aucune séparation, atténuation ni classification audio ; règles d'export inchangées (composition déclarée + accords, une seule piste « tout ») | Le son mixé d'origine reste intact ; une composition inconnue n'est jamais autorisée             |

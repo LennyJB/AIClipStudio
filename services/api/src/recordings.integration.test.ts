@@ -275,12 +275,17 @@ describe.skipIf(!enabled)('API enregistrements', () => {
       expect(existsSync(path.join(storage, mic.relPath))).toBe(true);
     });
 
-    it('déduit la durée de l’audio pour un MKV non finalisé', async () => {
+    it('MKV non finalisé : durée MESURÉE dès l’import (étape 8) ; repli sur la durée de l’audio conservé pour les imports antérieurs', async () => {
       await setup();
       const { recording } = (await importFile(fx.unfinalizedMkv)).json<{
         recording: RecordingDto;
       }>();
-      expect(recording.durationSec).toBeNull();
+      expect(recording.durationSource).toBe('scan');
+      expect(recording.durationSec).toBeCloseTo(6, 0);
+      // Enregistrement importé avant l'étape 8 (durée restée inconnue) : déduite de l'audio.
+      db.prepare(
+        'UPDATE recordings SET duration_sec = NULL, duration_source = NULL WHERE id = ?',
+      ).run(recording.id);
       await transcriptionAudio(recording.id);
       await services.runner.idle();
       const { recording: after } = await getRecording(recording.id);
