@@ -36,18 +36,18 @@ inchangées (aucune confirmation demandée).
 
 ## Contrôle de lecture à l'import
 
-| Anomalie                    | Gravité | Signification                                                                    |
-| --------------------------- | ------- | -------------------------------------------------------------------------------- |
-| `truncated`                 | grave   | fin annoncée illisible ; seule la partie lisible est exploitable (durée mesurée) |
-| `decode_errors`             | grave   | erreurs de lecture au début, à la fin ou en cours de fichier                     |
-| `duration_unknown`          | grave   | durée introuvable même en lisant le fichier                                      |
-| `duration_mismatch`         | grave   | durées incohérentes ; la durée mesurée est retenue                               |
-| `audio_track_short`         | grave   | une piste audio s'arrête bien avant la fin                                       |
-| `audio_metadata_incomplete` | grave   | codec, fréquence ou nombre de canaux absent                                      |
-| `duration_estimated`        | info    | MPEG-TS : durée estimée par le conteneur, mesurée à l'import                     |
-| `audio_track_offset`        | info    | une piste audio commence après le début (compensé par du silence)                |
-| `video_track_offset`        | info    | la vidéo commence après le début du fichier                                      |
-| `track_roles_from_config`   | info    | rôles déduits de l'ordre des pistes : à vérifier (levé dès qu'ils sont corrigés) |
+| Anomalie                    | Gravité | Signification                                                                                  |
+| --------------------------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `truncated`                 | grave   | fin annoncée illisible ; seule la partie lisible est exploitable (durée mesurée)               |
+| `decode_errors`             | grave   | erreurs de lecture au début, à la fin ou en cours de fichier                                   |
+| `duration_unknown`          | grave   | durée introuvable même en lisant le fichier                                                    |
+| `duration_mismatch`         | grave   | durées incohérentes ; la durée mesurée est retenue                                             |
+| `audio_track_short`         | grave   | une piste audio s'arrête bien avant la fin                                                     |
+| `audio_metadata_incomplete` | grave   | codec, fréquence ou nombre de canaux absent                                                    |
+| `duration_estimated`        | info    | MPEG-TS : durée estimée par le conteneur, mesurée à l'import                                   |
+| `audio_track_offset`        | info    | une piste audio commence après le début (compensé par du silence)                              |
+| `video_track_offset`        | info    | la vidéo commence après le début du fichier                                                    |
+| `track_roles_from_config`   | info    | rôles supposés d'après l'ordre des pistes : export et sous-titres bloqués jusqu'à confirmation |
 
 Un enregistrement avec une anomalie grave est **« partiellement exploitable »**
 (`health.status: degraded`) dans l'API, l'interface et la ligne de commande. Un MP4 sans index
