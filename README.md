@@ -165,7 +165,8 @@ npm run dev
 | `npm run typecheck`                    | Vérification TypeScript de tous les workspaces                                                        |
 | `npm run lint`                         | ESLint                                                                                                |
 | `npm run format`                       | Formatage Prettier                                                                                    |
-| `npm run test:unit`                    | Tests unitaires (sans outil externe)                                                                  |
+| `npm run test:unit`                    | Tests unitaires (sans outil externe), interface comprise (jsdom)                                      |
+| `npm run test:e2e`                     | Parcours de l'éditeur dans Chromium (Playwright, API réelle, Vite ; FFmpeg requis)                    |
 | `npm run test:integration`             | Tests d'intégration (FFmpeg réel)                                                                     |
 | `npm run test:migrations`              | Migrations de base de données                                                                         |
 | `npm run smoke`                        | Démarrage réel de l'API sur un stockage temporaire                                                    |

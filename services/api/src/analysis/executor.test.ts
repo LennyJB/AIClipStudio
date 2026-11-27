@@ -344,5 +344,7 @@ describe('CallExecutor', () => {
         },
       ),
     );
-  });
+    // Propriété (60 tirages, une base par tirage) : même délai que les autres tests de propriétés,
+    // pour une machine de CI chargée (job Windows : tests unitaires et de l'interface en parallèle).
+  }, 60_000);
 });

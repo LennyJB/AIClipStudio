@@ -409,12 +409,13 @@ describe.skipIf(!enabled)('Journal d’édition (API, étape 7b)', () => {
     expect(v.body).toMatchObject({ revision: 3, document: { layout: { preset: initial } } });
 
     // Calque (fonction de l'éditeur) : l'interface 6c et le PATCH v1 refusent clairement ; le moteur
-    // (qui rend le document v2 depuis la PR 7c) refuse explicitement les calques (rendus en PR 7j).
+    // (qui rend le document v2 depuis la PR 7c) refuse explicitement les calques image (ils
+    // dépendent de la bibliothèque de médias, PR 7f ; les calques texte sont rendus depuis la 7e).
     const overlay = {
       id: 'titre',
-      kind: 'text',
-      assetId: null,
-      text: 'Titre',
+      kind: 'image',
+      assetId: 'a'.repeat(64),
+      text: null,
       timing: { anchor: 'edit', from: 'start', offsetMs: 0, durMs: 2_000 },
       frame: { x: 0, y: 0, w: 1, h: 0.1 },
       opacity: 1,

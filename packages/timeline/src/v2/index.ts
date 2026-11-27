@@ -9,5 +9,7 @@ export * from './ops';
 export * from './history';
 export * from './rebase';
 export * from './scene';
+export * from './effects';
+export * from './text';
 export * from './v1-compat';
 export * from './warnings';

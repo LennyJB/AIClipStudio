@@ -48,6 +48,7 @@ import { AppError, isAppError } from '@acs/shared';
 import {
   canonicalJson,
   displayCaptions,
+  effectiveCaptionItems,
   projectWarningsV2,
   segmentsV2,
   type ClipProject,
@@ -245,9 +246,10 @@ export class RenderService {
     const pseudonymize = await this.clips.pseudonymizer();
     const privacy = await this.clipsPrivacyHash();
     const roles = doc.captions.enabled ? doc.captions.sources : [];
+    // Horaires effectifs (réglages compris) : un sous-titre ramené dans le montage est rendu.
     const captions = displayCaptions(
       segmentsV2(doc.segments),
-      doc.captions.items,
+      effectiveCaptionItems(doc),
       doc.captions.corrections,
       { roles, pseudonymize },
     );
@@ -267,6 +269,13 @@ export class RenderService {
       },
       audio,
       captions,
+      // Sous-titres manuels et calques texte : pseudonymisés, comme la transcription.
+      manualCaptions: Object.fromEntries(
+        doc.captions.manual.map((m) => [m.id, pseudonymize(m.text).text]),
+      ),
+      overlayTexts: Object.fromEntries(
+        doc.overlays.filter((o) => o.text !== null).map((o) => [o.id, pseudonymize(o.text!).text]),
+      ),
       probeBytes: manifest.probeBytes,
     };
     let plan: RenderPlan;

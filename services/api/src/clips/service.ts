@@ -28,6 +28,7 @@ import {
   byStartThenId,
   canonicalJson,
   displayCaptions,
+  effectiveCaptionItems,
   durationAccepted,
   groupWords,
   migrateProject,
@@ -38,6 +39,7 @@ import {
   projectSegments,
   projectWarnings,
   RenderOptionsPatchSchema,
+  segmentsV2,
   type CaptionRole,
   type ClipProject,
   type ClipProjectV2,
@@ -634,12 +636,19 @@ export class ClipProjectService {
     return this.edits.submit(projectId, row.recordingId, row.proposalId, body, source);
   }
 
-  /** Document v2 courant, sa version, son empreinte et l'état de l'historique. */
+  /**
+   * Document v2 courant, sa version, son empreinte et l'état de l'historique, avec ce dont
+   * l'éditeur a besoin pour l'aperçu : décision d'audio exporté du SERVEUR (l'interface ne la
+   * recalcule jamais ; seules les pistes autorisées sont chargées et audibles) et caractéristiques
+   * de la vidéo. Aucun chemin de fichier n'est exposé.
+   */
   editorDocument(projectId: string) {
     const row = this.projectRow(projectId);
     const h = this.edits.head(projectId);
     const decision = this.guard.effective(row.proposalId);
     const history = this.edits.history(projectId);
+    const rec = this.recording(row.recordingId);
+    const audio = this.exportAudio.decisionFor(rec);
     return {
       projectId,
       version: h.version,
@@ -649,7 +658,61 @@ export class ClipProjectService {
       decision,
       history: { undo: history.undoable.at(-1) ?? null, redo: history.redoable.at(-1) ?? null },
       checkpointRevision: this.edits.repo.head(projectId)!.checkpointRevision,
+      audio,
+      recording: {
+        width: rec.video?.width ?? null,
+        height: rec.video?.height ?? null,
+        fps: rec.video?.fps ?? null,
+        durationMs: rec.durationSec === null ? null : Math.round(rec.durationSec * 1000),
+        audioTracks: rec.audioTracks.map((t) => ({ audioIndex: t.audioIndex, role: t.role })),
+      },
     };
+  }
+
+  /**
+   * Textes AFFICHÉS de la version courante (aperçu de l'éditeur) : sous-titres de la transcription
+   * corrigés et pseudonymisés, des seules sources choisies ET autorisées aujourd'hui ; sous-titres
+   * manuels et calques texte pseudonymisés. Mêmes textes que l'export. Fichier de confidentialité
+   * invalide ⇒ erreur (jamais de repli sans pseudonymisation).
+   */
+  async editorTexts(projectId: string) {
+    const row = this.projectRow(projectId);
+    const h = this.edits.head(projectId);
+    const doc = h.doc;
+    const audio = this.exportAudio.decisionFor(this.recording(row.recordingId));
+    const roles = doc.captions.enabled
+      ? doc.captions.sources.filter((r) => audio.captionRoles.includes(r))
+      : [];
+    const pseudonymize = await this.pseudonymizer();
+    return {
+      version: h.version,
+      items: displayCaptions(
+        segmentsV2(doc.segments),
+        effectiveCaptionItems(doc),
+        doc.captions.corrections,
+        { roles, pseudonymize },
+      ),
+      manual: Object.fromEntries(doc.captions.manual.map((m) => [m.id, pseudonymize(m.text).text])),
+      overlays: Object.fromEntries(
+        doc.overlays.filter((o) => o.text !== null).map((o) => [o.id, pseudonymize(o.text!).text]),
+      ),
+    };
+  }
+
+  /**
+   * Décision d'audio exporté AUJOURD'HUI pour l'enregistrement du projet (accords et
+   * déclarations), indépendante de la version du document : l'éditeur la relit pour appliquer
+   * immédiatement une révocation (lecture arrêtée, piste plus jamais chargée).
+   */
+  audioDecision(projectId: string) {
+    const row = this.projectRow(projectId);
+    return { audio: this.exportAudio.decisionFor(this.recording(row.recordingId)) };
+  }
+
+  /** « Enregistrer une version » : point de contrôle (révision immuable) à la version courante. */
+  saveVersion(projectId: string) {
+    this.projectRow(projectId);
+    return { revision: this.edits.checkpoint(projectId) };
   }
 
   /** Entrées du journal après une version (synchronisation entre onglets). */

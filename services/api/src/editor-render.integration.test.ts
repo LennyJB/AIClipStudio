@@ -452,4 +452,159 @@ describe.skipIf(!enabled)('Moteur multi-segments par l’API (étape 7c)', () =>
     expect(replay.body.window).not.toEqual(r2.body.window);
     expect((await t.doc()).version).toBe(r2.body.version);
   }, 300_000);
+
+  it('éditeur (PR 7e) : décision audio et vidéo dans le document, textes pseudonymisés, rendu de toutes les fonctions hors bibliothèque, version enregistrée', async () => {
+    const { video, inst } = await setup();
+    const t = await prepare(inst, video);
+    const d0 = (
+      await t.call<DocBody & Record<string, unknown>>(
+        'GET',
+        `/api/clip-projects/${t.project}/document`,
+      )
+    ).body;
+    // Décision du serveur et caractéristiques de la vidéo ; aucun chemin de fichier exposé.
+    expect(d0).toMatchObject({
+      audio: { selected: [{ audioIndex: 0, role: 'mic' }], captionRoles: ['mic'] },
+      recording: { width: expect.any(Number), height: expect.any(Number) },
+    });
+    expect(JSON.stringify(d0)).not.toContain(video);
+    const seg = d0.document.segments[0]!;
+    if (seg.kind !== 'source') throw new Error('segment source attendu');
+    const r = await t.edit({
+      base: { version: d0.version },
+      kind: 'do',
+      ops: [
+        { type: 'setMode', mode: 'enrichi' },
+        {
+          type: 'setEntity',
+          collection: 'manual',
+          entity: {
+            id: 'man-1',
+            origin: 'creator',
+            text: 'Bravo Théo',
+            srcStartMs: seg.srcStartMs + 1000,
+            srcEndMs: seg.srcStartMs + 2500,
+            style: { color: '#FF0000' },
+            position: { x: 0.5, y: 0.4 },
+          },
+        },
+        {
+          type: 'setEntity',
+          collection: 'overlay',
+          entity: {
+            id: 'ov-1',
+            kind: 'text',
+            assetId: null,
+            text: 'GG Théo',
+            timing: { anchor: 'edit', from: 'start', offsetMs: 500, durMs: 2000 },
+            frame: { x: 0.1, y: 0.1, w: 0.8, h: 0.1 },
+            opacity: 1,
+            z: 0,
+          },
+        },
+        {
+          type: 'setEntity',
+          collection: 'mask',
+          entity: {
+            id: 'zz-temp',
+            rect: { x: 0, y: 0, w: 0.2, h: 0.2 },
+            label: 'Notification',
+            mode: 'opaque',
+            srcRange: { srcStartMs: seg.srcStartMs + 500, srcEndMs: seg.srcStartMs + 1500 },
+          },
+        },
+        {
+          type: 'setEntity',
+          collection: 'effect',
+          entity: {
+            id: 'fx-shake',
+            type: 'shake',
+            params: { amplitude: 0.01 },
+            region: null,
+            timing: { anchor: 'edit', from: 'start', offsetMs: 1000, durMs: 500 },
+            enabled: true,
+            origin: 'creator',
+            reason: '',
+            signals: {},
+          },
+        },
+        {
+          type: 'setEntity',
+          collection: 'effect',
+          entity: {
+            id: 'fx-bleep',
+            type: 'bleep',
+            params: { frequencyHz: 1000 },
+            region: null,
+            timing: { anchor: 'edit', from: 'start', offsetMs: 2000, durMs: 300 },
+            enabled: true,
+            origin: 'creator',
+            reason: '',
+            signals: {},
+          },
+        },
+      ],
+    });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+
+    // Textes affichés : pseudonymisés par le serveur (mêmes textes que l'export).
+    const texts = await t.call<{
+      version: number;
+      items: { speakerRole: string }[];
+      manual: Record<string, string>;
+      overlays: Record<string, string>;
+    }>('GET', `/api/clip-projects/${t.project}/texts`);
+    expect(texts.status).toBe(200);
+    expect(texts.body.version).toBe(r.body.version);
+    expect(texts.body.manual).toEqual({ 'man-1': 'Bravo [Coéquipier 1]' });
+    expect(texts.body.overlays).toEqual({ 'ov-1': 'GG [Coéquipier 1]' });
+    // Seules les sources choisies ET autorisées (micro) : aucune ligne Discord.
+    expect(texts.body.items.every((i) => i.speakerRole === 'mic')).toBe(true);
+
+    // Sous-titre coupé du montage puis ramené par un réglage d'horaires : ses textes affichés sont
+    // fournis (horaires effectifs), comme pour l'aperçu et l'export.
+    const d1 = await t.doc();
+    const s1 = d1.document.segments[0]!;
+    if (s1.kind !== 'source') throw new Error('segment source attendu');
+    // Premier sous-titre du segment : seul le tout début du clip est rogné.
+    const cut = d1.document.captions.items
+      .filter((i) => i.speakerRole === 'mic' && i.srcStartMs > s1.srcStartMs)
+      .sort((a, b) => a.srcStartMs - b.srcStartMs)[0]!;
+    const r2 = await t.edit({
+      base: { version: d1.version },
+      kind: 'do',
+      ops: [
+        {
+          type: 'trimSegment',
+          segmentId: s1.id,
+          srcStartMs: cut.srcEndMs + 200,
+          // Durée conservée : la fin est allongée d'autant (fenêtre ±60 s).
+          srcEndMs: s1.srcEndMs + (cut.srcEndMs + 200 - s1.srcStartMs),
+        },
+        { type: 'retimeCaption', itemId: cut.id, srcStartMs: null, srcEndMs: cut.srcEndMs + 1500 },
+      ],
+    });
+    expect(r2.status, JSON.stringify(r2.body)).toBe(200);
+    const texts2 = await t.call<{
+      items: { itemId: string; editRanges: { editStartMs: number; editEndMs: number }[] }[];
+    }>('GET', `/api/clip-projects/${t.project}/texts`);
+    expect(texts2.body.items.find((i) => i.itemId === cut.id)?.editRanges).toEqual([
+      { editStartMs: 0, editEndMs: 1300 },
+    ]);
+
+    const render = await t.render('preview');
+    expect(render.status, JSON.stringify(render.body)).toBe(202);
+    const row = t.renderRow(render.body.render.id);
+    expect(row, row.error_message ?? '').toMatchObject({ status: 'succeeded' });
+    const img = await t.call('GET', `/api/clip-projects/${t.project}/frame?atEditMs=1200`);
+    expect(img.status).toBe(200);
+
+    // « Enregistrer une version » : point de contrôle immuable à la version courante.
+    const v = await t.call<{ revision: number }>(
+      'POST',
+      `/api/clip-projects/${t.project}/checkpoint`,
+      {},
+    );
+    expect(v.body.revision).toBe(r2.body.version);
+  }, 300_000);
 });

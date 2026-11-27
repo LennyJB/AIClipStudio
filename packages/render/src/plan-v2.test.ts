@@ -171,111 +171,19 @@ describe('graphe multi-segments', () => {
   });
 });
 
-describe('fonctions de l’éditeur pas encore rendues : refus explicite, jamais ignorées', () => {
+describe('fonctions qui dépendent de la bibliothèque de médias (PR 7f) : refus explicite', () => {
   const d = doc();
   const cases: [string, ClipProjectV2, RegExp][] = [
     [
-      'masque temporel',
-      {
-        ...d,
-        masks: [
-          ...d.masks,
-          {
-            id: 'mask-900',
-            rect: { x: 0, y: 0, w: 0.1, h: 0.1 },
-            label: 't',
-            mode: 'opaque',
-            srcRange: { srcStartMs: 115_000, srcEndMs: 116_000 },
-          },
-        ],
-      },
-      /masques temporels/u,
-    ],
-    [
-      'disposition personnalisée',
-      {
-        ...d,
-        layout: {
-          ...d.layout,
-          preset: 'custom',
-          layers: [
-            {
-              id: 'l',
-              role: 'gameplay',
-              crop: { x: 0, y: 0, w: 1, h: 1 },
-              frame: { x: 0, y: 0, w: 1, h: 1 },
-              z: 0,
-            },
-          ],
-        },
-      },
-      /disposition personnalisée/u,
-    ],
-    [
-      'sous-titre manuel',
-      {
-        ...d,
-        captions: {
-          ...d.captions,
-          manual: [
-            {
-              id: 'man-1',
-              origin: 'creator',
-              text: 'Salut',
-              srcStartMs: 115_000,
-              srcEndMs: 116_000,
-              style: null,
-              position: null,
-            },
-          ],
-        },
-      },
-      /sous-titres manuels/u,
-    ],
-    [
-      'flou créatif',
-      {
-        ...d,
-        effects: [
-          {
-            id: 'f',
-            type: 'blur_region',
-            params: { sigma: 10 },
-            region: { x: 0, y: 0, w: 0.2, h: 0.2 },
-            timing: { anchor: 'source', srcStartMs: 115_000, srcEndMs: 116_000 },
-            enabled: true,
-            origin: 'creator',
-            reason: '',
-            signals: {},
-          },
-        ],
-      },
-      /blur_region/u,
-    ],
-    [
-      'automatisation du gain',
-      {
-        ...d,
-        audio: {
-          ...d.audio,
-          tracks: d.audio.tracks.map((t) => ({
-            ...t,
-            automation: [{ srcMs: 115_000, gainDb: -6 }],
-          })),
-        },
-      },
-      /automatisation/u,
-    ],
-    [
-      'calque graphique',
+      'calque image (bibliothèque de médias, PR 7f)',
       {
         ...d,
         overlays: [
           {
             id: 'o',
-            kind: 'text',
-            assetId: null,
-            text: 'Hey',
+            kind: 'image',
+            assetId: 'b'.repeat(64),
+            text: null,
             timing: { anchor: 'edit', from: 'start', offsetMs: 0, durMs: 1000 },
             frame: { x: 0, y: 0, w: 0.5, h: 0.1 },
             opacity: 1,
@@ -283,7 +191,7 @@ describe('fonctions de l’éditeur pas encore rendues : refus explicite, jamais
           },
         ],
       },
-      /calques/u,
+      /calques image/u,
     ],
     [
       'effet sonore',

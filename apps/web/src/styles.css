@@ -293,3 +293,292 @@ ul.proposals > li {
   max-width: 100%;
   background: #000;
 }
+
+/* ------------------------------------------------------------------ */
+/* Éditeur (étape 7)                                                    */
+/* ------------------------------------------------------------------ */
+.editor-container {
+  max-width: none;
+}
+.button-link {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  text-decoration: none;
+}
+.editor-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.editor-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+.editor-header h2 {
+  margin: 0;
+}
+.editor-history {
+  display: flex;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+.warning {
+  border-left: 4px solid #d08a00;
+  background: rgba(208, 138, 0, 0.12);
+  padding: 0.4rem 0.6rem;
+}
+.notice {
+  border-left: 4px solid #4a7bd0;
+  background: rgba(74, 123, 208, 0.12);
+  padding: 0.4rem 0.6rem;
+}
+.editor-main {
+  display: grid;
+  grid-template-columns: minmax(280px, 420px) 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+.editor-player {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.editor-stage {
+  position: relative;
+  width: 100%;
+  background: #000;
+}
+.editor-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.editor-stage-note {
+  position: absolute;
+  inset: 40% 0 auto 0;
+  text-align: center;
+  color: #ddd;
+}
+.editor-transport,
+.editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.editor-exact img {
+  width: 100%;
+  max-width: 270px;
+}
+.layer-handles {
+  position: absolute;
+  inset: 0;
+}
+.layer-frame {
+  position: absolute;
+  border: 1px dashed rgba(255, 255, 255, 0.7);
+  cursor: move;
+  touch-action: none;
+}
+.layer-frame.selected {
+  border: 2px solid #ffd400;
+}
+.layer-tag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  font-size: 0.7rem;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 0 0.2rem;
+}
+.layer-resize {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 10px;
+  height: 10px;
+  background: #ffd400;
+  cursor: nwse-resize;
+}
+.editor-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 75vh;
+  overflow: auto;
+}
+.insp-section {
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+}
+.insp-section h3,
+.insp-section h4 {
+  margin: 0.2rem 0 0.4rem;
+}
+.insp-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0.15rem 0.6rem 0.15rem 0;
+}
+.insp-field input[type='number'] {
+  width: 6rem;
+}
+.insp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.insp-rect {
+  display: flex;
+  flex-wrap: wrap;
+}
+.timeline {
+  display: grid;
+  grid-template-columns: 9rem 1fr;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  user-select: none;
+}
+.tl-label {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 0.4rem;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+  font-size: 0.85rem;
+}
+.tl-ruler-label {
+  height: 22px;
+}
+.timeline-scroll {
+  overflow-x: auto;
+}
+.timeline-body {
+  position: relative;
+}
+.tl-row {
+  position: relative;
+  height: 44px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+}
+.tl-ruler {
+  height: 22px;
+  cursor: text;
+}
+.tl-tick {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-left: 1px solid rgba(128, 128, 128, 0.4);
+  font-size: 0.65rem;
+  padding-left: 2px;
+}
+.tl-item {
+  position: absolute;
+  top: 2px;
+  height: 40px;
+  overflow: hidden;
+  border-radius: 3px;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  background: #3b5e91;
+  color: #fff;
+  font-size: 0.7rem;
+  touch-action: none;
+}
+.tl-item.selected {
+  outline: 2px solid #ffd400;
+  z-index: 2;
+}
+.tl-seg.tl-freeze {
+  background: #5a9bd4;
+}
+.tl-seg.tl-gap {
+  background: repeating-linear-gradient(45deg, #444, #444 6px, #666 6px, #666 12px);
+}
+.tl-caption {
+  background: #6c4f9a;
+}
+.tl-caption.frozen {
+  opacity: 0.7;
+}
+.tl-caption.manual {
+  background: #8a5a2b;
+}
+.tl-effect {
+  background: #2f7d5b;
+}
+.tl-effect.audio {
+  background: #7d2f4f;
+}
+.tl-effect.disabled {
+  opacity: 0.45;
+}
+.tl-overlay {
+  background: #9a7b23;
+}
+.tl-text {
+  position: relative;
+  padding: 0 4px;
+  white-space: nowrap;
+  z-index: 1;
+}
+.tl-handle {
+  position: absolute;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.35);
+  cursor: ew-resize;
+  z-index: 2;
+}
+.tl-handle.start {
+  left: 0;
+}
+.tl-handle.end {
+  right: 0;
+}
+.tl-thumbs {
+  position: absolute;
+  inset: 0;
+}
+.tl-thumbs span {
+  position: absolute;
+  top: 0;
+  background-repeat: no-repeat;
+}
+.tl-audio.muted-track {
+  opacity: 0.5;
+}
+.tl-wave {
+  position: absolute;
+  top: 2px;
+  left: 0;
+}
+.tl-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #e33;
+  pointer-events: none;
+  z-index: 3;
+}
+.tl-snap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #ffd400;
+  pointer-events: none;
+  z-index: 3;
+}
+.mono {
+  font-family: ui-monospace, monospace;
+}

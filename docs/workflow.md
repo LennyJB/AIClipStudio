@@ -44,9 +44,10 @@ Déclenchée à chaque Pull Request vers `main` et à chaque push sur `main` ou 
 | Job                  | Vérifie                                                          | Équivalent local                            |
 | -------------------- | ---------------------------------------------------------------- | ------------------------------------------- |
 | Qualité              | Types, lint, formatage                                           | `npm run typecheck`, `lint`, `format:check` |
-| Tests unitaires      | Code pur, SQLite en mémoire                                      | `npm run test:unit`                         |
+| Tests unitaires      | Code pur, SQLite en mémoire, interface (jsdom)                   | `npm run test:unit`                         |
 | Migrations           | Base neuve, reprise de données, migrations publiées inchangées   | `npm run test:migrations`                   |
 | Tests d'intégration  | FFmpeg réel, API complète ; **échoue si FFmpeg est absent**      | `npm run test:integration`                  |
+| Éditeur (Playwright) | Parcours de l'éditeur : API réelle, Vite, Chromium               | `npm run test:e2e`                          |
 | Build et démarrage   | Build de l'interface, démarrage réel de l'API                    | `npm run build:web`, `npm run smoke`        |
 | Windows              | Tests et démarrage sous Windows (PR et `main`)                   | —                                           |
 | Worker Python        | pytest + vrai modèle `tiny` sur CPU + bout en bout Node ↔ worker | `pytest` (vrai modèle : CI uniquement)      |

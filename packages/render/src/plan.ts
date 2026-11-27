@@ -14,13 +14,24 @@
  * segments (`@acs/timeline`).
  */
 import { describeMissing, type AudioDecision } from './audio';
-import { EFFECT_PARAMS } from './effects';
+import {
+  automationFilter,
+  bleepToneParts,
+  blurParts,
+  compositeEffectParts,
+  customLayoutParts,
+  maskFilters,
+  masterFadeFilter,
+  sourceEffectsFilter,
+  type BlurWindow,
+  type CompositeEffects,
+  type ZoomPiece,
+} from './editor-graph';
 import {
   buildVideoGraph,
   compositionTail,
   layoutParts,
   num,
-  sourcePrelude,
   type VideoGraphInput,
   type ZoomWindow,
 } from './layout';
@@ -34,24 +45,29 @@ import {
 } from './presets';
 import { buildAss, buildSrt, type SubtitleLine } from './subtitles';
 import {
+  captionLinesV2,
   durationAccepted,
   durationAcceptedV2,
+  EFFECT_CATALOG,
   migrateV1ToV2,
-  MOTION_EFFECTS,
   placeSegments,
   projectDurationMs,
   RACCORD_FADE_MS,
-  resolveTiming,
+  regionCenterOnOutput,
+  resolvedEffects,
+  segmentLayers,
   segmentsV2,
-  sourceToEdit,
+  TextLayerError,
+  textOverlayLines,
+  toPixelRect,
   totalEditDuration,
   type CaptionRole,
   type ClipProject,
   type ClipProjectV2,
-  type EffectTypeV2,
+  type PlacedLayer,
+  type ResolvedEffect,
   type Segment,
-  type SourceMs,
-  type Timing,
+  type TextOverlayLine,
 } from '@acs/timeline';
 
 /** Sous-titre affiché (voir `displayCaptions` de @acs/timeline). */
@@ -91,6 +107,10 @@ interface CommonInput {
   audio: AudioDecision;
   /** Sous-titres affichés (corrigés, pseudonymisés), calculés pour les sources du document. */
   captions: readonly DisplayCaptionLike[];
+  /** Texte affiché (pseudonymisé) de chaque sous-titre manuel (obligatoire s'il y en a). */
+  manualCaptions?: Readonly<Record<string, string>>;
+  /** Texte affiché (pseudonymisé) de chaque calque texte (obligatoire s'il y en a). */
+  overlayTexts?: Readonly<Record<string, string>>;
   probeBytes: number;
 }
 
@@ -154,39 +174,42 @@ export interface RenderPlan {
 }
 
 const MIX_LIKE = new Set(['mix', 'unknown']);
-/** Effets que le moteur sait rendre (catalogue de l'étape 6) ; les autres arrivent en PR 7i. */
-const RENDERED_EFFECTS: readonly EffectTypeV2[] = [
-  'caption_emphasis',
-  'punch_zoom',
-  'reaction_hold',
-];
 const SAMPLE_RATE = 48_000;
 
 /* ------------------------------------------------------------------ */
 /* Fonctions de l'éditeur pas encore rendues                           */
 /* ------------------------------------------------------------------ */
 
-/** Activée et appliquée (mode du projet) : règle commune avec la scène (`sceneAt`). */
-const isActive = (d: ClipProjectV2, type: EffectTypeV2) =>
-  d.mode === 'enrichi' || !MOTION_EFFECTS.includes(type);
-
+/**
+ * Fonctions qui dépendent de la bibliothèque de médias (PR 7f) : refus EXPLICITE, jamais ignorées.
+ * Tout le reste du document v2 est rendu (PR 7e).
+ */
 export function unsupportedRenderFeatures(d: ClipProjectV2): string[] {
   const out: string[] = [];
-  if (d.layout.preset === 'custom' || d.layout.overrides.length) {
-    out.push('disposition personnalisée (PR 7h)');
+  if (d.overlays.some((o) => o.kind !== 'text')) {
+    out.push('calques image et mèmes (bibliothèque de médias, PR 7f)');
   }
-  if (d.masks.some((m) => m.srcRange !== null)) out.push('masques temporels (PR 7h)');
-  if (d.captions.enabled && (d.captions.overrides.length || d.captions.manual.length)) {
-    out.push('réglages par sous-titre et sous-titres manuels (PR 7g)');
-  }
-  const fx = d.effects.filter(
-    (e) => e.enabled && isActive(d, e.type) && !RENDERED_EFFECTS.includes(e.type),
-  );
-  if (fx.length) out.push(`effets ${[...new Set(fx.map((e) => e.type))].join(', ')} (PR 7i)`);
-  if (d.audio.tracks.some((t) => t.automation.length)) out.push('automatisation du gain (PR 7i)');
-  if (d.overlays.length) out.push('calques graphiques (PR 7j)');
-  if (d.audio.sfx.length) out.push('effets sonores (PR 7j)');
+  if (d.audio.sfx.length) out.push('effets sonores (bibliothèque de médias, PR 7f)');
   return out;
+}
+
+/** Effets du catalogue de l'étape 6 : rendus par le graphe de l'étape 6 (un segment). */
+const STEP6_EFFECTS = new Set(['caption_emphasis', 'punch_zoom', 'reaction_hold']);
+
+/**
+ * Le document utilise-t-il une fonction de l'éditeur qui exige le graphe de l'éditeur (une
+ * branche par segment) ? Sinon, un clip d'un segment garde EXACTEMENT le graphe de l'étape 6.
+ * Les textes (réglages par sous-titre, sous-titres manuels, calques texte) passent par l'ASS et
+ * n'exigent aucun changement de graphe.
+ */
+export function needsEditorGraph(d: ClipProjectV2, effects: readonly ResolvedEffect[]): boolean {
+  return (
+    d.layout.preset === 'custom' ||
+    d.layout.overrides.length > 0 ||
+    d.masks.some((m) => m.srcRange !== null && m.mode === 'opaque') ||
+    effects.some((e) => !STEP6_EFFECTS.has(e.type)) ||
+    d.audio.tracks.some((t) => t.enabled && t.automation.length > 0)
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -201,30 +224,16 @@ interface PlannedEffect {
   factor: number;
 }
 
-/** Effets actifs résolus en temps montage ; plages contiguës fusionnées (pas de creux au raccord). */
-function plannedEffects(d: ClipProjectV2, segments: readonly Segment[]): PlannedEffect[] {
-  const out: PlannedEffect[] = [];
-  for (const e of d.effects) {
-    if (!e.enabled || !isActive(d, e.type)) continue;
-    const ranges = resolveTiming(segments, e.timing as unknown as Timing).ranges;
-    const merged: { start: number; end: number }[] = [];
-    for (const r of ranges) {
-      const last = merged.at(-1);
-      if (last && last.end === r.editStartMs) last.end = r.editEndMs;
-      else merged.push({ start: r.editStartMs, end: r.editEndMs });
-    }
-    const defaults =
-      e.type in EFFECT_PARAMS ? EFFECT_PARAMS[e.type as keyof typeof EFFECT_PARAMS].factor : 1;
-    const factor = Math.min(1.3, Math.max(1, e.params.factor ?? defaults));
-    for (const r of merged) {
-      out.push({ id: e.id, type: e.type, startS: r.start / 1000, endS: r.end / 1000, factor });
-    }
-  }
-  return out;
-}
+/** Bornes des facteurs de zoom (schéma) : zooms de l'étape 6 ≤ 1,3 ; zoom localisé ≤ 3. */
+const zoomFactor = (e: ResolvedEffect) =>
+  Math.min(e.type === 'zoom' ? 3 : 1.3, Math.max(1, e.params['factor'] ?? 1));
 
 interface Compiled {
   d: ClipProjectV2;
+  /** Effets actifs résolus (temps montage), fonctions de l'éditeur comprises. */
+  resolved: ResolvedEffect[];
+  overlays: TextOverlayLine[];
+  editor: boolean;
   preset: RenderPreset;
   fps: number;
   segments: Segment[];
@@ -237,6 +246,8 @@ interface Compiled {
   lines: SubtitleLine[];
   graph: VideoGraphInput;
   single: boolean;
+  /** Zooms de la facecam (`reaction_hold`), pour les calques facecam d'une disposition libre. */
+  camZooms: ZoomWindow[];
 }
 
 function compile(i: RenderPlanV2Input): Compiled {
@@ -317,37 +328,25 @@ function compile(i: RenderPlanV2Input): Compiled {
     );
   }
 
-  const effects = plannedEffects(d, segments);
-  const items = new Map(d.captions.items.map((it) => [it.id, it]));
-  const punch = d.anchors.punchlineMs;
-  const emphasis =
-    effects.some((e) => e.type === 'caption_emphasis') && d.captions.style.emphasizePunchline;
-  const lines: SubtitleLine[] = [];
-  for (const c of i.captions) {
-    if (!roles.includes(c.speakerRole)) continue;
-    const item = items.get(c.itemId);
-    if (!item) continue;
-    const exact = !c.corrected && c.replacements === 0 && c.editRanges.length === 1;
-    for (const r of c.editRanges) {
-      const words = exact
-        ? item.words
-            .map((w) => {
-              const pos = sourceToEdit(segments, w.srcStartMs as SourceMs)[0];
-              if (!pos) return null;
-              const startMs = Math.max(r.editStartMs, pos.editMs);
-              const endMs = Math.min(r.editEndMs, startMs + (w.srcEndMs - w.srcStartMs));
-              return { text: w.text, startMs, endMs: Math.max(endMs, startMs + 10) };
-            })
-            .filter((w): w is { text: string; startMs: number; endMs: number } => w !== null)
-        : null;
-      lines.push({
-        startMs: r.editStartMs,
-        endMs: Math.min(r.editEndMs, durationMs),
-        text: c.text,
-        words: words && words.length === item.words.length ? words : null,
-        emphasize: emphasis && item.srcStartMs <= punch && punch < item.srcEndMs,
-      });
-    }
+  const resolved = resolvedEffects(d);
+  const effects: PlannedEffect[] = resolved.map((e) => ({
+    id: e.id,
+    type: e.type,
+    startS: e.startS,
+    endS: e.endS,
+    factor: zoomFactor(e),
+  }));
+  let lines: SubtitleLine[];
+  let overlays: TextOverlayLine[];
+  try {
+    lines = captionLinesV2(d, i.captions, i.manualCaptions ?? {}, {
+      roles,
+      emphasis: effects.some((e) => e.type === 'caption_emphasis'),
+    });
+    overlays = textOverlayLines(d, i.overlayTexts ?? {});
+  } catch (err) {
+    if (err instanceof TextLayerError) throw new RenderPlanError('VALIDATION_FAILED', err.message);
+    throw err;
   }
 
   const fps = outputFps(i.source.fps);
@@ -371,9 +370,9 @@ function compile(i: RenderPlanV2Input): Compiled {
       facecamShare: d.layout.facecamShare,
       masks: d.masks.map((m) => ({ rect: m.rect, label: m.label, mode: m.mode })),
     },
-    zooms: toWindows('punch_zoom'),
+    zooms: [...toWindows('punch_zoom'), ...toWindows('zoom')],
     facecamZooms: d.layout.preset === 'facecam_top' ? toWindows('reaction_hold') : [],
-    subtitlesFile: lines.length ? 'subs.ass' : null,
+    subtitlesFile: lines.length || overlays.length ? 'subs.ass' : null,
     fontsDir: 'fonts',
   };
 
@@ -401,8 +400,12 @@ function compile(i: RenderPlanV2Input): Compiled {
     return { ...base, input: inputs.length - 1, srcMs };
   });
 
+  const editor = needsEditorGraph(d, resolved);
   return {
     d,
+    resolved,
+    overlays,
+    editor,
     preset,
     fps,
     segments,
@@ -414,7 +417,8 @@ function compile(i: RenderPlanV2Input): Compiled {
     effects,
     lines,
     graph,
-    single: segments.length === 1 && segments[0]!.kind === 'source',
+    single: segments.length === 1 && segments[0]!.kind === 'source' && !editor,
+    camZooms: toWindows('reaction_hold'),
   };
 }
 
@@ -444,34 +448,174 @@ function singleAudioGraph(tracks: RenderPlan['audio']['tracks'], loudnorm: boole
 
 const color = (hex: string) => `0x${hex.slice(1).toUpperCase()}`;
 
+const dims = (c: Compiled) => ({
+  src: { width: c.graph.srcWidth, height: c.graph.srcHeight },
+  out: { width: c.graph.outWidth, height: c.graph.outHeight },
+});
+
+/** Calques d'une disposition libre (surcharge du segment ou `custom`) ; null : préréglage. */
+function customLayers(c: Compiled, segmentId: string): PlacedLayer[] | null {
+  const d = c.d;
+  const custom = d.layout.preset === 'custom' || d.layout.overrides.some((o) => o.id === segmentId);
+  return custom ? segmentLayers(d, segmentId, dims(c)) : null;
+}
+
 /**
- * Graphe de plusieurs segments : une branche par segment (image source → aplats → nombre exact
- * d'images → disposition), concaténation, zoom, sous-titres. Audio : une branche par segment et
- * par piste (extrait exact, ou SILENCE numérique pendant un arrêt sur image et un vide), fondus de
- * raccord, concaténation par piste, gain, mixage, normalisation.
+ * Flous créatifs d'une branche (après les aplats). `localStart` : instant montage (s) du début de
+ * la branche ; `staticAt` : image exacte (instant montage), flou statique.
+ */
+function blursFor(
+  c: Compiled,
+  seg: { editStartMs: number; editEndMs: number },
+  localStart: number,
+  staticAt: number | null,
+): BlurWindow[] {
+  const out: BlurWindow[] = [];
+  const a = seg.editStartMs / 1000;
+  const b = seg.editEndMs / 1000;
+  for (const e of c.resolved) {
+    if (e.type !== 'blur_region' || !e.region) continue;
+    const region = toPixelRect(e.region, c.graph.srcWidth, c.graph.srcHeight);
+    const sigma = Math.min(60, Math.max(1, e.params['sigma'] ?? 20));
+    if (staticAt !== null) {
+      if (e.startS <= staticAt && staticAt < e.endS) out.push({ region, sigma, local: null });
+      continue;
+    }
+    if (e.endS <= a || e.startS >= b) continue;
+    out.push({
+      region,
+      sigma,
+      local:
+        e.startS <= a && e.endS >= b ? null : { s: e.startS - localStart, e: e.endS - localStart },
+    });
+  }
+  return out;
+}
+
+/** Effets de l'image composée (temps montage) : zooms localisés découpés par segment, secousses, éclairs. */
+function compositeFx(c: Compiled): CompositeEffects {
+  const pieces: ZoomPiece[] = [];
+  for (const e of c.resolved) {
+    if (e.type !== 'zoom' || !e.region) continue;
+    const region = toPixelRect(e.region, c.graph.srcWidth, c.graph.srcHeight);
+    for (const s of c.placed) {
+      if (s.kind === 'gap') continue;
+      const a = Math.max(e.startS, s.editStartMs / 1000);
+      const b = Math.min(e.endS, s.editEndMs / 1000);
+      if (b <= a) continue;
+      const center = regionCenterOnOutput(segmentLayers(c.d, s.id, dims(c)), region, dims(c).out);
+      pieces.push({ startS: a, endS: b, ...center });
+    }
+  }
+  return {
+    zooms: c.graph.zooms,
+    zoomPieces: pieces,
+    shakes: c.resolved
+      .filter((e) => e.type === 'shake')
+      .map((e) => ({
+        startS: e.startS,
+        endS: e.endS,
+        amplitude: Math.min(0.05, Math.max(0, e.params['amplitude'] ?? 0.01)),
+      })),
+    flashes: c.resolved
+      .filter((e) => e.type === 'flash')
+      .map((e) => ({
+        startS: e.startS,
+        endS: e.endS,
+        intensity: Math.min(1, Math.max(0, e.params['intensity'] ?? 0.8)),
+      })),
+  };
+}
+
+/**
+ * Fin du graphe vidéo : effets de l'image composée puis textes et format final. Sans zoom
+ * localisé, secousse ni éclair : chaîne de l'étape 7c inchangée.
+ */
+function videoTail(c: Compiled, input: string, at: string | null): string[] {
+  const g = c.graph;
+  const fx = compositeFx(c);
+  const extra = at ? { beforeSubtitles: at } : {};
+  if (!fx.zoomPieces.length && !fx.shakes.length && !fx.flashes.length) {
+    return [`${input}${compositionTail(g, extra).join(',')}[v]`];
+  }
+  const { parts, output } = compositeEffectParts(input, fx, {
+    width: g.outWidth,
+    height: g.outHeight,
+    fps: g.fps,
+    ...(at ? { retime: at } : {}),
+  });
+  return [...parts, `${output}${compositionTail({ ...g, zooms: [] }, extra).join(',')}[v]`];
+}
+
+/** Disposition d'une branche : préréglage de l'étape 6 ou calques libres. */
+function branchLayout(
+  c: Compiled,
+  segmentId: string,
+  o: { input: string; pre: string; output: string; sfx: string },
+  camZooms: readonly ZoomWindow[],
+): string[] {
+  const g = c.graph;
+  const layers = customLayers(c, segmentId);
+  if (!layers) return layoutParts({ ...g, facecamZooms: camZooms }, o);
+  const head = o.pre ? [`${o.input}${o.pre}[pre${o.sfx}]`] : [];
+  return [
+    ...head,
+    ...customLayoutParts(layers, {
+      input: o.pre ? `[pre${o.sfx}]` : o.input,
+      output: o.output,
+      sfx: o.sfx,
+      width: g.outWidth,
+      height: g.outHeight,
+      background: c.d.layout.background,
+      fps: g.fps,
+      facecamZooms: camZooms,
+    }),
+  ];
+}
+
+/** Zooms de la facecam exprimés dans le temps d'une branche [t0, t1[. */
+function localZooms(windows: readonly ZoomWindow[], t0: number, t1: number): ZoomWindow[] {
+  return windows
+    .filter((w) => w.endS > t0 && w.startS < t1)
+    .map((w) => ({ ...w, startS: w.startS - t0, endS: w.endS - t0 }));
+}
+
+/**
+ * Graphe de plusieurs segments : une branche par segment (image source → aplats permanents et
+ * temporels → nombre exact d'images → flou créatif → disposition), concaténation, effets de
+ * l'image composée, textes. Audio : une branche par segment et par piste (extrait exact avec
+ * automatisation du gain, ou SILENCE numérique pendant un arrêt sur image et un vide), fondus de
+ * raccord, concaténation par piste, gain, atténuation et bips, mixage (tons des bips compris),
+ * normalisation, fondus d'entrée et de sortie.
  */
 function multiGraph(c: Compiled, loudnorm: boolean): string {
   const g = c.graph;
   const W = g.outWidth;
   const H = g.outHeight;
   const F = num(g.fps);
-  const prelude = sourcePrelude(g).join(',');
+  const src = dims(c).src;
   const parts: string[] = [];
   const videoLabels: string[] = [];
   const n = c.placed.length;
+  const camWindows = c.d.layout.preset === 'facecam_top' ? g.facecamZooms : c.camZooms;
   c.placed.forEach((s, k) => {
     if (s.frames > 0) {
       const t0 = s.firstFrame / g.fps;
       const t1 = (s.firstFrame + s.frames) / g.fps;
-      // Zooms de la facecam dans le temps de la branche (son flux part de 0).
-      const camZooms = g.facecamZooms
-        .filter((w) => w.endS > t0 && w.startS < t1)
-        .map((w) => ({ ...w, startS: w.startS - t0, endS: w.endS - t0 }));
       if (s.kind === 'gap') {
         parts.push(
           `color=c=${color(c.d.layout.background)}:s=${W}x${H}:r=${F},trim=end_frame=${s.frames},setpts=PTS-STARTPTS,format=yuv420p,setsar=1[v${k}]`,
         );
       } else {
+        const durMs = s.editEndMs - s.editStartMs;
+        const prelude = [
+          `fps=${F}`,
+          ...maskFilters(c.d.masks, src, {
+            srcStartMs: s.srcMs!,
+            srcEndMs: s.srcMs! + (s.kind === 'source' ? durMs : 0),
+            frozenAtMs: s.kind === 'freeze' ? s.srcMs! : null,
+          }),
+        ].join(',');
         const frames =
           s.kind === 'source'
             ? `tpad=stop_mode=clone:stop_duration=1,trim=end_frame=${s.frames},setpts=PTS-STARTPTS`
@@ -482,10 +626,14 @@ function multiGraph(c: Compiled, loudnorm: boolean): string {
         parts.push(
           `[${s.input}:v]setpts=PTS-STARTPTS,${prelude},setpts=PTS-STARTPTS,${frames}[s${k}]`,
         );
+        const blur = blurParts(`[s${k}]`, blursFor(c, s, t0, null), `_${k}`);
+        parts.push(...blur.parts);
         parts.push(
-          ...layoutParts(
-            { ...g, facecamZooms: camZooms },
-            { input: `[s${k}]`, pre: '', output: `[v${k}]`, sfx: `_${k}` },
+          ...branchLayout(
+            c,
+            s.id,
+            { input: blur.output, pre: '', output: `[v${k}]`, sfx: `_${k}` },
+            localZooms(camWindows, t0, t1),
           ),
         );
       }
@@ -493,10 +641,14 @@ function multiGraph(c: Compiled, loudnorm: boolean): string {
     }
   });
   parts.push(`${videoLabels.join('')}concat=n=${videoLabels.length}:v=1:a=0[cat]`);
-  parts.push(`[cat]${compositionTail(g).join(',')}[v]`);
+  parts.push(...videoTail(c, '[cat]', null));
 
   if (c.tracks.length) {
+    const audioFx = c.resolved.filter((e) => EFFECT_CATALOG[e.type].category === 'audio');
+    const sourceFx = sourceEffectsFilter(audioFx);
     c.tracks.forEach((t, ti) => {
+      const automation =
+        c.d.audio.tracks.find((x) => x.audioIndex === t.audioIndex)?.automation ?? [];
       const labels = c.placed.map((s, k) => {
         const durMs = s.editEndMs - s.editStartMs;
         const samples = (durMs * SAMPLE_RATE) / 1000;
@@ -508,7 +660,9 @@ function multiGraph(c: Compiled, loudnorm: boolean): string {
           return label;
         }
         const fade = Math.min(RACCORD_FADE_MS, durMs / 2) / 1000;
+        const auto = automationFilter(automation, s.srcMs!, s.srcMs! + durMs);
         const fades = [
+          ...(auto ? [auto] : []),
           ...(k > 0 ? [`afade=t=in:st=0:d=${num(fade)}`] : []),
           ...(k < n - 1 ? [`afade=t=out:st=${num(durMs / 1000 - fade)}:d=${num(fade)}`] : []),
         ];
@@ -517,15 +671,23 @@ function multiGraph(c: Compiled, loudnorm: boolean): string {
         );
         return label;
       });
-      parts.push(`${labels.join('')}concat=n=${n}:v=0:a=1,${gainFilter(t.gainDb)}[t${ti}]`);
+      parts.push(
+        `${labels.join('')}concat=n=${n}:v=0:a=1,${gainFilter(t.gainDb)}${sourceFx ? `,${sourceFx}` : ''}[t${ti}]`,
+      );
     });
-    const mixed = c.tracks.length > 1;
+    const tones = bleepToneParts(audioFx, c.durationMs / 1000, audioFormat);
+    parts.push(...tones.parts);
+    const inputs = [...c.tracks.map((_, k) => `[t${k}]`), ...tones.labels];
+    const mixed = inputs.length > 1;
     if (mixed) {
       parts.push(
-        `${c.tracks.map((_, k) => `[t${k}]`).join('')}amix=inputs=${c.tracks.length}:duration=longest:normalize=0[amix]`,
+        `${inputs.join('')}amix=inputs=${inputs.length}:duration=longest:normalize=0[amix]`,
       );
     }
-    parts.push(`${mixed ? '[amix]' : '[t0]'}${loudnormTail(loudnorm)}[a]`);
+    const master = masterFadeFilter(audioFx);
+    parts.push(
+      `${mixed ? '[amix]' : '[t0]'}${loudnormTail(loudnorm)}${master ? `,${master}` : ''}[a]`,
+    );
   }
   return parts.join(';');
 }
@@ -550,6 +712,7 @@ export function buildRenderPlanV2(i: RenderPlanV2Input): RenderPlan {
       : video
     : multiGraph(c, c.d.audio.loudnorm.enabled);
   const hasSubs = c.lines.length > 0;
+  const hasText = hasSubs || c.overlays.length > 0;
   const firstSrc = c.inputs[0]?.srcStartMs ?? 0;
   return {
     engineVersion: RENDER_ENGINE_VERSION,
@@ -563,7 +726,7 @@ export function buildRenderPlanV2(i: RenderPlanV2Input): RenderPlan {
     frameGraph,
     hasAudio: c.tracks.length > 0,
     audio: { tracks: c.tracks, loudnorm, silent: c.d.audio.silent },
-    ass: hasSubs ? buildAss(c.lines, c.d.captions.style) : null,
+    ass: hasText ? buildAss(c.lines, c.d.captions.style, c.overlays) : null,
     srt: hasSubs ? buildSrt(c.lines, c.d.captions.style) : null,
     effects: c.effects.map((e) => ({ id: e.id, type: e.type, startS: e.startS, endS: e.endS })),
     captionLines: c.lines.length,
@@ -641,24 +804,53 @@ export function buildFramePlan(i: RenderPlanV2Input, atEditMs: number): FramePla
     );
   } else {
     const offsetMs = seg.kind === 'source' ? ((j - seg.firstFrame) * 1000) / c.fps : 0;
-    input = { srcMs: seg.srcMs! + offsetMs };
+    const srcAt = seg.srcMs! + offsetMs;
+    input = { srcMs: srcAt };
+    // Aplats à l'instant source de l'image (temporels compris, marge de sécurité comprise).
+    const masks = maskFilters(c.d.masks, dims(c).src, {
+      srcStartMs: srcAt,
+      srcEndMs: srcAt,
+      frozenAtMs: srcAt,
+    });
     const pre = [
       'setpts=PTS-STARTPTS',
-      ...sourcePrelude(g),
+      `fps=${num(g.fps)}`,
+      ...masks,
       'setpts=PTS-STARTPTS',
       'trim=end_frame=1',
       at,
     ].join(',');
-    parts.push(...layoutParts(g, { input: '[0:v]', pre, output: '[comp]', sfx: '' }));
+    const blurs = blursFor(c, seg, 0, T);
+    const camWindows = c.d.layout.preset === 'facecam_top' ? g.facecamZooms : c.camZooms;
+    if (blurs.length) {
+      parts.push(`[0:v]${pre}[fr]`);
+      const blur = blurParts('[fr]', blurs, '');
+      parts.push(...blur.parts);
+      parts.push(
+        ...branchLayout(
+          c,
+          seg.id,
+          { input: blur.output, pre: '', output: '[comp]', sfx: '' },
+          camWindows,
+        ),
+      );
+    } else {
+      parts.push(
+        ...branchLayout(c, seg.id, { input: '[0:v]', pre, output: '[comp]', sfx: '' }, camWindows),
+      );
+    }
   }
-  parts.push(`[comp]${compositionTail(g, { beforeSubtitles: at }).join(',')}[v]`);
+  parts.push(...videoTail(c, '[comp]', at));
   return {
     atEditMs: t,
     frameTimeMs: T * 1000,
     input,
     probeBytes: i.probeBytes,
     graph: parts.join(';'),
-    ass: c.lines.length ? buildAss(c.lines, c.d.captions.style) : null,
+    ass:
+      c.lines.length || c.overlays.length
+        ? buildAss(c.lines, c.d.captions.style, c.overlays)
+        : null,
     preset: c.preset,
   };
 }

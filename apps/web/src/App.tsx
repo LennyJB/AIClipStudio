@@ -1,11 +1,41 @@
 import { useEffect, useState } from 'react';
 import { fetchHealth, type HealthResponse } from './api';
 import { Recordings } from './components/Recordings';
+import { EditorPage } from './editor/EditorPage';
+
+/** Route de l'éditeur : `#/editeur/<projet>` (aucun routeur : un seul écran supplémentaire). */
+export function editorRoute(hash: string): string | null {
+  const m = /^#\/editeur\/([A-Za-z0-9_-]{1,100})$/u.exec(hash);
+  return m ? m[1]! : null;
+}
+
+function useHash() {
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const on = () => setHash(window.location.hash);
+    window.addEventListener('hashchange', on);
+    return () => window.removeEventListener('hashchange', on);
+  }, []);
+  return hash;
+}
 
 type State =
   { kind: 'loading' } | { kind: 'ok'; health: HealthResponse } | { kind: 'error'; message: string };
 
 export function App() {
+  const hash = useHash();
+  const editing = editorRoute(hash);
+  if (editing) {
+    return (
+      <main className="container editor-container">
+        <EditorPage key={editing} projectId={editing} onClose={() => (window.location.hash = '')} />
+      </main>
+    );
+  }
+  return <Home />;
+}
+
+function Home() {
   const [state, setState] = useState<State>({ kind: 'loading' });
 
   useEffect(() => {

@@ -26,19 +26,36 @@ import {
 } from '../time';
 import { presetLayers, toPixelRect, type PixelRect, type PlacedLayer } from '../geometry';
 import type { CaptionRole } from '../captions';
+import { EFFECT_CATALOG, resolvedEffects } from './effects';
 import { segmentsV2, type ClipProjectV2, type EffectTypeV2, type TimingV2 } from './schema';
 
 /** Fondu anti-clic à chaque raccord (aperçu ET export). */
 export const RACCORD_FADE_MS = 8;
 
 /** Effets de mouvement : absents en mode fidèle (règle de l'étape 6, étendue au catalogue v2). */
-export const MOTION_EFFECTS: readonly EffectTypeV2[] = [
-  'punch_zoom',
-  'reaction_hold',
-  'zoom',
-  'shake',
-  'flash',
-];
+export const MOTION_EFFECTS: readonly EffectTypeV2[] = (
+  Object.keys(EFFECT_CATALOG) as EffectTypeV2[]
+).filter((t) => EFFECT_CATALOG[t].motion);
+
+/**
+ * Marge de sécurité d'un masque TEMPOREL (ms), de chaque côté de sa plage : l'image affichée à un
+ * instant peut provenir d'une image source voisine (cadence, recherche précise selon la version de
+ * FFmpeg). L'aplat est donc posé un peu plus longtemps que demandé, dans l'aperçu comme dans
+ * l'export : jamais moins masqué.
+ */
+export const MASK_TIME_MARGIN_MS = 100;
+
+/** Le masque est-il actif sur l'image source à `srcMs` ? (permanent, ou plage + marge) */
+export function maskActiveAt(
+  m: { srcRange: { srcStartMs: number; srcEndMs: number } | null },
+  srcMs: number,
+): boolean {
+  return (
+    !m.srcRange ||
+    (m.srcRange.srcStartMs - MASK_TIME_MARGIN_MS <= srcMs &&
+      srcMs < m.srcRange.srcEndMs + MASK_TIME_MARGIN_MS)
+  );
+}
 
 export interface SceneOptions {
   src: { width: number; height: number };
@@ -72,8 +89,18 @@ export interface Scene {
   masks: PixelRect[];
   /** Masques désactivés par le créateur (avertissement permanent). */
   disabledMaskIds: string[];
-  /** Effets visuels actifs (mode et activation appliqués), dans l'ordre d'application. */
-  effects: { id: string; type: EffectTypeV2; region: PixelRect | null }[];
+  /**
+   * Effets visuels actifs (mode et activation appliqués), dans l'ordre d'application, avec leurs
+   * paramètres (valeurs par défaut comprises) et leur fenêtre active (temps montage, s).
+   */
+  effects: {
+    id: string;
+    type: EffectTypeV2;
+    region: PixelRect | null;
+    params: Record<string, number>;
+    startS: number;
+    endS: number;
+  }[];
   /** Sous-titres visibles (items de transcription et manuels). */
   captionIds: string[];
   /** Calques graphiques visibles, du bas vers le haut. */
@@ -119,7 +146,15 @@ export function automationGainDb(
   return points.at(-1)!.gainDb;
 }
 
-function layersFor(d: ClipProjectV2, segmentId: string, o: SceneOptions): PlacedLayer[] {
+/**
+ * Calques d'un segment, en pixels, du bas vers le haut : surcharge du segment, sinon disposition
+ * personnalisée, sinon disposition prédéfinie. Même calcul pour le canvas et le graphe FFmpeg.
+ */
+export function segmentLayers(
+  d: ClipProjectV2,
+  segmentId: string,
+  o: Pick<SceneOptions, 'src' | 'out'>,
+): PlacedLayer[] {
   const override = d.layout.overrides.find((x) => x.id === segmentId);
   const custom = override?.layers ?? (d.layout.preset === 'custom' ? d.layout.layers : null);
   if (!custom) {
@@ -140,6 +175,33 @@ function layersFor(d: ClipProjectV2, segmentId: string, o: SceneOptions): Placed
     .sort((a, b) => a.z - b.z);
 }
 
+/**
+ * Point de l'image de SORTIE (fraction) où apparaît le centre d'une zone SOURCE : calque le plus
+ * haut dont le recadrage contient ce centre ; centre de l'image si aucun calque ne le montre.
+ * Sert de centre au zoom localisé (`zoom`), dans l'aperçu comme dans l'export.
+ */
+export function regionCenterOnOutput(
+  layers: readonly PlacedLayer[],
+  region: PixelRect,
+  out: { width: number; height: number },
+): { cx: number; cy: number } {
+  const px = region.x + region.w / 2;
+  const py = region.y + region.h / 2;
+  for (const l of [...layers].reverse()) {
+    if (l.blurred) continue;
+    const c = l.crop;
+    if (px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h) {
+      const fx = l.frame.x + ((px - c.x) / c.w) * l.frame.w;
+      const fy = l.frame.y + ((py - c.y) / c.h) * l.frame.h;
+      return {
+        cx: Math.min(1, Math.max(0, fx / out.width)),
+        cy: Math.min(1, Math.max(0, fy / out.height)),
+      };
+    }
+  }
+  return { cx: 0.5, cy: 0.5 };
+}
+
 /** Scène à l'instant `t` du montage. */
 export function sceneAt(d: ClipProjectV2, t: EditMs | number, o: SceneOptions): Scene {
   const segs = segmentsV2(d.segments);
@@ -149,23 +211,25 @@ export function sceneAt(d: ClipProjectV2, t: EditMs | number, o: SceneOptions): 
   const srcMs = inSource ? (position as SourcePosition).srcMs : null;
   const frozen = inSource && (position as SourcePosition).frozen;
 
-  const activeMasks = d.masks.filter(
-    (m) =>
-      srcMs !== null &&
-      (!m.srcRange || (m.srcRange.srcStartMs <= srcMs && srcMs < m.srcRange.srcEndMs)),
-  );
+  const activeMasks = d.masks.filter((m) => srcMs !== null && maskActiveAt(m, srcMs));
 
-  const effects = d.effects
-    .filter((e) => e.enabled && (d.mode === 'enrichi' || !MOTION_EFFECTS.includes(e.type)))
-    .filter((e) => !['fade_in', 'fade_out', 'duck', 'bleep'].includes(e.type))
-    .filter((e) => t >= 0 && t < total && visibleAt(d, e.timing, t))
-    // Aucun effet localisé dans un vide (pas d'image source à traiter).
-    .filter((e) => inSource || e.region === null)
-    .map((e) => ({
-      id: e.id,
-      type: e.type,
-      region: e.region ? toPixelRect(e.region, o.src.width, o.src.height) : null,
-    }));
+  const tS = t / 1000;
+  const effects =
+    t >= 0 && t < total
+      ? resolvedEffects(d)
+          .filter((e) => EFFECT_CATALOG[e.type].category === 'visual')
+          .filter((e) => e.startS <= tS && tS < e.endS)
+          // Aucun effet localisé dans un vide (pas d'image source à traiter).
+          .filter((e) => inSource || e.region === null)
+          .map((e) => ({
+            id: e.id,
+            type: e.type,
+            region: e.region ? toPixelRect(e.region, o.src.width, o.src.height) : null,
+            params: e.params,
+            startS: e.startS,
+            endS: e.endS,
+          }))
+      : [];
 
   const items = d.captions.items.map((i) => {
     const ov = d.captions.overrides.find((x) => x.id === i.id);
@@ -229,7 +293,7 @@ export function sceneAt(d: ClipProjectV2, t: EditMs | number, o: SceneOptions): 
     editMs: t,
     position,
     background: d.layout.background,
-    layers: inSource ? layersFor(d, position!.segmentId, o) : [],
+    layers: inSource ? segmentLayers(d, position!.segmentId, o) : [],
     masks: activeMasks
       .filter((m) => m.mode === 'opaque')
       .map((m) => toPixelRect(m.rect, o.src.width, o.src.height)),

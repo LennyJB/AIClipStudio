@@ -7,8 +7,21 @@
  * par libass (aucune injection de balises). Aucun mot n'est jamais retiré ni inventé : une ligne
  * trop longue est conservée en entier.
  */
-import type { CaptionStyle } from '@acs/timeline';
-import { CANVAS } from './presets';
+import {
+  CAPTION_MARGIN_H,
+  CAPTION_POSITIONS,
+  canonicalJson,
+  TEXT_CANVAS,
+  TEXT_OVERLAY_FONT,
+  TEXT_OVERLAY_OUTLINE_PX,
+  textOverlayFontPx,
+  upperText,
+  wrapWords,
+  type CaptionStyle,
+  type TextOverlayLine,
+} from '@acs/timeline';
+
+export { wrapWords };
 
 export interface SubtitleWord {
   text: string;
@@ -26,6 +39,10 @@ export interface SubtitleLine {
   words: SubtitleWord[] | null;
   /** Ligne de la chute mise en évidence. */
   emphasize: boolean;
+  /** Style propre à la ligne (réglage de l'item, sous-titre manuel) ; absent : style global. */
+  style?: CaptionStyle | null;
+  /** Centre du bloc (fraction de l'image 9:16) ; absent : position du style. */
+  position?: { x: number; y: number } | null;
 }
 
 // eslint-disable-next-line no-control-regex
@@ -44,22 +61,6 @@ export function escapeAssText(s: string): string {
 
 export function cleanSrtText(s: string): string {
   return s.replace(CONTROL, ' ').replace(/\s+/gu, ' ').trim();
-}
-
-/** Découpe en lignes (≤ maxChars) sans jamais perdre de mot ; l'excédent reste sur la dernière. */
-export function wrapWords(
-  words: readonly string[],
-  maxChars: number,
-  maxLines: number,
-): string[][] {
-  const lines: string[][] = [[]];
-  for (const w of words) {
-    const cur = lines.at(-1)!;
-    const len = cur.join(' ').length + (cur.length ? 1 : 0) + w.length;
-    if (cur.length && len > maxChars && lines.length < maxLines) lines.push([w]);
-    else cur.push(w);
-  }
-  return lines;
 }
 
 /** « #RRGGBB » → couleur ASS « &H00BBGGRR » (opaque). */
@@ -93,14 +94,8 @@ const FONT: Record<CaptionStyle['font'], { name: string; bold: number }> = {
   Inter: { name: 'Inter', bold: -1 },
 };
 
-/** Position dans la zone sûre des applications (bandeau bas réservé à leur interface). */
-const POSITION: Record<CaptionStyle['position'], { alignment: number; marginV: number }> = {
-  bottom_safe: { alignment: 2, marginV: Math.round(CANVAS.height * 0.22) },
-  middle: { alignment: 5, marginV: 0 },
-  top: { alignment: 8, marginV: Math.round(CANVAS.height * 0.14) },
-};
-
-const upper = (s: string, on: boolean) => (on ? s.toLocaleUpperCase('fr-FR') : s);
+const POSITION = CAPTION_POSITIONS;
+const upper = upperText;
 
 function lineText(l: SubtitleLine, style: CaptionStyle): string {
   const words = (l.words?.length ? l.words.map((w) => w.text) : l.text.split(' '))
@@ -131,35 +126,80 @@ function lineText(l: SubtitleLine, style: CaptionStyle): string {
   return out.join('').replace(/ \\N/gu, '\\N');
 }
 
-export function buildAss(lines: readonly SubtitleLine[], style: CaptionStyle): string {
+/** Ligne de style ASS d'un style de sous-titre. */
+function styleLine(name: string, style: CaptionStyle): string {
   const font = FONT[style.font];
   const pos = POSITION[style.position];
-  const karaoke = style.karaoke;
-  const primary = assColor(karaoke ? style.highlightColor : style.color);
+  const primary = assColor(style.karaoke ? style.highlightColor : style.color);
   const secondary = assColor(style.color);
+  return `Style: ${name},${font.name},${style.sizePx},${primary},${secondary},${assColor(style.outlineColor)},&H80000000,${font.bold},0,0,0,100,100,0,0,1,${style.outlinePx},${style.shadow ? 2 : 0},${pos.alignment},${CAPTION_MARGIN_H},${CAPTION_MARGIN_H},${pos.marginV},1`;
+}
+
+const OVERLAY_STYLE = `Style: Overlay,${TEXT_OVERLAY_FONT},72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,${TEXT_OVERLAY_OUTLINE_PX},0,5,0,0,0,1`;
+
+const pos = (p: { x: number; y: number }) =>
+  `\\pos(${Math.round(p.x * TEXT_CANVAS.width)},${Math.round(p.y * TEXT_CANVAS.height)})`;
+
+/**
+ * Fichier ASS : sous-titres (style global, styles propres aux lignes réglées, position éventuelle)
+ * puis calques texte (couche 1 + ordre d'empilement, au-dessus des sous-titres). Sans réglage par
+ * ligne ni calque texte, le fichier est EXACTEMENT celui de l'étape 6.
+ */
+export function buildAss(
+  lines: readonly SubtitleLine[],
+  style: CaptionStyle,
+  overlays: readonly TextOverlayLine[] = [],
+): string {
+  const styles = new Map<string, { name: string; style: CaptionStyle }>();
+  const styleOf = (l: SubtitleLine) => {
+    if (!l.style) return { name: 'Default', style };
+    const key = canonicalJson(l.style);
+    let s = styles.get(key);
+    if (!s) {
+      s = { name: `S${styles.size + 1}`, style: l.style };
+      styles.set(key, s);
+    }
+    return s;
+  };
+  const sorted = [...lines]
+    .filter((l) => l.endMs > l.startMs && l.text.trim())
+    .sort((a, b) => a.startMs - b.startMs);
+  const events = sorted.map((l) => {
+    const s = styleOf(l);
+    const at = l.position ? `{\\an5${pos(l.position)}}` : '';
+    return `Dialogue: 0,${assTime(l.startMs)},${assTime(l.endMs)},${s.name},,0,0,0,,${at}${lineText(l, s.style)}`;
+  });
+  for (const o of overlays) {
+    if (o.endMs <= o.startMs) continue;
+    const text = escapeAssText(o.text);
+    if (!text) continue;
+    const alpha = Math.round((1 - o.opacity) * 255)
+      .toString(16)
+      .padStart(2, '0')
+      .toUpperCase();
+    const center = { x: o.frame.x + o.frame.w / 2, y: o.frame.y + o.frame.h / 2 };
+    events.push(
+      `Dialogue: ${1 + o.z},${assTime(o.startMs)},${assTime(o.endMs)},Overlay,,0,0,0,,{\\an5${pos(center)}\\fs${textOverlayFontPx(o.frame.h)}\\alpha&H${alpha}&}${text}`,
+    );
+  }
   const header = [
     '[Script Info]',
     'ScriptType: v4.00+',
-    `PlayResX: ${CANVAS.width}`,
-    `PlayResY: ${CANVAS.height}`,
+    `PlayResX: ${TEXT_CANVAS.width}`,
+    `PlayResY: ${TEXT_CANVAS.height}`,
     'WrapStyle: 2',
     'ScaledBorderAndShadow: yes',
     'YCbCr Matrix: TV.709',
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Default,${font.name},${style.sizePx},${primary},${secondary},${assColor(style.outlineColor)},&H80000000,${font.bold},0,0,0,100,100,0,0,1,${style.outlinePx},${style.shadow ? 2 : 0},${pos.alignment},60,60,${pos.marginV},1`,
+    styleLine('Default', style),
+    ...[...styles.values()].map((s) => styleLine(s.name, s.style)),
+    ...(overlays.length ? [OVERLAY_STYLE] : []),
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
   ];
-  const events = [...lines]
-    .filter((l) => l.endMs > l.startMs && l.text.trim())
-    .sort((a, b) => a.startMs - b.startMs)
-    .map(
-      (l) =>
-        `Dialogue: 0,${assTime(l.startMs)},${assTime(l.endMs)},Default,,0,0,0,,${lineText(l, style)}`,
-    );
   return `${[...header, ...events].join('\n')}\n`;
 }
 
@@ -168,8 +208,9 @@ export function buildSrt(lines: readonly SubtitleLine[], style: CaptionStyle): s
     .filter((l) => l.endMs > l.startMs && l.text.trim())
     .sort((a, b) => a.startMs - b.startMs)
     .map((l, i) => {
-      const words = cleanSrtText(upper(l.text, style.uppercase)).split(' ').filter(Boolean);
-      const text = wrapWords(words, style.maxCharsPerLine, style.maxLines)
+      const st = l.style ?? style;
+      const words = cleanSrtText(upper(l.text, st.uppercase)).split(' ').filter(Boolean);
+      const text = wrapWords(words, st.maxCharsPerLine, st.maxLines)
         .map((ln) => ln.join(' '))
         .join('\n');
       return `${i + 1}\n${srtTime(l.startMs)} --> ${srtTime(l.endMs)}\n${text}\n`;
