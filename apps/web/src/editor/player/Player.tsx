@@ -245,9 +245,12 @@ export function Player({ doc, server, texts, media, session, ui, library, childr
   // Effets sonores (bibliothèque) : décodés seulement si le clip a du son ET si au moins une piste
   // de l'enregistrement est autorisée par la DERNIÈRE décision vérifiée du serveur (export sans
   // son, aucune piste autorisée ou vérification indisponible ⇒ aucun effet sonore chargé, comme
-  // l'export qui n'aurait aucun son). Libérés dès qu'ils ne sont plus utilisés.
+  // l'export qui n'aurait aucun son). Libérés dès qu'ils ne sont plus utilisés. Chaque son est
+  // en cours de chargement, chargé, ou en ÉCHEC (réponse HTTP, réseau, décodage) : un échec est
+  // toujours affiché, jamais un son omis en silence.
   const sfxBuffers = useRef(new Map<string, AudioBuffer>());
   const [sfxLoaded, setSfxLoaded] = useState<string[]>([]);
+  const [sfxFailed, setSfxFailed] = useState<Record<string, string>>({});
   const sfxIds = useMemo(
     () =>
       doc.audio.silent ? '' : [...new Set(doc.audio.sfx.map((x) => x.assetId))].sort().join(','),
@@ -259,28 +262,61 @@ export function Player({ doc, server, texts, media, session, ui, library, childr
     const map = sfxBuffers.current;
     const wanted = new Set(sfxAllowed && sfxIds ? sfxIds.split(',') : []);
     for (const id of [...map.keys()]) if (!wanted.has(id)) map.delete(id);
-    setSfxLoaded([...map.keys()].sort());
+    // Nouvelle lecture de la bibliothèque : les échecs précédents sont retentés.
     const todo = [...wanted].filter((id) => !map.has(id) && assetStatus.get(id) === 'ok');
-    if (!todo.length) return;
     void (async () => {
-      const ctx = engine.current?.ctx ?? new AudioContext();
-      engine.current ??= new AudioEngine(ctx);
-      for (const id of todo) {
-        try {
-          const res = await fetch(libraryApi.fileUrl(id));
-          if (!res.ok) continue;
-          const buffer = await ctx.decodeAudioData(await res.arrayBuffer());
-          if (alive) map.set(id, buffer);
-        } catch {
-          // Son illisible : non joué ; signalé par la bibliothèque (fichier manquant).
+      const failures: Record<string, string> = {};
+      if (todo.length) {
+        const ctx = engine.current?.ctx ?? new AudioContext();
+        engine.current ??= new AudioEngine(ctx);
+        for (const id of todo) {
+          let data: ArrayBuffer;
+          try {
+            const res = await fetch(libraryApi.fileUrl(id));
+            if (!res.ok) {
+              failures[id] = `réponse du serveur ${res.status}`;
+              continue;
+            }
+            data = await res.arrayBuffer();
+          } catch (err) {
+            failures[id] = `réseau : ${err instanceof Error ? err.message : String(err)}`;
+            continue;
+          }
+          try {
+            const buffer = await ctx.decodeAudioData(data);
+            if (alive) map.set(id, buffer);
+          } catch {
+            failures[id] = 'son illisible (décodage impossible)';
+          }
         }
       }
-      if (alive) setSfxLoaded([...map.keys()].sort());
+      if (!alive) return;
+      setSfxLoaded([...map.keys()].sort());
+      setSfxFailed(failures);
     })();
     return () => {
       alive = false;
     };
   }, [sfxIds, sfxAllowed, assetStatus]);
+  /** État de chaque effet sonore du clip (affiché sous l'aperçu). */
+  const sfxReport = (sfxIds ? sfxIds.split(',') : []).map((id) => {
+    const name = library?.assets?.find((a) => a.id === id)?.displayName ?? 'son';
+    const st = assetStatus.get(id);
+    if (sfxLoaded.includes(id)) return { id, name, state: 'ready' as const, message: '' };
+    if (sfxFailed[id]) return { id, name, state: 'error' as const, message: sfxFailed[id]! };
+    if (library?.assets && st !== 'ok') {
+      return {
+        id,
+        name,
+        state: 'error' as const,
+        message: 'fichier manquant dans la bibliothèque',
+      };
+    }
+    if (!library?.assets) {
+      return { id, name, state: 'error' as const, message: 'bibliothèque illisible ou non lue' };
+    }
+    return { id, name, state: 'loading' as const, message: '' };
+  });
 
   const [clock] = useState(() => new PlaybackClock(browserTime, durationMs));
   useEffect(() => clock.setDuration(durationMs), [clock, durationMs]);
@@ -599,7 +635,7 @@ export function Player({ doc, server, texts, media, session, ui, library, childr
           {loadedTracks.join(',')}
         </span>
         <span hidden data-testid="sfx-loaded">
-          {sfxLoaded.length}
+          {sfxReport.filter((x) => x.state === 'ready').length}
         </span>
         <span className="small muted" data-testid="audio-playing">
           {playingTracks.length ? `pistes jouées : ${playingTracks.join(', ')}` : ''}
@@ -608,6 +644,26 @@ export function Player({ doc, server, texts, media, session, ui, library, childr
           Image exacte
         </button>
       </div>
+      {sfxReport.length > 0 && !sfxAllowed && (
+        <p className="warning small" data-testid="sfx-blocked">
+          Effets sonores non chargés : aucune piste audio autorisée (ou autorisations non
+          vérifiables). Ils ne sont pas entendus dans l’aperçu.
+        </p>
+      )}
+      {sfxAllowed && sfxReport.some((x) => x.state === 'loading') && (
+        <p className="small muted" data-testid="sfx-loading">
+          Chargement des effets sonores…
+        </p>
+      )}
+      {sfxAllowed &&
+        sfxReport
+          .filter((x) => x.state === 'error')
+          .map((x) => (
+            <p key={x.id} className="error small" role="alert" data-testid="sfx-error">
+              Effet sonore « {x.name} » non chargé ({x.message}) : il n’est pas entendu dans
+              l’aperçu.
+            </p>
+          ))}
       {exactError && <p className="error">{exactError}</p>}
       {exact && (
         <figure className="editor-exact">

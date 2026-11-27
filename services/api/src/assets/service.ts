@@ -13,19 +13,27 @@
  *    version, journal d'édition — une annulation pourrait le ramener) ou un rendu non terminé.
  *    Vérification et suppression dans la même transaction `BEGIN IMMEDIATE` que les lots
  *    d'édition : un lot qui ajoute le média ne peut pas s'intercaler.
- *  - Fichier manquant ou altéré : signalé (`status: 'missing'`), jamais remplacé en silence ;
- *    un rendu qui en dépend est refusé (`ASSET_MISSING`). Réimporter le même fichier le répare.
+ *  - Fichier manquant ou altéré (même de même taille), fichier normalisé comme aperçu : signalé
+ *    (`status: 'missing'`, empreintes vérifiées), jamais servi (refus `ASSET_MISSING`), jamais
+ *    remplacé en silence ; un rendu qui en dépend est refusé. Réimporter le même fichier le répare.
  *  - Rendu : chaque média utilisé est revérifié (empreinte) et COPIÉ dans le dossier de travail
  *    du rendu : sa suppression ou son altération pendant le rendu est sans effet.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Transform, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { z } from 'zod';
-import { importAsset, ASSET_NORMALIZER_VERSION, reject } from '@acs/media';
+import {
+  ASSET_NORMALIZER_VERSION,
+  checkExtension,
+  importAsset,
+  reject,
+  sha256File,
+  sniffAssetFormat,
+} from '@acs/media';
 import { AppError } from '@acs/shared';
 import type { ClipProjectV2 } from '@acs/timeline';
 import type { AppContext } from '../context';
@@ -63,6 +71,7 @@ interface AssetRow {
   format: 'png' | 'wav';
   rel_path: string;
   preview_rel_path: string | null;
+  preview_sha256: string | null;
   file_sha256: string;
   size_bytes: number;
   width: number | null;
@@ -132,13 +141,66 @@ export class AssetService {
     return r;
   }
 
-  private async present(r: AssetRow): Promise<boolean> {
+  /**
+   * Empreintes déjà vérifiées, par fichier et par état du fichier sur le disque (taille, dates de
+   * modification et de changement d'inode, numéro d'inode) : la liste ne relit pas chaque fichier
+   * à chaque affichage, mais tout remplacement (même de même taille) change `ctime` et impose une
+   * nouvelle vérification. Les fichiers SERVIS sont, eux, toujours revérifiés octet par octet.
+   */
+  private readonly verified = new Map<string, string>();
+
+  /** Fichier présent, ordinaire, dans la bibliothèque, et identique à son empreinte. */
+  private async fileMatches(rel: string, expectedSha: string): Promise<boolean> {
+    const abs = toAbs(this.ctx.config.paths.storage, rel);
     try {
-      const st = await stat(toAbs(this.ctx.config.paths.storage, r.rel_path));
-      return st.isFile() && st.size === r.size_bytes;
+      const st = await stat(abs);
+      if (!st.isFile()) return false;
+      const key = `${st.size}:${st.mtimeMs}:${st.ctimeMs}:${st.ino}:${expectedSha}`;
+      if (this.verified.get(abs) === key) return true;
+      const ok = (await this.readVerified(rel, expectedSha)) !== null;
+      if (ok) this.verified.set(abs, key);
+      else this.verified.delete(abs);
+      return ok;
     } catch {
+      this.verified.delete(abs);
       return false;
     }
+  }
+
+  /**
+   * Lit un fichier de la bibliothèque (pas de lien symbolique, strictement dans le dossier) et le
+   * renvoie seulement s'il correspond à son empreinte ; null sinon. Les octets renvoyés sont ceux
+   * qui ont été vérifiés (aucun écart entre vérification et utilisation).
+   */
+  private async readVerified(rel: string, expectedSha: string): Promise<Buffer | null> {
+    let file: OpenedFile;
+    try {
+      file = await openServableFile(
+        toAbs(this.ctx.config.paths.storage, rel),
+        this.dir,
+        path.extname(rel).toLowerCase(),
+      );
+    } catch {
+      return null;
+    }
+    try {
+      const b = await file.handle.readFile();
+      return sha256(b) === expectedSha ? b : null;
+    } catch {
+      return null;
+    } finally {
+      await file.handle.close();
+    }
+  }
+
+  /** Média intact : fichier normalisé ET aperçu (image) conformes à leurs empreintes. */
+  private async present(r: AssetRow): Promise<boolean> {
+    if (!(await this.fileMatches(r.rel_path, r.file_sha256))) return false;
+    if (r.preview_rel_path) {
+      if (!r.preview_sha256) return false;
+      if (!(await this.fileMatches(r.preview_rel_path, r.preview_sha256))) return false;
+    }
+    return true;
   }
 
   private async dto(r: AssetRow): Promise<AssetDto> {
@@ -209,28 +271,37 @@ export class AssetService {
     return { projectIds: ids, activeRenders };
   }
 
-  /** Fichier servi (normalisé ou aperçu) : résolu en base, jamais depuis la requête. */
+  /**
+   * Fichier servi (normalisé ou aperçu) : résolu en base, jamais depuis la requête, et REVÉRIFIÉ
+   * (empreinte) avant d'être servi ; les octets envoyés sont ceux qui ont été vérifiés. Absent ou
+   * altéré : refus explicite (`ASSET_MISSING`), jamais un contenu non vérifié.
+   */
   async open(
     id: string,
     variant: 'file' | 'preview',
-  ): Promise<{ file: OpenedFile; contentType: string }> {
+  ): Promise<{ body: Buffer; contentType: string }> {
     const r = this.rowOrThrow(id);
-    const rel = variant === 'preview' ? (r.preview_rel_path ?? r.rel_path) : r.rel_path;
-    if (variant === 'preview' && r.kind !== 'image') {
-      throw new AppError('NOT_FOUND', 'Aucun aperçu image pour un son');
+    if (variant === 'preview' && (r.kind !== 'image' || !r.preview_rel_path || !r.preview_sha256)) {
+      throw new AppError('NOT_FOUND', 'Aucun aperçu image pour ce média');
     }
-    try {
-      const file = await openServableFile(
-        toAbs(this.ctx.config.paths.storage, rel),
-        this.dir,
-        r.kind === 'image' ? '.png' : '.wav',
+    const body =
+      variant === 'preview'
+        ? await this.readVerified(r.preview_rel_path!, r.preview_sha256!)
+        : await this.readVerified(r.rel_path, r.file_sha256);
+    if (!body) {
+      this.ctx.log.warn(
+        { assetId: r.id, variant },
+        'Fichier de la bibliothèque manquant ou altéré',
       );
-      return { file, contentType: r.kind === 'image' ? 'image/png' : 'audio/wav' };
-    } catch {
-      throw new AppError('ASSET_MISSING', 'Fichier du média manquant : réimportez-le', {
-        details: { assetIds: [r.id] },
-      });
+      throw new AppError(
+        'ASSET_MISSING',
+        variant === 'preview'
+          ? 'Aperçu du média manquant ou altéré : réimportez le fichier'
+          : 'Fichier du média manquant ou altéré : réimportez-le',
+        { details: { assetIds: [r.id] } },
+      );
     }
+    return { body, contentType: r.kind === 'image' ? 'image/png' : 'audio/wav' };
   }
 
   /* ------------------------------- Import ------------------------------- */
@@ -289,8 +360,25 @@ export class AssetService {
       }
       if (size === 0) throw reject('empty', 'Fichier vide');
       const id = hash.digest('hex');
+      // Signature et extension déclarée vérifiées AVANT toute déduplication : un fichier déjà
+      // importé n'est jamais accepté sous un nom dont l'extension contredit son contenu.
+      const head = Buffer.alloc(64);
+      const fh = await open(upload, 'r');
+      try {
+        await fh.read(head, 0, 64, 0);
+      } finally {
+        await fh.close();
+      }
+      const format = sniffAssetFormat(head);
+      if (!format) {
+        throw reject(
+          'format',
+          'Format non reconnu ou refusé (SVG, HTML, scripts et listes de lecture sont toujours refusés)',
+        );
+      }
+      checkExtension(q.name, format);
       const existing = this.row(id);
-      if (existing && (await this.intact(existing))) {
+      if (existing && (await this.present(existing))) {
         return { asset: await this.dto(existing), duplicate: true };
       }
       const n = await importAsset({
@@ -305,6 +393,7 @@ export class AssetService {
       const shard = id.slice(0, 2);
       const relPath = `assets/${shard}/${id}.${n.format}`;
       const relPreview = n.preview ? `assets/${shard}/${id}.preview.png` : null;
+      const previewSha = n.preview ? await sha256File(n.preview) : null;
       await mkdir(path.join(this.dir, shard), { recursive: true });
       if (n.preview && relPreview) {
         await rename(n.preview, toAbs(this.ctx.config.paths.storage, relPreview));
@@ -312,7 +401,11 @@ export class AssetService {
       await rename(n.file, toAbs(this.ctx.config.paths.storage, relPath));
       if (existing) {
         // Ligne existante, fichier manquant ou altéré : réparé par le même import (mêmes octets).
-        if (existing.file_sha256 !== n.fileSha256 || existing.size_bytes !== n.sizeBytes) {
+        if (
+          existing.file_sha256 !== n.fileSha256 ||
+          existing.size_bytes !== n.sizeBytes ||
+          existing.preview_sha256 !== previewSha
+        ) {
           throw new AppError(
             'ASSET_MISSING',
             'Le fichier réimporté ne reproduit pas le média enregistré (version de FFmpeg différente ?)',
@@ -325,9 +418,9 @@ export class AssetService {
       this.ctx.db
         .prepare(
           `INSERT INTO media_assets (id, kind, source_format, format, rel_path, preview_rel_path,
-             file_sha256, size_bytes, width, height, duration_ms, peaks_json, display_name, rights,
-             rights_note, normalizer_version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             preview_sha256, file_sha256, size_bytes, width, height, duration_ms, peaks_json,
+             display_name, rights, rights_note, normalizer_version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO NOTHING`,
         )
         .run(
@@ -337,6 +430,7 @@ export class AssetService {
           n.format,
           relPath,
           relPreview,
+          previewSha,
           n.fileSha256,
           n.sizeBytes,
           n.width,
@@ -353,16 +447,6 @@ export class AssetService {
     } finally {
       // L'import d'origine n'est JAMAIS conservé : seul le fichier normalisé l'est.
       await rm(work, { recursive: true, force: true });
-    }
-  }
-
-  /** Fichier présent et identique à son empreinte enregistrée. */
-  private async intact(r: AssetRow): Promise<boolean> {
-    try {
-      const b = await readFile(toAbs(this.ctx.config.paths.storage, r.rel_path));
-      return b.length === r.size_bytes && sha256(b) === r.file_sha256;
-    } catch {
-      return false;
     }
   }
 
@@ -485,7 +569,8 @@ export class AssetService {
     > = {};
     for (const id of [...refs.image, ...refs.audio]) {
       const r = this.row(id);
-      if (!r || !(await this.present(r))) continue;
+      // Seul le fichier normalisé sert au rendu (l'aperçu n'y est pas utilisé).
+      if (!r || !(await this.fileMatches(r.rel_path, r.file_sha256))) continue;
       out[id] = {
         kind: r.kind,
         file: `asset-${id}.${r.format}`,

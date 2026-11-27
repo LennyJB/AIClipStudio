@@ -169,7 +169,7 @@ export interface RenderTestHooks {
   afterRename?: (renderId: string) => void;
   beforeCommit?: (renderId: string) => void;
   /** Demande de rendu : après la construction du plan, juste avant la transaction d'insertion. */
-  beforeRequestLock?: (projectId: string) => void | Promise<void>;
+  beforeRequestLock?: ((projectId: string) => void | Promise<void>) | undefined;
   /** Image fixe : juste avant le lancement de FFmpeg (signal d'arrêt transmis). */
   beforeFrameProcess?: (projectId: string, signal: AbortSignal) => void | Promise<void>;
 }

@@ -20,7 +20,6 @@ import { z } from 'zod';
 import { AppError } from '@acs/shared';
 import { PROTECTED_HEADERS } from '../clips/media-access';
 import type { Services } from '../services';
-import { sendFile } from './clips';
 import { parse } from './validation';
 
 const IdParams = z.object({ id: z.string().regex(/^[0-9a-f]{64}$/u) });
@@ -91,15 +90,18 @@ export function registerAssetRoutes(app: FastifyInstance, services: Services) {
     (variant: 'file' | 'preview') => async (req: FastifyRequest, reply: FastifyReply) => {
       guard(req);
       const { id } = parse(IdParams, req.params);
-      const { file, contentType } = await assets.open(id, variant);
-      return sendFile(req, reply, file, {
-        ...PROTECTED_HEADERS,
-        // Contenu adressé par son empreinte : immuable (aucun rechargement inutile).
-        'cache-control': 'private, max-age=31536000, immutable',
-        'content-type': contentType,
-        'content-disposition': 'inline',
-        'content-security-policy': "default-src 'none'; sandbox",
-      });
+      // Octets REVÉRIFIÉS (empreinte) par le service : rien d'autre n'est envoyé.
+      const { body, contentType } = await assets.open(id, variant);
+      return reply
+        .headers({
+          ...PROTECTED_HEADERS,
+          // Contenu adressé par son empreinte : immuable (aucun rechargement inutile).
+          'cache-control': 'private, max-age=31536000, immutable',
+          'content-type': contentType,
+          'content-disposition': 'inline',
+          'content-security-policy': "default-src 'none'; sandbox",
+        })
+        .send(body);
     };
   app.get('/api/media-assets/:id/file', serve('file'));
   app.get('/api/media-assets/:id/preview', serve('preview'));

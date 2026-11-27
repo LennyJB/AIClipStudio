@@ -11,6 +11,7 @@ const insert = (over: Record<string, unknown> = {}) => {
     rel_path: `assets/aa/${ID}.png`,
     preview_rel_path: `assets/aa/${ID}.preview.png`,
     file_sha256: 'b'.repeat(64),
+    preview_sha256: 'e'.repeat(64),
     size_bytes: 10,
     width: 4,
     height: 2,
@@ -54,6 +55,8 @@ describe('migration 10 : bibliothèque de médias', () => {
       { rights: 'unknown' },
       { width: null },
       { preview_rel_path: null },
+      { preview_sha256: null }, // aperçu sans empreinte
+      { preview_sha256: 'x' },
       { display_name: '' },
       { source_format: 'svg' },
     ]) {
@@ -69,6 +72,7 @@ describe('migration 10 : bibliothèque de médias', () => {
       format: 'wav',
       rel_path: `assets/cc/${SND}.wav`,
       preview_rel_path: null,
+      preview_sha256: null,
       width: null,
       height: null,
       duration_ms: 500,
@@ -81,7 +85,14 @@ describe('migration 10 : bibliothèque de médias', () => {
     const db = openDatabase(':memory:');
     const [sql, args] = insert();
     db.prepare(sql).run(...args);
-    for (const col of ['rel_path', 'file_sha256', 'size_bytes', 'kind', 'width']) {
+    for (const col of [
+      'rel_path',
+      'file_sha256',
+      'preview_sha256',
+      'size_bytes',
+      'kind',
+      'width',
+    ]) {
       expect(() =>
         db.prepare(`UPDATE media_assets SET ${col} = ${col} WHERE id = ?`).run(ID),
       ).toThrow(/immuable/u);

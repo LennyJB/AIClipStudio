@@ -146,6 +146,34 @@ test('éditeur : effet sonore ajouté, décodé par l’aperçu (pistes autoris�
   await expect(page.getByTestId('sfx-loaded')).toHaveText('1');
 });
 
+test('éditeur : échec de chargement d’un effet sonore (réponse HTTP en erreur, puis décodage impossible) affiché, jamais compté comme chargé', async ({
+  browser,
+}) => {
+  for (const [label, fulfill, expected] of [
+    ['réponse 500', { status: 500, body: 'erreur' }, 'réponse du serveur 500'],
+    [
+      'octets illisibles',
+      { status: 200, contentType: 'audio/wav', body: Buffer.from('ceci n’est pas un son') },
+      'son illisible',
+    ],
+  ] as const) {
+    // Contexte neuf : aucun son déjà en cache du navigateur.
+    const ctx = await browser.newContext({ baseURL: E2E.origin });
+    const page = await ctx.newPage();
+    const doc = (await (
+      await page.request.get(`/api/clip-projects/${state().projectId}/document`)
+    ).json()) as { document: { audio: { sfx: { assetId: string }[] } } };
+    const soundId = doc.document.audio.sfx[0]!.assetId;
+    await page.route(`**/api/media-assets/${soundId}/file`, (r) => r.fulfill(fulfill));
+    await page.goto(`/#/editeur/${state().projectId}`);
+    await expect(page.getByTestId('editor-version')).toContainText('enregistré');
+    await expect(page.getByTestId('sfx-error'), label).toContainText(expected);
+    await expect(page.getByTestId('sfx-error')).toContainText('boing.wav');
+    await expect(page.getByTestId('sfx-loaded')).toHaveText('0');
+    await ctx.close();
+  }
+});
+
 test('accueil : suppression d’un média utilisé refusée (message du serveur) ; projet remis en état', async ({
   page,
 }) => {

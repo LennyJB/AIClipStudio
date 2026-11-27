@@ -335,6 +335,60 @@ describe.skipIf(!enabled)('bibliothèque de médias par l’API (étape 7f)', ()
     expect(readFileSync(png).equals(before)).toBe(true);
   }, 120_000);
 
+  it('intégrité : fichier normalisé ou aperçu altéré à taille égale ⇒ « missing » et service refusé ; doublon sous une extension trompeuse refusé', async () => {
+    const inst = await setup();
+    const png = solidImage(fixtures, 'integre.png', '0x00FF00', 300, 150);
+    const a = (await upload(inst, png)).json<AssetBody>().asset;
+    const all = files(inst.config.paths.assets);
+    const main = all.find((f) => f.endsWith(`${a.id}.png`))!;
+    const preview = all.find((f) => f.endsWith(`${a.id}.preview.png`))!;
+    const status = async () =>
+      (await req(inst, 'GET', '/api/media-assets')).json<{ assets: { status: string }[] }>()
+        .assets[0]!.status;
+    const flip = (file: string) => {
+      const b = readFileSync(file);
+      const before = Buffer.from(b);
+      b[b.length - 20] = b[b.length - 20]! ^ 0xff; // même taille, contenu différent
+      writeFileSync(file, b);
+      return () => writeFileSync(file, before);
+    };
+    expect(await status()).toBe('ok');
+
+    // Fichier normalisé altéré (même taille) : signalé, jamais servi.
+    let restore = flip(main);
+    expect(await status()).toBe('missing');
+    const f = await req(inst, 'GET', `/api/media-assets/${a.id}/file`);
+    expect(f.statusCode).toBe(409);
+    expect(f.json<AssetBody>().error?.code).toBe('ASSET_MISSING');
+    restore();
+    expect(await status()).toBe('ok');
+    expect((await req(inst, 'GET', `/api/media-assets/${a.id}/file`)).statusCode).toBe(200);
+
+    // Aperçu altéré (même taille) ou absent : signalé, aperçu refusé ; le fichier reste servi.
+    restore = flip(preview);
+    expect(await status()).toBe('missing');
+    expect((await req(inst, 'GET', `/api/media-assets/${a.id}/preview`)).statusCode).toBe(409);
+    expect((await req(inst, 'GET', `/api/media-assets/${a.id}/file`)).statusCode).toBe(200);
+    restore();
+    rmSync(preview);
+    expect(await status()).toBe('missing');
+    expect((await req(inst, 'GET', `/api/media-assets/${a.id}/preview`)).statusCode).toBe(409);
+    // Réimporter le même fichier répare l'aperçu.
+    expect((await upload(inst, png)).json<AssetBody>().asset.status).toBe('ok');
+    expect((await req(inst, 'GET', `/api/media-assets/${a.id}/preview`)).statusCode).toBe(200);
+
+    // Doublon : la signature et l'extension déclarée sont vérifiées AVANT la déduplication.
+    const dup = await upload(inst, png, { name: 'photo.jpg' });
+    expect(dup.statusCode).toBe(422);
+    expect(dup.json<AssetBody>().error).toMatchObject({
+      code: 'ASSET_REJECTED',
+      details: { reason: 'extension_mismatch' },
+    });
+    expect(
+      (await upload(inst, png, { name: 'image.exe' })).json<AssetBody>().error?.details?.reason,
+    ).toBe('extension');
+  }, 120_000);
+
   it('accès : autre machine, Host, Origin, Sec-Fetch-Site, CORS, type du corps, nom ou identifiant piégés : refusés', async () => {
     const inst = await setup();
     const png = solidImage(fixtures, 'acces.png', 'red');
@@ -477,11 +531,18 @@ describe.skipIf(!enabled)('bibliothèque de médias par l’API (étape 7f)', ()
     expect(repaired.statusCode).toBe(200);
     expect(repaired.json<AssetBody>().asset.status).toBe('ok');
 
-    // Fichier ALTÉRÉ (même taille) : le rendu échoue explicitement à la vérification de la copie.
+    // Fichier ALTÉRÉ (même taille) avant la demande : refusée explicitement (empreinte).
     const tampered = Buffer.from(original);
     tampered[tampered.length - 20] = tampered[tampered.length - 20]! ^ 0xff;
     writeFileSync(stored, tampered);
+    expect((await t.render()).body.error?.code).toBe('ASSET_MISSING');
+    writeFileSync(stored, original);
+    // Altéré ENTRE la demande et l'exécution : la copie vérifiée du rendu le refuse.
+    inst.services.renders.hooks.beforeRequestLock = () => {
+      writeFileSync(stored, tampered);
+    };
     const bad = await t.render();
+    inst.services.renders.hooks.beforeRequestLock = undefined;
     expect(t.renderRow(bad.body.render!.id)).toMatchObject({
       status: 'failed',
       error_code: 'ASSET_MISSING',

@@ -64,7 +64,9 @@ Le même fichier importé deux fois n'est stocké qu'une fois.
 - **Image ou mème** : placé à la tête de lecture pour 2 s, cadre initial au rapport de l'image
   (40 % de la largeur). Réglages dans l'inspecteur : cadre (x, y, largeur, hauteur dans l'image
   9:16), opacité, ordre d'empilement, horaires sur la timeline. L'image est étirée à son cadre.
-- **Effet sonore** : placé à la tête de lecture pour sa durée ; gain réglable. Il est mixé avec
+- **Effet sonore** : placé à la tête de lecture pour sa durée ; gain réglable. Un son que
+  l'aperçu ne peut pas charger (fichier manquant, erreur du serveur, son illisible) est signalé
+  sous l'aperçu, avec la cause ; il n'est jamais ignoré en silence. Il est mixé avec
   l'enregistrement, n'est ni atténué ni bipé par les effets `duck` et `bleep` (qui visent
   l'enregistrement), mais suit les fondus d'entrée et de sortie. Un export **sans son** n'a
   aucun effet sonore.
@@ -80,7 +82,8 @@ laisse voir l'aplat, jamais l'image d'origine.
 
 ### Fichier manquant
 
-Si un fichier de la bibliothèque disparaît ou est altéré sur le disque, il est signalé
+Si un fichier de la bibliothèque (ou son aperçu) disparaît ou est altéré sur le disque, même sans
+changer de taille, il est signalé et n'est plus servi
 (« Fichier manquant ») dans la bibliothèque, sur la timeline et dans l'aperçu (cadre hachuré).
 Le rendu est alors **refusé** avec un message explicite : rien n'est ignoré en silence.
 **Réimporter le même fichier le répare.**

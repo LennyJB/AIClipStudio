@@ -1378,4 +1378,17 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   50 calques image et 100 effets sonores — plan de rendu ≈ 2 ms, image exacte < 1 ms, scène de
   l'aperçu ≈ 0,1 ms par image ; rendu FFmpeg réel de 50 segments, 10 calques et 20 sons (8 s,
   aperçu) ≈ 5 s.
+- **Corrections de la revue de la PR 7f** :
+  - **Intégrité des fichiers servis** : l'empreinte du fichier normalisé ET celle de l'aperçu
+    (`preview_sha256`, ajoutée à la migration 10, jamais publiée sur `main` avant cette PR) sont
+    vérifiées avant de déclarer un média intact et avant de servir un fichier : les octets envoyés
+    sont ceux qui ont été vérifiés. Un fichier altéré, même de même taille, est `missing` et son
+    service est refusé (`ASSET_MISSING`). Vérifications de la liste mémorisées par état du fichier
+    (taille, dates de modification et de changement d'inode, inode) : tout remplacement impose une
+    nouvelle vérification. Un rendu est refusé dès la demande si le fichier est altéré.
+  - **Effets sonores de l'aperçu** : chaque son est en cours de chargement, chargé ou en échec
+    (réponse HTTP, réseau, décodage, fichier manquant, bibliothèque illisible) ; un échec est
+    toujours affiché sous l'aperçu et jamais compté comme chargé ; aucune piste autorisée ⇒
+    avertissement explicite.
+  - **Doublon** : signature et extension déclarée vérifiées AVANT la déduplication.
 - **Guide** : [`editeur.md`](editeur.md).

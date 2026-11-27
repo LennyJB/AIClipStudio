@@ -906,7 +906,7 @@ export const MIGRATIONS: readonly Migration[] = [
     // Étape 7f : bibliothèque de médias (images fixes et sons importés par le créateur,
     // docs/plan-etape-7.md §7). Identifiant = sha256 des octets importés (déduplication) ; seul le
     // fichier NORMALISÉ (PNG ou WAV) est conservé, sous storage/assets/, avec sa propre empreinte
-    // (vérifiée avant chaque rendu). Aucun chemin absolu en base. Les colonnes qui identifient le
+    // et celle de son aperçu (vérifiées avant de servir un fichier et avant chaque rendu). Aucun chemin absolu en base. Les colonnes qui identifient le
     // fichier ne changent jamais.
     version: 10,
     name: 'media_assets',
@@ -922,6 +922,7 @@ export const MIGRATIONS: readonly Migration[] = [
                             OR (preview_rel_path GLOB 'assets/*' AND preview_rel_path NOT LIKE '%..%')),
         file_sha256       TEXT NOT NULL CHECK (length(file_sha256) = 64),
         size_bytes        INTEGER NOT NULL CHECK (size_bytes > 0),
+        preview_sha256    TEXT CHECK (preview_sha256 IS NULL OR length(preview_sha256) = 64),
         width             INTEGER CHECK (width IS NULL OR width > 0),
         height            INTEGER CHECK (height IS NULL OR height > 0),
         duration_ms       INTEGER CHECK (duration_ms IS NULL OR duration_ms > 0),
@@ -933,14 +934,16 @@ export const MIGRATIONS: readonly Migration[] = [
         created_at        TEXT NOT NULL DEFAULT (${NOW}),
         CHECK ((kind = 'image') = (format = 'png')),
         CHECK (kind <> 'image' OR (width IS NOT NULL AND height IS NOT NULL
-                                   AND duration_ms IS NULL AND preview_rel_path IS NOT NULL)),
+                                   AND duration_ms IS NULL AND preview_rel_path IS NOT NULL
+                                   AND preview_sha256 IS NOT NULL)),
+        CHECK ((preview_rel_path IS NULL) = (preview_sha256 IS NULL)),
         CHECK (kind <> 'audio' OR (duration_ms IS NOT NULL AND width IS NULL AND height IS NULL
                                    AND peaks_json IS NOT NULL))
       );
       CREATE INDEX media_assets_kind ON media_assets(kind, created_at);
       CREATE TRIGGER media_assets_identity_frozen BEFORE UPDATE OF
-        id, kind, source_format, format, rel_path, preview_rel_path, file_sha256, size_bytes,
-        width, height, duration_ms ON media_assets
+        id, kind, source_format, format, rel_path, preview_rel_path, preview_sha256, file_sha256,
+        size_bytes, width, height, duration_ms ON media_assets
       BEGIN SELECT RAISE(ABORT, 'media_assets : fichier d’un média immuable'); END;
     `,
   },
