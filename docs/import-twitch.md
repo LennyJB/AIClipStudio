@@ -12,6 +12,17 @@
 Aucune connexion à Twitch, aucune API, aucun téléchargement automatique : le fichier est déjà sur
 le disque ; il est **référencé, jamais modifié ni copié**.
 
+## Rôles supposés (pistes sans nom)
+
+Dans un MKV ou un MP4 multipiste dont les pistes n'ont pas de nom, l'ordre `AUDIO_TRACK_ROLES`
+donne des rôles **suggérés** (`roleSource: config`, avertissement `track_roles_from_config`) :
+ces pistes ne sont **ni exportées ni sous-titrées** (exigence `confirmation` / `track_roles`)
+tant que le créateur n'a pas **confirmé explicitement** les rôles (interface : « Confirmer ces
+rôles », ou `PATCH /api/recordings/:id/tracks`, provenance `override`). Une déclaration de
+composition ne vaut pas confirmation ; après confirmation, les déclarations et accords habituels
+restent exigés, et une révocation bloque de nouveau. Pistes nommées par OBS et piste unique :
+inchangées (aucune confirmation demandée).
+
 ## Piste unique mixée
 
 - Toujours « Tout » (`mix`) : jamais supposée être le micro, le jeu ou Discord.

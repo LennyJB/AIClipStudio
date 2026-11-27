@@ -151,7 +151,11 @@ export class ExportAudioService {
   /** Décision d'audio exporté pour un enregistrement (pistes réelles × état courant). */
   decisionFor(rec: RecordingDto): AudioDecision {
     return allowedAudio(
-      rec.audioTracks.map((t) => ({ audioIndex: t.audioIndex, role: t.role })),
+      rec.audioTracks.map((t) => ({
+        audioIndex: t.audioIndex,
+        role: t.role,
+        roleSource: t.roleSource,
+      })),
       this.state(rec.id),
     );
   }
@@ -164,7 +168,11 @@ export class ExportAudioService {
       recordingId,
       state,
       decision: allowedAudio(
-        rec.audioTracks.map((t) => ({ audioIndex: t.audioIndex, role: t.role })),
+        rec.audioTracks.map((t) => ({
+          audioIndex: t.audioIndex,
+          role: t.role,
+          roleSource: t.roleSource,
+        })),
         state,
       ),
       history,

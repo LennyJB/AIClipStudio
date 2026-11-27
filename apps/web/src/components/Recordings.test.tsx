@@ -84,3 +84,34 @@ describe('import par chemin', () => {
     );
   });
 });
+
+describe('confirmation des rôles supposés', () => {
+  it('rôles « config » : confirmation explicite proposée, envoyée telle quelle ; absente pour une piste unique', async () => {
+    const assumed = rec({
+      audioTracks: [
+        { audioIndex: 0, role: 'mix', roleSource: 'config', title: null },
+        { audioIndex: 1, role: 'mic', roleSource: 'config', title: null },
+      ],
+      warnings: ['track_roles_from_config'],
+    });
+    const onChange = vi.fn();
+    const confirm = vi.spyOn(api, 'confirmTrackRoles').mockResolvedValue({
+      recording: {
+        ...assumed,
+        audioTracks: assumed.audioTracks.map((t) => ({ ...t, roleSource: 'override' })),
+      },
+    });
+    render(<RecordingHealth recording={assumed} onChange={onChange} />);
+    expect(screen.getByTestId('confirm-roles').textContent).toContain(
+      'ni exportées ni sous-titrées',
+    );
+    const selects = screen.getByTestId('confirm-roles').querySelectorAll('select');
+    fireEvent.change(selects[1]!, { target: { value: 'discord' } });
+    fireEvent.click(screen.getByTestId('confirm-roles-submit'));
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(confirm).toHaveBeenCalledWith('r1', ['mix', 'discord']);
+    cleanup();
+    render(<RecordingHealth recording={rec()} onChange={onChange} />);
+    expect(screen.queryByTestId('confirm-roles')).toBeNull();
+  });
+});

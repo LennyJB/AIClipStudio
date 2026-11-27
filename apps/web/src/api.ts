@@ -122,6 +122,13 @@ export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   recordings: () => getJson<{ recordings: Recording[] }>('/api/recordings'),
   /** Importe un fichier local (référencé, jamais copié ni modifié) par son chemin absolu. */
+  /** Confirme (ou corrige) explicitement le rôle de chaque piste : provenance `override`. */
+  confirmTrackRoles: (recordingId: string, roles: string[]) =>
+    getJson<{ recording: Recording }>(`/api/recordings/${recordingId}/tracks`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roles }),
+    }),
   importRecording: (body: { path: string; gameId?: string }) =>
     getJson<{ recording: Recording; created: boolean }>('/api/recordings', send('POST', body)),
   transcriptionConfig: () => getJson<TranscriptionConfig>('/api/transcription/config'),
@@ -574,7 +581,8 @@ export type LayoutPreset = 'facecam_top' | 'gameplay_crop' | 'blurred_fit';
 
 export type MissingRequirement =
   | { kind: 'declaration'; subject: DeclarationSubject }
-  | { kind: 'consent'; subject: VoiceCategory };
+  | { kind: 'consent'; subject: VoiceCategory }
+  | { kind: 'confirmation'; subject: 'track_roles' };
 
 export interface TrackRef {
   audioIndex: number;

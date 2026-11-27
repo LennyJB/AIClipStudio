@@ -15,7 +15,8 @@ export const WARNING_LABELS: Record<string, string> = {
   audio_metadata_incomplete: 'métadonnées audio incomplètes (codec, fréquence ou canaux)',
   truncated: 'fichier incomplet (tronqué) : seule la partie lisible est exploitable',
   decode_errors: 'erreurs de lecture détectées : certains passages peuvent être inexploitables',
-  track_roles_from_config: 'rôles des pistes déduits de leur ordre (pistes sans nom) : à vérifier',
+  track_roles_from_config:
+    'rôles des pistes supposés d’après leur ordre (pistes sans nom) : export et sous-titres bloqués jusqu’à confirmation',
 };
 
 export const warningLabel = (w: string) => WARNING_LABELS[w] ?? w;

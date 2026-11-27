@@ -250,7 +250,8 @@ Par ordre de priorité :
 3. **nom de la piste dans OBS** (Paramètres → Sortie → Audio → Nom) : un nom contenant
    « Micro », « Discord », « Tout »/« Mix » ou « Jeu » est reconnu ;
 4. ordre défini par `AUDIO_TRACK_ROLES` dans `.env`, **seulement pour MKV et MP4** (conteneurs
-   d'OBS), signalé « à vérifier » ; ailleurs (MPEG-TS, MOV), les pistes sans nom restent
+   d'OBS), à titre de **suggestion** : ces pistes ne sont ni exportées ni sous-titrées tant que
+   les rôles ne sont pas **confirmés explicitement** (« Confirmer ces rôles ») ; ailleurs (MPEG-TS, MOV), les pistes sans nom restent
    **inconnues** (traitées comme « Tout » : une seule utilisée, composition à déclarer).
 
 Le plus fiable est de **nommer les pistes dans OBS** (« Tout », « Micro », « Discord ») : les

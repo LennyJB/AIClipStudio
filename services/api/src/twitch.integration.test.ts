@@ -254,6 +254,92 @@ describe.skipIf(!enabled)('étape 8 par l’API : Twitch, mono-piste, fichiers i
     expect((await view()).mode).toBe('none');
   }, 120_000);
 
+  it('rôles supposés (MP4 multipiste sans nom) : export et sous-titres bloqués jusqu’à confirmation explicite ; puis soumis aux déclarations et accords ; révocation ⇒ bloqué ; pistes nommées et piste unique inchangées', async () => {
+    const i = await setup();
+    type Decision = {
+      mode: string;
+      selected: { audioIndex: number; role: string }[];
+      captionRoles: string[];
+      tracks: {
+        audioIndex: number;
+        exportable: boolean;
+        missing: { kind: string; subject: string }[];
+      }[];
+    };
+    const decision = async (id: string) =>
+      (await i.call<{ decision: Decision }>('GET', `/api/recordings/${id}/export-audio`)).body
+        .decision;
+    const post = (id: string, body: Record<string, unknown>) =>
+      i.call('POST', `/api/recordings/${id}/export-audio`, { requestId: randomUUID(), ...body });
+    const declareAll = async (id: string, micOthers: 'present' | 'absent' = 'absent') => {
+      await post(id, {
+        kind: 'declaration',
+        subject: 'mix_composition',
+        payload: { discord: 'absent', gameVoiceChat: 'absent', otherVoices: 'absent' },
+      });
+      await post(id, {
+        kind: 'declaration',
+        subject: 'mic_composition',
+        payload: { creatorVoice: 'present', otherVoices: micOthers },
+      });
+    };
+
+    const rec = (await importRec(i, tw.multiMp4)).body.recording;
+    expect(rec.audioTracks.map((t) => [t.role, t.roleSource])).toEqual([
+      ['mix', 'config'],
+      ['mic', 'config'],
+    ]);
+    // Déclarations et accords complets : toujours bloqué (la composition ne confirme pas le rôle).
+    await declareAll(rec.id, 'present');
+    await post(rec.id, { kind: 'consent', subject: 'other_voices', action: 'granted' });
+    let d = await decision(rec.id);
+    expect(d).toMatchObject({ mode: 'none', selected: [], captionRoles: [] });
+    for (const t of d.tracks) {
+      expect(t.exportable).toBe(false);
+      expect(t.missing).toContainEqual({ kind: 'confirmation', subject: 'track_roles' });
+    }
+    // Confirmation explicite (provenance override) : exportable selon déclarations et accords.
+    const confirmed = await i.call<{ recording: RecordingDto }>(
+      'PATCH',
+      `/api/recordings/${rec.id}/tracks`,
+      { roles: ['mix', 'mic'] },
+    );
+    expect(confirmed.body.recording.audioTracks.map((t) => t.roleSource)).toEqual([
+      'override',
+      'override',
+    ]);
+    d = await decision(rec.id);
+    expect(d).toMatchObject({ mode: 'individual', selected: [{ audioIndex: 1, role: 'mic' }] });
+    expect(d.captionRoles).toEqual(['mic', 'mix']);
+    // Révocation après confirmation : la piste micro (voix de tiers présentes) est de nouveau bloquée.
+    await post(rec.id, { kind: 'consent', subject: 'other_voices', action: 'revoked' });
+    d = await decision(rec.id);
+    expect(d.tracks.find((t) => t.audioIndex === 1)).toMatchObject({
+      exportable: false,
+      missing: [{ kind: 'consent', subject: 'other_voices' }],
+    });
+    expect(d.selected).toEqual([{ audioIndex: 0, role: 'mix' }]);
+    expect(d.captionRoles).toEqual(['mix']);
+
+    // Confirmation seule, sans déclaration : bloqué.
+    const other = (await importRec(i, obs.untitledMkv)).body.recording;
+    await i.call('PATCH', `/api/recordings/${other.id}/tracks`, {
+      roles: ['mix', 'mic', 'discord'],
+    });
+    expect((await decision(other.id)).mode).toBe('none');
+
+    // Pistes nommées (OBS) : aucune confirmation demandée.
+    const named = (await importRec(i, obs.obsMkv)).body.recording;
+    await declareAll(named.id);
+    d = await decision(named.id);
+    expect(d.mode).toBe('individual');
+    expect(d.tracks.flatMap((t) => t.missing).map((m) => m.kind)).not.toContain('confirmation');
+    // Piste unique « Tout » : aucune confirmation demandée.
+    const single = (await importRec(i, tw.twitchMp4)).body.recording;
+    await declareAll(single.id);
+    expect(await decision(single.id)).toMatchObject({ mode: 'mix', captionRoles: ['mix'] });
+  }, 180_000);
+
   it('non-régression OBS : MKV multipiste nommé, rôles par nom, santé ok, aucune mesure complète inutile', async () => {
     const i = await setup();
     const rec = (await importRec(i, obs.obsMkv)).body.recording;

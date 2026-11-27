@@ -15,10 +15,77 @@ const ROLE_LABELS: Record<string, string> = {
   unknown: 'inconnu',
 };
 
+/**
+ * Confirmation explicite des rôles supposés d'après l'ordre configuré (pistes sans nom) : tant
+ * qu'elle n'est pas faite, ces pistes ne sont ni exportées ni sous-titrées (décision du serveur).
+ */
+function ConfirmRoles({
+  recording: r,
+  onChange,
+}: {
+  recording: Recording;
+  onChange: (r: Recording) => void;
+}) {
+  const [roles, setRoles] = useState(() => r.audioTracks.map((t) => t.role));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const confirm = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onChange((await api.confirmTrackRoles(r.id, roles)).recording);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="warning small" data-testid="confirm-roles">
+      <p>
+        Rôles supposés d’après l’ordre des pistes (pistes sans nom) : ces pistes ne sont ni
+        exportées ni sous-titrées tant que vous ne les avez pas confirmés.
+      </p>
+      {r.audioTracks.map((t, i) => (
+        <label key={t.audioIndex}>
+          Piste {t.audioIndex + 1}{' '}
+          <select
+            value={roles[i]}
+            disabled={busy}
+            onChange={(e) => setRoles(roles.map((x, k) => (k === i ? e.target.value : x)))}
+          >
+            {Object.entries(ROLE_LABELS).map(([v, label]) => (
+              <option key={v} value={v}>
+                {label}
+              </option>
+            ))}
+          </select>{' '}
+        </label>
+      ))}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void confirm()}
+        data-testid="confirm-roles-submit"
+      >
+        Confirmer ces rôles
+      </button>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
 /** Pistes et état du fichier : un fichier incomplet n'est jamais présenté comme valide. */
-export function RecordingHealth({ recording: r }: { recording: Recording }) {
+export function RecordingHealth({
+  recording: r,
+  onChange,
+}: {
+  recording: Recording;
+  onChange?: (r: Recording) => void;
+}) {
   const degraded = r.health?.status === 'degraded';
   const single = r.audioTracks.length === 1;
+  const assumed = r.audioTracks.some((t) => t.roleSource === 'config');
   return (
     <div className="small" data-testid="recording-health">
       <p className={degraded ? 'error' : 'muted'}>
@@ -36,6 +103,7 @@ export function RecordingHealth({ recording: r }: { recording: Recording }) {
           présentes.
         </p>
       )}
+      {assumed && onChange && <ConfirmRoles key={r.id} recording={r} onChange={onChange} />}
       {(r.warnings ?? []).length > 0 && (
         <ul>
           {(r.warnings ?? []).map((w) => (
@@ -167,7 +235,14 @@ export function Recordings() {
             ))}
           </ul>
         )}
-        {current && <RecordingHealth recording={current} />}
+        {current && (
+          <RecordingHealth
+            recording={current}
+            onChange={(u) =>
+              setRecordings((list) => (list ?? []).map((x) => (x.id === u.id ? u : x)))
+            }
+          />
+        )}
       </section>
       {current && <TranscriptionPanel key={current.id} recording={current} />}
       {current && <AnalysisPanel key={`analysis-${current.id}`} recording={current} />}

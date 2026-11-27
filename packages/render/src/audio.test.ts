@@ -272,3 +272,70 @@ describe('allowedAudio : propriété exhaustive', () => {
     expect(checked).toBe(8 * 9 * 3 * 5 * 9);
   });
 });
+
+describe('allowedAudio : rôles supposés d’après l’ordre configuré (étape 8)', () => {
+  const ALL_ABSENT: MixComposition = {
+    discord: 'absent',
+    gameVoiceChat: 'absent',
+    otherVoices: 'absent',
+  };
+  const ready = state({
+    mixComposition: ALL_ABSENT,
+    micComposition: MIC_ALONE,
+    consents: { discord_voices: true, game_voice_chat: true, other_voices: true },
+  });
+  const tracks = (roleSource: string): TrackIn[] => [
+    { audioIndex: 0, role: 'mix', roleSource },
+    { audioIndex: 1, role: 'mic', roleSource },
+  ];
+
+  it('rôles « config » : aucune piste exportable ni sous-titrée, même avec déclarations et accords', () => {
+    const d = allowedAudio(tracks('config'), ready);
+    expect(d).toMatchObject({ mode: 'none', selected: [], captionRoles: [] });
+    for (const t of d.tracks) {
+      expect(t.exportable).toBe(false);
+      expect(t.missing).toEqual([{ kind: 'confirmation', subject: 'track_roles' }]);
+    }
+    expect(d.missing).toEqual([{ kind: 'confirmation', subject: 'track_roles' }]);
+  });
+
+  it('une déclaration de composition ne vaut pas confirmation ; la confirmation seule ne suffit pas non plus', () => {
+    // Confirmé mais rien de déclaré : bloqué par les déclarations manquantes.
+    const confirmedOnly = allowedAudio(tracks('override'), EMPTY_AUDIO_STATE);
+    expect(confirmedOnly.mode).toBe('none');
+    expect(confirmedOnly.missing.map((m) => m.kind)).not.toContain('confirmation');
+    expect(confirmedOnly.missing).toContainEqual({
+      kind: 'declaration',
+      subject: 'mix_composition',
+    });
+    // Confirmé + déclarations + accords : exportable.
+    const ok = allowedAudio(tracks('override'), ready);
+    expect(ok).toMatchObject({ mode: 'individual', selected: [{ audioIndex: 1, role: 'mic' }] });
+    expect(ok.captionRoles).toEqual(['mic', 'mix']);
+  });
+
+  it('révocation après confirmation : de nouveau bloqué', () => {
+    const withDiscord = state({
+      mixComposition: { discord: 'present', gameVoiceChat: 'absent', otherVoices: 'absent' },
+      micComposition: { creatorVoice: 'present', otherVoices: 'present' },
+      consents: { discord_voices: true, other_voices: true },
+    });
+    expect(allowedAudio(tracks('override'), withDiscord).mode).toBe('individual');
+    const revoked = allowedAudio(tracks('override'), {
+      ...withDiscord,
+      consents: { ...withDiscord.consents, discord_voices: false, other_voices: false },
+    });
+    expect(revoked).toMatchObject({ mode: 'none', selected: [], captionRoles: [] });
+  });
+
+  it('pistes nommées (OBS) et piste unique : comportement inchangé', () => {
+    const named = allowedAudio(tracks('title'), ready);
+    expect(named.mode).toBe('individual');
+    expect(allowedAudio(OBS, ready).mode).toBe('individual'); // sans provenance : inchangé
+    const single = allowedAudio(
+      [{ audioIndex: 0, role: 'mix', roleSource: 'single_track' }],
+      ready,
+    );
+    expect(single).toMatchObject({ mode: 'mix', selected: [{ audioIndex: 0, role: 'mix' }] });
+  });
+});
