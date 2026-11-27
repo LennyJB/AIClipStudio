@@ -178,6 +178,11 @@ export interface Inputs {
   } | null;
   /** Pourquoi la segmentation est (ou n'est pas) utilisée : affichée et vérifiée par les tests. */
   contentStatus: ContentStatus;
+  /**
+   * Segmentation VALABLE (même entièrement gaming), ou null : sert à choisir le style de chaque
+   * extrait (étape 10). Jamais une détection obsolète.
+   */
+  validContentSegments: EffectiveContentSegment[] | null;
 }
 
 /**
@@ -200,14 +205,14 @@ export type ContentStatus = 'none' | 'stale_detection' | 'not_relevant' | 'used'
 export function resolveContent(
   eff: EffectiveContent | null,
   currentDetectionKey: () => string,
-): { status: ContentStatus; used: EffectiveContent | null } {
-  if (!eff) return { status: 'none', used: null };
+): { status: ContentStatus; used: EffectiveContent | null; valid: EffectiveContent | null } {
+  if (!eff) return { status: 'none', used: null, valid: null };
   if (eff.source === 'auto' && eff.detectionInputKey !== currentDetectionKey()) {
-    return { status: 'stale_detection', used: null };
+    return { status: 'stale_detection', used: null, valid: null };
   }
   return contentMatters(eff.segments)
-    ? { status: 'used', used: eff }
-    : { status: 'not_relevant', used: null };
+    ? { status: 'used', used: eff, valid: eff }
+    : { status: 'not_relevant', used: null, valid: eff };
 }
 
 const RunJobParams = z.object({ runId: z.uuid() }).strict();
@@ -647,6 +652,7 @@ export class AnalysisService {
       game,
       content,
       contentStatus: resolved.status,
+      validContentSegments: resolved.valid?.segments ?? null,
     };
   }
 

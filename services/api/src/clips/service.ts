@@ -59,6 +59,7 @@ import { parse } from '../routes/validation';
 import { TranscriptionRepository } from '../transcriptions/repository';
 import type { ExportAudioService } from './export-audio';
 import { DecisionGuard, type EffectiveDecisionView } from './guard';
+import type { ProjectStyleDefaults, StyleHints } from '@acs/style';
 import { EditService } from './edits';
 import { ClipRepository, type ProjectRow, type StoredManifest } from './repository';
 
@@ -145,6 +146,32 @@ function fromProjectError(err: unknown): never {
 
 export class ClipProjectService {
   readonly repo: ClipRepository;
+  /**
+   * Style VALIDÉ du créateur pour l'extrait (étape 10). Absent ou sans profil validé : création
+   * strictement identique à celle d'avant l'étape 10.
+   */
+  styleProvider: {
+    styleFor(
+      recordingId: string,
+      range: { srcStartMs: number; srcEndMs: number },
+    ): Promise<{
+      profileId: string;
+      version: number;
+      contentType: string;
+      defaults: ProjectStyleDefaults;
+      hints: StyleHints;
+    } | null>;
+    recordApplication(
+      projectId: string,
+      s: {
+        profileId: string;
+        version: number;
+        contentType: string;
+        defaults: ProjectStyleDefaults;
+        hints: StyleHints;
+      },
+    ): void;
+  } | null = null;
   readonly guard: DecisionGuard;
   /** Journal d'édition (étape 7b) : source de la version courante de chaque projet. */
   readonly edits: EditService;
@@ -460,6 +487,12 @@ export class ClipProjectService {
     const reaction = this.repo.segmentBounds(p.reactionEndSegmentId);
     const manifestId = randomUUID();
     const projectId = randomUUID();
+    const style = this.styleProvider
+      ? await this.styleProvider.styleFor(rec.id, {
+          srcStartMs: p.srcStartMs,
+          srcEndMs: p.srcEndMs,
+        })
+      : null;
 
     let built: ReturnType<typeof projectFromProposal>;
     try {
@@ -506,6 +539,7 @@ export class ClipProjectService {
         },
         makeId: (kind, i) => `${kind}-${i}`,
         captionsWindow: win,
+        ...(style ? { style: style.defaults } : {}),
       });
     } catch (err) {
       fromProjectError(err);
@@ -531,6 +565,7 @@ export class ClipProjectService {
           requestId: b.requestId,
           source,
         });
+        if (style) this.styleProvider?.recordApplication(projectId, style);
         return projectId;
       })
       .immediate();

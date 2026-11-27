@@ -980,6 +980,110 @@ export const MIGRATIONS: readonly Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'content_corrections : journal en ajout seul'); END;
     `,
   },
+  {
+    // Étape 10 : apprentissage du style de montage (docs/style-de-montage.md).
+    //  - profils (six profils par type de contenu fournis, profils personnalisés en plus) ;
+    //  - versions de profil et validations : en AJOUT SEUL. Une version validée n'est jamais
+    //    modifiée ; apprendre produit un nouveau brouillon, utilisé seulement après validation ;
+    //  - références : fichiers seulement RÉFÉRENCÉS (chemin + empreinte, jamais copiés) ; seules
+    //    des mesures agrégées sont conservées (aucune image, aucun son, aucun texte) ;
+    //  - applications : quel profil (et quelle version) a servi à créer quel projet.
+    version: 12,
+    name: 'style_profiles',
+    sql: `
+      CREATE TABLE style_profiles (
+        id                 TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 64),
+        name               TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+        content_types_json TEXT NOT NULL CHECK (json_valid(content_types_json)),
+        builtin            INTEGER NOT NULL DEFAULT 0 CHECK (builtin IN (0,1)),
+        archived           INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0,1)),
+        created_at         TEXT NOT NULL DEFAULT (${NOW}),
+        updated_at         TEXT NOT NULL DEFAULT (${NOW})
+      );
+      INSERT INTO style_profiles (id, name, content_types_json, builtin) VALUES
+        ('gaming', 'Gaming', '["gaming"]', 1),
+        ('just_chatting', 'Just Chatting', '["just_chatting"]', 1),
+        ('reaction', 'Réaction', '["reaction"]', 1),
+        ('podcast', 'Podcast / Discussion', '["podcast"]', 1),
+        ('irl', 'IRL', '["irl"]', 1),
+        ('mixed', 'Mixte', '["mixed"]', 1);
+      CREATE TRIGGER style_profiles_builtin_kept BEFORE DELETE ON style_profiles
+        WHEN OLD.builtin = 1
+      BEGIN SELECT RAISE(ABORT, 'style_profiles : profil fourni, non supprimable'); END;
+
+      CREATE TABLE style_profile_versions (
+        profile_id        TEXT NOT NULL REFERENCES style_profiles(id) ON DELETE CASCADE,
+        version           INTEGER NOT NULL CHECK (version >= 1),
+        features_json     TEXT NOT NULL CHECK (json_valid(features_json)),
+        features_hash     TEXT NOT NULL CHECK (length(features_hash) = 64),
+        origin            TEXT NOT NULL CHECK (origin IN ('learned','manual')),
+        based_on_version  INTEGER CHECK (based_on_version IS NULL OR based_on_version < version),
+        evidence_json     TEXT NOT NULL CHECK (json_valid(evidence_json)),
+        request_id        TEXT NOT NULL UNIQUE CHECK (length(request_id) BETWEEN 8 AND 100),
+        created_at        TEXT NOT NULL DEFAULT (${NOW}),
+        PRIMARY KEY (profile_id, version)
+      );
+      CREATE TRIGGER style_profile_versions_append_only BEFORE UPDATE ON style_profile_versions
+      BEGIN SELECT RAISE(ABORT, 'style_profile_versions : une version est immuable'); END;
+
+      CREATE TABLE style_profile_validations (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id     TEXT NOT NULL,
+        version        INTEGER NOT NULL,
+        features_hash  TEXT NOT NULL CHECK (length(features_hash) = 64),
+        request_id     TEXT NOT NULL UNIQUE CHECK (length(request_id) BETWEEN 8 AND 100),
+        created_at     TEXT NOT NULL DEFAULT (${NOW}),
+        FOREIGN KEY (profile_id, version)
+          REFERENCES style_profile_versions(profile_id, version) ON DELETE CASCADE
+      );
+      CREATE INDEX style_profile_validations_profile ON style_profile_validations(profile_id, id);
+      CREATE TRIGGER style_profile_validations_append_only BEFORE UPDATE ON style_profile_validations
+      BEGIN SELECT RAISE(ABORT, 'style_profile_validations : journal en ajout seul'); END;
+
+      CREATE TABLE style_references (
+        id               TEXT PRIMARY KEY,
+        kind             TEXT NOT NULL CHECK (kind IN ('edited','pair')),
+        label            TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 120),
+        source_path      TEXT NOT NULL,
+        file_name        TEXT NOT NULL,
+        fingerprint      TEXT NOT NULL,
+        raw_path         TEXT,
+        raw_file_name    TEXT,
+        raw_fingerprint  TEXT,
+        content_type     TEXT CHECK (content_type IS NULL OR content_type IN
+                           ('gaming','just_chatting','reaction','podcast','irl','mixed')),
+        profile_id       TEXT REFERENCES style_profiles(id) ON DELETE SET NULL,
+        status           TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending','analyzing','analyzed','failed')),
+        analyzer_version TEXT,
+        analysis_json    TEXT CHECK (analysis_json IS NULL OR json_valid(analysis_json)),
+        error_code       TEXT,
+        error_message    TEXT CHECK (error_message IS NULL OR length(error_message) <= 500),
+        created_at       TEXT NOT NULL DEFAULT (${NOW}),
+        updated_at       TEXT NOT NULL DEFAULT (${NOW}),
+        CHECK ((kind = 'pair') = (raw_path IS NOT NULL)),
+        CHECK ((raw_path IS NULL) = (raw_fingerprint IS NULL)),
+        CHECK (status <> 'analyzed' OR analysis_json IS NOT NULL)
+      );
+      CREATE INDEX style_references_profile ON style_references(profile_id);
+      CREATE UNIQUE INDEX style_references_files ON style_references(fingerprint, IFNULL(raw_fingerprint, ''));
+      CREATE TRIGGER style_references_files_frozen BEFORE UPDATE OF
+        kind, source_path, fingerprint, raw_path, raw_fingerprint ON style_references
+      BEGIN SELECT RAISE(ABORT, 'style_references : fichiers d’une référence immuables'); END;
+
+      CREATE TABLE style_applications (
+        project_id    TEXT PRIMARY KEY REFERENCES clip_projects(id) ON DELETE CASCADE,
+        profile_id    TEXT NOT NULL,
+        version       INTEGER NOT NULL,
+        content_type  TEXT NOT NULL,
+        applied_json  TEXT NOT NULL CHECK (json_valid(applied_json)),
+        created_at    TEXT NOT NULL DEFAULT (${NOW}),
+        FOREIGN KEY (profile_id, version) REFERENCES style_profile_versions(profile_id, version)
+      );
+      CREATE TRIGGER style_applications_frozen BEFORE UPDATE ON style_applications
+      BEGIN SELECT RAISE(ABORT, 'style_applications : trace immuable'); END;
+    `,
+  },
 ];
 
 export function openDatabase(

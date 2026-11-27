@@ -29,7 +29,8 @@ export type JobType =
   | 'render_clip'
   | 'video_proxy'
   | 'thumbnail_sprite'
-  | 'detect_content_types';
+  | 'detect_content_types'
+  | 'analyze_style_reference';
 
 /**
  * File d'exécution :

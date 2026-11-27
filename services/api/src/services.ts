@@ -14,6 +14,7 @@ import { ExportAudioService } from './clips/export-audio';
 import { ClipProjectService } from './clips/service';
 import { RenderService } from './clips/render-service';
 import { ContentTypeService } from './content/service';
+import { StyleService } from './style/service';
 
 export interface Services {
   runner: JobRunner;
@@ -31,6 +32,8 @@ export interface Services {
   assets: AssetService;
   /** Types de contenu et segmentation temporelle (étape 9). */
   contentTypes: ContentTypeService;
+  /** Apprentissage du style de montage (étape 10). */
+  style: StyleService;
 }
 
 export interface ServiceOptions {
@@ -63,6 +66,13 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
   const clips = new ClipProjectService(ctx, review, analysis, exportAudio);
   const assets = new AssetService(ctx);
   clips.edits.assetGuard = (d) => assets.assertReferencable(d);
+  const style = new StyleService(
+    ctx,
+    () => runner,
+    analysis,
+    () => clips.edits,
+  );
+  clips.styleProvider = style;
   const renders = new RenderService(ctx, clips, exportAudio, () => runner, assets);
   const editorMedia = new EditorMediaService(
     ctx,
@@ -80,6 +90,7 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
       ...analysis.handlers(),
       ...renders.handlers(),
       ...contentTypes.handlers(),
+      ...style.handlers(),
     },
     {
       onSucceeded: async () => {
@@ -103,6 +114,7 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
     editorMedia,
     assets,
     contentTypes,
+    style,
   };
 }
 
@@ -111,6 +123,7 @@ export function recoverServices(s: Services) {
   s.runner.recover();
   s.transcriptions.recover();
   s.analysis.recover();
+  s.style.recover();
   // Les rendus « en publication » sont récupérés de façon asynchrone : `recoverFinalizing()`
   // doit être attendu avant tout autre travail (serveur et CLI).
   s.renders.recoverStale();

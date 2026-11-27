@@ -12,6 +12,7 @@
     "@acs/editorial": "*",
     "@acs/media": "*",
     "@acs/memory": "*",
+    "@acs/style": "*",
     "@acs/render": "*",
     "@acs/shared": "*",
     "@acs/timeline": "*",

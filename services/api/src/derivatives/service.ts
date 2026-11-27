@@ -818,6 +818,7 @@ export class DerivativeService {
       | 'run_analysis'
       | 'render_clip'
       | 'detect_content_types'
+      | 'analyze_style_reference'
     >,
     JobHandler
   > {
