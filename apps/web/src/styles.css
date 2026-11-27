@@ -662,3 +662,38 @@ ul.proposals > li {
   background: repeating-linear-gradient(45deg, #ffe3e3 0 6px, #ffc9c9 6px 12px);
   border-color: #b00020;
 }
+
+/* Étape 9 : types de contenu */
+.content-bar {
+  display: flex;
+  height: 0.9rem;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 0.5rem 0;
+  background: var(--neutral-bg);
+}
+.content-bar > span {
+  display: block;
+  min-width: 2px;
+}
+.content-gaming {
+  background: #2563eb;
+}
+.content-just_chatting {
+  background: #16a34a;
+}
+.content-reaction {
+  background: #db2777;
+}
+.content-podcast {
+  background: #9333ea;
+}
+.content-irl {
+  background: #ea580c;
+}
+.content-unknown {
+  background: repeating-linear-gradient(45deg, #9ca3af 0 4px, transparent 4px 8px);
+}
+.content-segments li {
+  margin: 0.25rem 0;
+}

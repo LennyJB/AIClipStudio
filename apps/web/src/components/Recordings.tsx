@@ -3,6 +3,7 @@ import { api, type Recording } from '../api';
 import { formatDuration } from '../format';
 import { warningLabel } from './media-warnings';
 import { AnalysisPanel } from './AnalysisPanel';
+import { ContentTypesPanel } from './ContentTypesPanel';
 import { ClipsPanel } from './clips/ClipsPanel';
 import { ReviewPanel } from './ReviewPanel';
 import { TranscriptionPanel } from './TranscriptionPanel';
@@ -245,6 +246,7 @@ export function Recordings() {
         )}
       </section>
       {current && <TranscriptionPanel key={current.id} recording={current} />}
+      {current && <ContentTypesPanel key={`content-${current.id}`} recording={current} />}
       {current && <AnalysisPanel key={`analysis-${current.id}`} recording={current} />}
       {current && <ReviewPanel key={`review-${current.id}`} recordingId={current.id} />}
       {current && <ClipsPanel key={`clips-${current.id}`} recordingId={current.id} />}
