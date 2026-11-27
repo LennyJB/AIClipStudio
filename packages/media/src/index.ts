@@ -18,3 +18,4 @@ export * from './thumbnails';
 export * from './assets';
 export * from './scan';
 export * from './visual';
+export * from './style-scan';
