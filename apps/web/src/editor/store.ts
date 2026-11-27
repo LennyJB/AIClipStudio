@@ -172,6 +172,9 @@ export function blockedAudio(a: EditorDocument['audio']): EditorDocument['audio'
   return {
     ...a,
     selected: [],
+    // Sous-titres des sources audio : bloqués eux aussi (les sous-titres manuels, écrits par le
+    // créateur, ne dépendent d'aucune source et restent affichés).
+    captionRoles: [],
     tracks: a.tracks.map((t) => ({
       ...t,
       exportable: false,
@@ -201,6 +204,14 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
   let audioChannel: BroadcastLike | null = null;
   let undoAfterSend = false;
   let disposed = false;
+  /**
+   * Ordre des vérifications de la décision audio (relecture dédiée, document relu, annonce d'un
+   * autre onglet) : chaque requête reçoit un numéro ; une réponse n'est appliquée que si aucune
+   * réponse d'une requête PLUS RÉCENTE ne l'a déjà été. Une ancienne réponse valide ne peut donc
+   * jamais réautoriser une piste après un échec plus récent, ni l'inverse.
+   */
+  let audioCheckIssued = 0;
+  let audioCheckApplied = 0;
   /** Chargement en cours (réutilisé : montage double de React). */
   let loading: Promise<void> | null = null;
 
@@ -237,10 +248,20 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
 
     /** Relit le document du serveur (sans toucher à la file). */
     const fetchServer = async () => {
-      const server = await deps.api.document(projectId);
-      if (disposed) return server;
-      // Le document porte une décision audio valide du serveur : vérification rétablie.
-      set({ server, offline: false, audioUnverified: false });
+      const check = ++audioCheckIssued;
+      const fetched = await deps.api.document(projectId);
+      if (disposed) return fetched;
+      let server = fetched;
+      if (check > audioCheckApplied && validAudio(fetched.audio)) {
+        // Le document porte une décision audio valide ET la plus récente : vérification rétablie.
+        audioCheckApplied = check;
+        set({ server, offline: false, audioUnverified: false });
+      } else {
+        // Décision portée par une réponse dépassée : l'état plus récent (bloqué ou non) est gardé.
+        const cur = get().server;
+        if (cur) server = { ...fetched, audio: cur.audio };
+        set({ server, offline: false });
+      }
       void loadEntries(server.version);
       void loadTexts();
       return server;
@@ -574,6 +595,7 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
       async refreshAudio() {
         const s = get();
         if (!s.server) return [];
+        const check = ++audioCheckIssued;
         let audio: EditorDocument['audio'] | null = null;
         try {
           const r = await deps.api.audioDecision(projectId);
@@ -583,17 +605,20 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
         }
         const cur = get().server;
         if (!cur) return [];
+        // Réponse dépassée : une vérification plus récente a déjà fixé l'état ; rien n'est changé.
+        if (check <= audioCheckApplied) return [];
+        audioCheckApplied = check;
         if (!audio) {
           // FAIL-CLOSED : autorisations inconnues ⇒ toutes les pistes bloquées immédiatement
           // (le lecteur arrête toute lecture qui en utilise une) ; rien de l'ancienne décision
           // n'est réutilisé tant qu'une réponse valide n'est pas revenue.
           const blocked = cur.audio.selected.map((t) => t.audioIndex);
-          if (get().audioUnverified && !blocked.length) return [];
+          if (get().audioUnverified && !blocked.length && !cur.audio.captionRoles.length) return [];
           set({
             server: { ...cur, audio: blockedAudio(cur.audio) },
             audioUnverified: true,
             notice:
-              'Vérification des autorisations audio indisponible : son coupé et lecture arrêtée jusqu’à la reprise de la connexion avec le serveur.',
+              'Vérification des autorisations audio indisponible : son coupé, lecture arrêtée et sous-titres des sources audio masqués jusqu’à la reprise de la connexion avec le serveur.',
           });
           return blocked;
         }

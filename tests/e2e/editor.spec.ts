@@ -452,12 +452,23 @@ test('panne de la vérification des autorisations pendant une lecture : son bloq
   await page.getByTestId('ruler').click({ position: { x: 5, y: 5 } });
   await page.getByTestId('play-toggle').click();
   await expect(page.getByTestId('audio-playing')).toContainText('pistes jouées : 0');
+  await expect(page.getByTestId('audio-loaded')).toHaveText('0');
+  // Sous-titre ajouté propre à ce test (indépendant des parcours précédents).
+  await page.getByTestId('manual-new').fill('Ajout pendant la panne');
+  await page.getByRole('button', { name: 'Ajouter à la tête de lecture' }).click();
+  await expect(page.locator('.tl-caption.manual').first()).toBeVisible();
+  const micCaptions = page.locator('.tl-caption.role-mic');
+  expect(await micCaptions.count()).toBeGreaterThan(0);
   // L'API de décision audio devient injoignable.
   await page.route('**/api/clip-projects/*/audio-decision', (route) => route.abort('failed'));
   await expect(page.getByTestId('play-toggle')).toHaveText('Lecture', { timeout: 6_000 });
   await expect(page.getByTestId('audio-playing')).toHaveText('');
   await expect(page.getByTestId('audio-unverified')).toBeVisible();
   await expect(page.getByText('aperçu muet')).toBeVisible();
+  // Buffers de la piste libérés ; sous-titres des sources audio masqués, sous-titres ajoutés gardés.
+  await expect(page.getByTestId('audio-loaded')).toHaveText('');
+  await expect(micCaptions).toHaveCount(0);
+  await expect(page.locator('.tl-caption.manual').first()).toBeVisible();
   // Pendant la panne : relancer la lecture ne joue aucune piste (anciennes autorisations ignorées).
   await page.getByTestId('play-toggle').click();
   await page.waitForTimeout(2_500);
@@ -468,6 +479,8 @@ test('panne de la vérification des autorisations pendant une lecture : son bloq
   await expect(page.getByTestId('audio-unverified')).toBeHidden({ timeout: 6_000 });
   await expect(page.getByTestId('notice')).toContainText('rétablie');
   await expect(page.getByText('son : pistes autorisées')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('audio-loaded')).toHaveText('0');
+  await expect(micCaptions.first()).toBeVisible();
   // Tête de lecture au début (la lecture pendant la panne l'a avancée).
   await page.getByTestId('ruler').click({ position: { x: 5, y: 5 } });
   await page.getByTestId('play-toggle').click();

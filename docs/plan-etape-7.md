@@ -1315,6 +1315,14 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
     réponse valide du serveur (décision audio, ou document relu) réautorise une piste. Pendant la
     panne, aucune préparation de médias n'est relancée ; au rétablissement, elle ne l'est que si
     la décision a changé. Les règles de consentement du serveur sont inchangées.
+    Les sous-titres issus des sources audio (`captionRoles`) sont masqués eux aussi pendant la
+    panne ; seuls les sous-titres manuels restent affichés. Ils ne reviennent qu'avec une réponse
+    valide, et seulement pour les sources qu'elle confirme.
+  - **Ordre des vérifications** : chaque vérification (décision audio ou document relu) reçoit un
+    numéro croissant. Une réponse n'est appliquée que si son numéro dépasse celui de la dernière
+    réponse appliquée : une réponse ancienne, même valide, ne peut jamais réautoriser une piste
+    après un échec ou une révocation plus récents. Un échec bloque immédiatement audio et
+    sous-titres des sources audio.
 - **Limites connues** (à traiter en 7f, mesure de cohérence) : rendu du texte canvas contre libass
   (quelques pixels) ; normalisation `loudnorm` absente de l'aperçu ; bords du flou (canvas contre
   `gblur`) ; J recule d'une seconde (aucune lecture arrière) ; zones masquées réglées par valeurs

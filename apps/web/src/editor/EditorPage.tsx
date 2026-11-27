@@ -270,7 +270,8 @@ function Editor({ projectId, onClose, drafts, deps }: EditorPageProps & { drafts
       {s.audioUnverified && (
         <p className="warning" role="alert" data-testid="audio-unverified">
           ⚠ Vérification des autorisations audio indisponible : toutes les pistes sont bloquées
-          (aucune lecture du son) jusqu’à une nouvelle réponse du serveur.
+          (aucune lecture du son) et les sous-titres des sources audio sont masqués (les sous-titres
+          ajoutés restent affichés) jusqu’à une nouvelle réponse du serveur.
         </p>
       )}
       {!s.draftsPersistent && (

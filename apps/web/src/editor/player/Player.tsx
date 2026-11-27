@@ -147,6 +147,7 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
   const playing = useStore(ui, (s) => s.playing);
   const playhead = useStore(ui, (s) => s.playheadMs);
   const playingTracks = useStore(ui, (s) => s.playingTracks);
+  const loadedTracks = useStore(ui, (s) => s.loadedTracks);
 
   const durationMs = totalEditDuration(segmentsV2(doc.segments));
   // État affiché d'après la décision ACTUELLE du serveur : une piste révoquée n'est jamais
@@ -198,6 +199,7 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
     let alive = true;
     if (!media || !session || !media.audio.length) {
       stems.current = [];
+      ui.getState().setLoadedTracks([]);
       return;
     }
     void (async () => {
@@ -217,14 +219,17 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
         });
       }
       if (alive) {
-        stems.current = out;
+        // Dernier contrôle : rien qui ne soit autorisé au moment de l'affectation.
+        const ok = out.filter((x) => allowedAudio.includes(x.audioIndex));
+        stems.current = ok;
+        ui.getState().setLoadedTracks(ok.map((x) => x.audioIndex));
         setStemsFor(stemsKey(media, allowedAudio));
       }
     })().catch(() => {});
     return () => {
       alive = false;
     };
-  }, [media, session, allowedAudio]);
+  }, [media, session, allowedAudio, ui]);
 
   const draw = useCallback(
     (t: number) => {
@@ -381,7 +386,9 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
   useEffect(() => {
     const revoked = stems.current.filter((x) => !allowedAudio.includes(x.audioIndex));
     if (revoked.length) {
+      // Buffers des pistes révoquées ou non vérifiables : libérés, plus jamais utilisables.
       stems.current = stems.current.filter((x) => allowedAudio.includes(x.audioIndex));
+      ui.getState().setLoadedTracks(stems.current.map((x) => x.audioIndex));
     }
     const playingRevoked = ui.getState().playingTracks.some((i) => !allowedAudio.includes(i));
     if (ui.getState().playing && (playingRevoked || revoked.length)) {
@@ -467,6 +474,9 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
             : audioState === 'loading'
               ? 'chargement du son…'
               : 'aperçu muet'}
+        </span>
+        <span hidden data-testid="audio-loaded">
+          {loadedTracks.join(',')}
         </span>
         <span className="small muted" data-testid="audio-playing">
           {playingTracks.length ? `pistes jouées : ${playingTracks.join(', ')}` : ''}

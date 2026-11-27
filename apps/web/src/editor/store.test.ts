@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClipProjectV2, Operation } from '@acs/timeline';
 import { fixtureV2 } from '../../../../packages/timeline/src/v2/test-fixtures';
 import { memoryDrafts, type DraftStore, type PendingBatch } from './drafts';
+import { previewCaptions } from './player/Player';
 import { AUDIO_POLL_MS, createEditorStore, entryLabel, type EditorDeps } from './store';
 import { fakeChannels, FakeEditServer, sha256Hex } from './test/fake-server';
 
@@ -460,6 +461,191 @@ describe('vérification des autorisations audio indisponible (fail-closed)', () 
     await store.getState().refresh();
     expect(store.getState().audioUnverified).toBe(false);
     expect(store.getState().server!.audio.selected.map((t) => t.audioIndex)).toEqual([1]);
+  });
+});
+
+describe('vérification audio : sous-titres et ordre des réponses', () => {
+  /** Serveur dont chaque réponse de décision audio est libérée à la main (ordre maîtrisé). */
+  function manual() {
+    const server = new FakeEditServer(fixtureV2(), CTX);
+    const api = server.api();
+    const queue: { resolve: () => void; reject: () => void }[] = [];
+    const audioDecision: EditorDeps['api']['audioDecision'] = (p) =>
+      new Promise((resolve, reject) => {
+        // La réponse reflète l'état du serveur au moment où elle est ÉMISE (requête).
+        const snapshot = api.audioDecision(p);
+        queue.push({
+          resolve: () => void snapshot.then(resolve),
+          reject: () => reject(new TypeError('Failed to fetch')),
+        });
+      });
+    const { store } = setup({ server, api: { ...api, audioDecision } });
+    return { server, store, queue };
+  }
+
+  it('panne : pistes ET sous-titres des sources audio bloqués ; sous-titres ajoutés conservés ; rétablissement des seules autorisations confirmées', async () => {
+    const server = new FakeEditServer(fixtureV2(), {
+      allowedAudioIndexes: [1],
+      allowedCaptionRoles: ['mic'],
+    });
+    const api = server.api();
+    const net = { down: false };
+    const { store } = setup({
+      server,
+      api: {
+        ...api,
+        audioDecision: async (p) => {
+          if (net.down) throw new TypeError('Failed to fetch');
+          return api.audioDecision(p);
+        },
+      },
+    });
+    await store.getState().load();
+    expect(store.getState().server!.audio.captionRoles).toEqual(['mic']);
+    net.down = true;
+    await store.getState().refreshAudio();
+    const a = store.getState().server!.audio;
+    expect(a.selected).toEqual([]);
+    expect(a.captionRoles).toEqual([]);
+    // Aperçu : aucune ligne de la transcription ; les sous-titres manuels restent possibles.
+    const d = store.getState().doc!;
+    const item = d.captions.items.find((i) => i.speakerRole === 'mic' && i.srcStartMs >= 112_000)!;
+    const texts = {
+      version: 1,
+      items: [
+        {
+          itemId: item.id,
+          speakerRole: 'mic' as const,
+          originalText: '',
+          text: 'VOIX',
+          corrected: false,
+          replacements: 0,
+          editRanges: [],
+        },
+      ],
+      manual: { 'man-1': 'AJOUT' },
+      overlays: {},
+    };
+    const withManual = {
+      ...d,
+      captions: {
+        ...d.captions,
+        manual: [
+          {
+            id: 'man-1',
+            origin: 'creator' as const,
+            text: 'AJOUT',
+            srcStartMs: 111_000,
+            srcEndMs: 112_000,
+            style: null,
+            position: null,
+          },
+        ],
+      },
+    };
+    const shown = previewCaptions(withManual, texts, a.captionRoles).map((l) => l.text);
+    expect(shown).toEqual(['AJOUT']);
+    // Rétablissement : seule la décision confirmée par le serveur revient (ici, Discord n'est
+    // toujours pas autorisé, et le micro a été retiré pendant la panne).
+    server.ctx = { allowedAudioIndexes: [], allowedCaptionRoles: [] };
+    net.down = false;
+    await store.getState().refreshAudio();
+    expect(store.getState().audioUnverified).toBe(false);
+    expect(store.getState().server!.audio.selected).toEqual([]);
+    expect(store.getState().server!.audio.captionRoles).toEqual([]);
+    server.ctx = { allowedAudioIndexes: [1], allowedCaptionRoles: ['mic'] };
+    await store.getState().refreshAudio();
+    expect(store.getState().server!.audio.captionRoles).toEqual(['mic']);
+    expect(
+      previewCaptions(withManual, texts, store.getState().server!.audio.captionRoles)
+        .map((l) => l.text)
+        .sort(),
+    ).toEqual(['AJOUT', 'VOIX']);
+  });
+
+  it('deux vérifications concurrentes, réponses dans l’ordre inverse : l’ancienne réponse VALIDE ne réautorise rien après l’échec plus récent', async () => {
+    const { store, queue } = manual();
+    await store.getState().load();
+    const older = store.getState().refreshAudio(); // requête 1 (réussira, mais tard)
+    const newer = store.getState().refreshAudio(); // requête 2 (échoue en premier)
+    expect(queue).toHaveLength(2);
+    queue[1]!.reject();
+    await newer;
+    expect(store.getState().audioUnverified).toBe(true);
+    expect(store.getState().server!.audio.selected).toEqual([]);
+    queue[0]!.resolve();
+    await older;
+    // L'ancienne réponse valide est ignorée : toujours bloqué.
+    expect(store.getState().audioUnverified).toBe(true);
+    expect(store.getState().server!.audio.selected).toEqual([]);
+    expect(store.getState().server!.audio.captionRoles).toEqual([]);
+    // Une réponse valide PLUS RÉCENTE rétablit les autorisations.
+    const later = store.getState().refreshAudio();
+    queue[2]!.resolve();
+    await later;
+    expect(store.getState().audioUnverified).toBe(false);
+    expect(store.getState().server!.audio.selected.map((t) => t.audioIndex)).toEqual([1]);
+  });
+
+  it('ordre inverse dans l’autre sens : un ancien échec n’écrase pas une réponse valide plus récente', async () => {
+    const { store, queue } = manual();
+    await store.getState().load();
+    const older = store.getState().refreshAudio();
+    const newer = store.getState().refreshAudio();
+    queue[1]!.resolve();
+    await newer;
+    queue[0]!.reject();
+    await older;
+    expect(store.getState().audioUnverified).toBe(false);
+    expect(store.getState().server!.audio.selected.map((t) => t.audioIndex)).toEqual([1]);
+  });
+
+  it('révocation entre deux requêtes : l’ancienne réponse (piste encore autorisée) n’écrase pas la plus récente', async () => {
+    const { server, store, queue } = manual();
+    await store.getState().load();
+    const older = store.getState().refreshAudio(); // émise avant la révocation
+    server.ctx = { ...server.ctx, allowedAudioIndexes: [] };
+    const newer = store.getState().refreshAudio(); // émise après
+    queue[1]!.resolve();
+    await newer;
+    expect(store.getState().server!.audio.selected).toEqual([]);
+    queue[0]!.resolve();
+    await older;
+    expect(store.getState().server!.audio.selected).toEqual([]);
+  });
+
+  it('document relu en même temps qu’un échec plus récent : la décision du document dépassé n’est pas appliquée', async () => {
+    const server = new FakeEditServer(fixtureV2(), CTX);
+    const api = server.api();
+    let releaseDoc!: () => void;
+    let holdDoc = false;
+    const net = { down: false };
+    const { store } = setup({
+      server,
+      api: {
+        ...api,
+        document: async (p) => {
+          const d = await api.document(p);
+          if (holdDoc) await new Promise<void>((r) => (releaseDoc = r));
+          return d;
+        },
+        audioDecision: async (p) => {
+          if (net.down) throw new TypeError('Failed to fetch');
+          return api.audioDecision(p);
+        },
+      },
+    });
+    await store.getState().load();
+    holdDoc = true;
+    const refresh = store.getState().refresh(); // document demandé (requête plus ancienne)
+    await new Promise((r) => setTimeout(r, 5));
+    net.down = true;
+    await store.getState().refreshAudio(); // échec plus récent
+    expect(store.getState().audioUnverified).toBe(true);
+    releaseDoc();
+    await refresh;
+    expect(store.getState().audioUnverified).toBe(true);
+    expect(store.getState().server!.audio.selected).toEqual([]);
   });
 });
 
