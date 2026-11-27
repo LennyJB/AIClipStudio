@@ -811,7 +811,14 @@ export class DerivativeService {
   /* -------------------------------- Handlers -------------------------------- */
 
   handlers(): Record<
-    Exclude<JobType, 'transcribe_recording' | 'prepare_analysis' | 'run_analysis' | 'render_clip'>,
+    Exclude<
+      JobType,
+      | 'transcribe_recording'
+      | 'prepare_analysis'
+      | 'run_analysis'
+      | 'render_clip'
+      | 'detect_content_types'
+    >,
     JobHandler
   > {
     return {

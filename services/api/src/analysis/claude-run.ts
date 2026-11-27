@@ -144,7 +144,7 @@ export class ClaudeRunner {
       const zones: TriageZone[] = [];
       const summaries: string[] = [];
       for (const [i, chunk] of chunks.entries()) {
-        const req = s.triageRequestFor(inp, chunk.text);
+        const req = s.triageRequestFor(inp, chunk.text, chunk);
         await this.recordTriageRequest(prepared, relDir, chunk.index, req);
         const res = await executor.execute({
           runId: run.id,
@@ -461,6 +461,7 @@ export class ClaudeRunner {
         payload.text,
         await this.service.requestImages(frames),
         streamSummary,
+        { startMs: w.startMs, endMs: w.endMs },
       );
       const file = toAbs(
         this.ctx.config.paths.storage,

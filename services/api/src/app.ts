@@ -7,6 +7,7 @@ import { loggerOptions } from './logger';
 import { registerAnalysisRoutes } from './routes/analysis';
 import { registerAssetRoutes } from './routes/assets';
 import { registerClipRoutes } from './routes/clips';
+import { registerContentTypeRoutes } from './routes/content-types';
 import { registerEditorMediaRoutes } from './routes/editor-media';
 import { registerReviewRoutes } from './routes/review';
 import { registerRecordingRoutes } from './routes/recordings';
@@ -132,6 +133,7 @@ export function buildApp({ config, db, model }: AppDeps): {
   registerClipRoutes(app, services);
   registerEditorMediaRoutes(app, services);
   registerAssetRoutes(app, services);
+  registerContentTypeRoutes(app, services);
   app.addHook('onClose', async () => {
     await services.runner.stop();
   });

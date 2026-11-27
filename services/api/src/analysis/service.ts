@@ -14,7 +14,11 @@ import {
   buildTriageChunks,
   buildWindowPayload,
   computeSignals,
+  contentContextBlock,
+  contentMatters,
+  contentWeightsAt,
   createPseudonymizer,
+  loadContentProfiles,
   deepRequest,
   estimateTextTokens,
   DEFAULT_SIGNAL_PROVIDERS,
@@ -33,6 +37,7 @@ import {
   SUMMARY_PLACEHOLDER,
   triageRequest,
   type AnalysisSegment,
+  type EffectiveContentSegment,
   DEEP_PROMPT_VERSION,
   TRIAGE_PROMPT_VERSION,
   type EditorialModel,
@@ -54,6 +59,8 @@ import {
   AppError,
   effectiveClipDuration,
   PrivacyFileSchema,
+  type ContentProfile,
+  type ContentType,
   type FramingProfile,
   type PrivacyFile,
   type TrackRole,
@@ -67,6 +74,7 @@ import {
   type JobDto,
   type RecordingDto,
 } from '../recordings/repository';
+import { ContentRepository } from '../content/repository';
 import { toAbs } from '../storage/paths';
 import { TranscriptionRepository, type TranscriptionDto } from '../transcriptions/repository';
 import { LlmCallRepository } from './calls';
@@ -158,6 +166,15 @@ export interface Inputs {
   inputKey: string;
   creator: Awaited<ReturnType<typeof loadCreatorProfile>>;
   game: Awaited<ReturnType<typeof loadGameProfile>>;
+  /**
+   * Types de contenu (étape 9), seulement si un passage est d'un format connu autre que le
+   * gaming. Absent : analyse strictement identique à celle d'avant l'étape 9.
+   */
+  content: {
+    source: 'manual' | 'auto';
+    segments: EffectiveContentSegment[];
+    profiles: Record<ContentType, ContentProfile>;
+  } | null;
 }
 
 const RunJobParams = z.object({ runId: z.uuid() }).strict();
@@ -168,6 +185,7 @@ export class AnalysisService {
   readonly repo: AnalysisRepository;
   private readonly recordings: RecordingRepository;
   private readonly transcriptionRepo: TranscriptionRepository;
+  private readonly contentRepo: ContentRepository;
 
   constructor(
     private readonly ctx: AppContext,
@@ -179,6 +197,7 @@ export class AnalysisService {
     this.repo = new AnalysisRepository(ctx.db);
     this.recordings = new RecordingRepository(ctx.db);
     this.transcriptionRepo = new TranscriptionRepository(ctx.db);
+    this.contentRepo = new ContentRepository(ctx.db);
   }
 
   private get cfg() {
@@ -531,6 +550,16 @@ export class AnalysisService {
       game: { id: game.id, hash: profileHash(game) },
       framing: framing ? { id: framing.id, hash: profileHash(framing) } : null,
     };
+    // Types de contenu : la correction du créateur l'emporte sur la détection automatique.
+    const effective = this.contentRepo.effective(recordingId);
+    const content =
+      effective && contentMatters(effective.segments)
+        ? {
+            source: effective.source,
+            segments: effective.segments,
+            profiles: await loadContentProfiles(this.ctx.config.paths.profiles),
+          }
+        : null;
     const src = this.recordings.getSource(recordingId);
     const inputKey = stableHash({
       v: ANALYSIS_PIPELINE_VERSION,
@@ -544,6 +573,15 @@ export class AnalysisService {
       config,
       privacy,
       profiles,
+      // Clé absente pour un enregistrement entièrement gaming : empreinte inchangée.
+      ...(content
+        ? {
+            content: {
+              segments: content.segments.map((s) => [s.startMs, s.endMs, s.type, s.source]),
+              profiles: profileHash(content.profiles),
+            },
+          }
+        : {}),
     });
     return {
       rec,
@@ -558,6 +596,7 @@ export class AnalysisService {
       inputKey,
       creator,
       game,
+      content,
     };
   }
 
@@ -1054,6 +1093,10 @@ export class AnalysisService {
         contextAfterMs: this.cfg.contextAfterMs,
         farContextMs: this.cfg.farContextMs,
         maxCoreMs: clip.maxSeconds * 1000,
+        // Critères adaptés au format de chaque passage (étape 9).
+        ...(inp.content
+          ? { weightsAt: contentWeightsAt(inp.content.segments, inp.content.profiles) }
+          : {}),
       }),
     );
     return {
@@ -1148,8 +1191,18 @@ export class AnalysisService {
     return out;
   }
 
-  /** Requête de repérage d'une tranche. */
-  triageRequestFor(inp: Inputs, chunkText: string): ModelRequest {
+  /** Contexte « type de contenu » d'un passage (null : enregistrement entièrement gaming). */
+  private contentContext(inp: Inputs, range: { startMs: number; endMs: number } | undefined) {
+    if (!inp.content || !range) return null;
+    return contentContextBlock(range, inp.content.segments, inp.content.profiles);
+  }
+
+  /** Requête de repérage d'une tranche (`range` : bornes de la tranche, pour le type de contenu). */
+  triageRequestFor(
+    inp: Inputs,
+    chunkText: string,
+    range?: { startMs: number; endMs: number },
+  ): ModelRequest {
     return triageRequest({
       model: this.ctx.config.claude.triageModel,
       effort: this.cfg.triageEffort,
@@ -1157,6 +1210,7 @@ export class AnalysisService {
       creator: inp.creator,
       game: inp.game,
       chunkText,
+      contentContext: this.contentContext(inp, range),
     });
   }
 
@@ -1166,6 +1220,7 @@ export class AnalysisService {
     payloadText: string,
     images: readonly RequestImage[],
     streamSummary: string | null,
+    range?: { startMs: number; endMs: number },
   ): ModelRequest {
     return deepRequest({
       model: this.ctx.config.claude.model,
@@ -1177,6 +1232,7 @@ export class AnalysisService {
       payloadText,
       images,
       streamSummary,
+      contentContext: this.contentContext(inp, range),
     });
   }
 
@@ -1231,7 +1287,7 @@ export class AnalysisService {
     const triageTokens: number[] = [];
     for (const c of chunks) {
       await writeFile(path.join(absDir, 'reperage', `tranche-${pad(c.index, 2)}.txt`), c.text);
-      const req = this.triageRequestFor(inp, c.text);
+      const req = this.triageRequestFor(inp, c.text, c);
       await writeRequest(triageRequestName(c.index), req);
       triageTokens.push(estimateTextTokens(req.userText));
     }
@@ -1258,6 +1314,7 @@ export class AnalysisService {
         payload.text,
         await this.requestImages(frames),
         summaryForReview,
+        { startMs: w.startMs, endMs: w.endMs },
       );
       await writeRequest(deepRequestName(w.rank), deepReq);
       const reqTokens = estimateTextTokens(deepReq.userText);
