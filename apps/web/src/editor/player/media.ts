@@ -47,6 +47,17 @@ export class EditorMediaSession {
     }, LEASE_RENEW_MS);
   }
 
+  /**
+   * Nouvelle préparation (décision d'audio exporté changée) : seules les pistes autorisées
+   * AUJOURD'HUI sont renvoyées par le serveur ; les jetons des autres ne sont plus réutilisés.
+   */
+  async refresh(onUpdate: (m: EditorMedia) => void): Promise<void> {
+    this.tokens.clear();
+    const m = await this.api.prepareMedia(this.projectId, this.sessionId);
+    this.media = m;
+    onUpdate(m);
+  }
+
   /** URL d'un média avec un jeton valide (demandé au besoin). */
   async url(derivativeId: string): Promise<string> {
     const cached = this.tokens.get(derivativeId);

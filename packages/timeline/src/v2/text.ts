@@ -65,6 +65,24 @@ export type DisplayCaptionLike = Pick<
   'itemId' | 'speakerRole' | 'text' | 'corrected' | 'replacements' | 'editRanges'
 >;
 
+/**
+ * Items de transcription avec leurs horaires d'affichage EFFECTIFS (réglage de l'item, sinon
+ * horaires d'origine). Source unique pour l'aperçu, la timeline, les textes du serveur et
+ * l'export : un sous-titre ramené dans le montage par un réglage n'est jamais oublié.
+ */
+export function effectiveCaptionItems(d: ClipProjectV2): ClipProjectV2['captions']['items'] {
+  const overrides = new Map(d.captions.overrides.map((o) => [o.id, o]));
+  return d.captions.items.map((it) => {
+    const ov = overrides.get(it.id);
+    if (!ov || (ov.srcStartMs === null && ov.srcEndMs === null)) return it;
+    return {
+      ...it,
+      srcStartMs: ov.srcStartMs ?? it.srcStartMs,
+      srcEndMs: ov.srcEndMs ?? it.srcEndMs,
+    };
+  });
+}
+
 export interface CaptionLineWord {
   text: string;
   startMs: number;

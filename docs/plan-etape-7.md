@@ -1293,6 +1293,20 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
   l'API RÉELLE (`tests/e2e/server.ts` : vidéo lavfi, transcription simulée, faux modèle), Vite et
   Chromium : job dédié de la CI. Le scénario de la 7d « à travers Vite avec un navigateur » y est
   réalisé (vraie balise `<video>`, autre origine refusée).
+- **Corrections de la revue de la PR 7e** :
+  - **Horaires effectifs des sous-titres** (`effectiveCaptionItems`) : l'aperçu, la timeline, les
+    textes affichés du serveur (`/texts`) et l'export partent des horaires réglés de chaque item.
+    Un sous-titre dont la plage d'origine est coupée du montage mais qu'un réglage y ramène était
+    oublié par l'aperçu, les textes du serveur et l'export : il est désormais affiché et rendu.
+  - **Révocation d'un accord audio pendant l'édition** : une révocation est enregistrée dans
+    `export_audio_events`, pas dans le journal du projet. L'éditeur relit donc la décision d'audio
+    exporté (`GET /api/clip-projects/:id/audio-decision`) toutes les 2 s, indépendamment de la
+    version du document, des gestes en attente et des conflits, et aussitôt qu'un autre onglet de
+    l'application enregistre un accord ou une déclaration (`BroadcastChannel`). Une piste qui n'est
+    plus autorisée est retirée de la mémoire, toute lecture qui l'utilise s'arrête immédiatement,
+    les médias de travail sont re-préparés (pistes autorisées seulement) et un message l'indique.
+    Côté serveur, rien ne change : jeton, requêtes `Range` et préparation refusaient déjà une piste
+    révoquée.
 - **Limites connues** (à traiter en 7f, mesure de cohérence) : rendu du texte canvas contre libass
   (quelques pixels) ; normalisation `loudnorm` absente de l'aperçu ; bords du flou (canvas contre
   `gblur`) ; J recule d'une seconde (aucune lecture arrière) ; zones masquées réglées par valeurs

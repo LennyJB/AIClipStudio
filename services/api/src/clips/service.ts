@@ -28,6 +28,7 @@ import {
   byStartThenId,
   canonicalJson,
   displayCaptions,
+  effectiveCaptionItems,
   durationAccepted,
   groupWords,
   migrateProject,
@@ -687,7 +688,7 @@ export class ClipProjectService {
       version: h.version,
       items: displayCaptions(
         segmentsV2(doc.segments),
-        doc.captions.items,
+        effectiveCaptionItems(doc),
         doc.captions.corrections,
         { roles, pseudonymize },
       ),
@@ -696,6 +697,16 @@ export class ClipProjectService {
         doc.overlays.filter((o) => o.text !== null).map((o) => [o.id, pseudonymize(o.text!).text]),
       ),
     };
+  }
+
+  /**
+   * Décision d'audio exporté AUJOURD'HUI pour l'enregistrement du projet (accords et
+   * déclarations), indépendante de la version du document : l'éditeur la relit pour appliquer
+   * immédiatement une révocation (lecture arrêtée, piste plus jamais chargée).
+   */
+  audioDecision(projectId: string) {
+    const row = this.projectRow(projectId);
+    return { audio: this.exportAudio.decisionFor(this.recording(row.recordingId)) };
   }
 
   /** « Enregistrer une version » : point de contrôle (révision immuable) à la version courante. */

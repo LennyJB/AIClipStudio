@@ -103,6 +103,12 @@ export function registerClipRoutes(app: FastifyInstance, services: Services) {
     return clips.editorTexts(id);
   });
 
+  // Décision d'audio exporté courante (relue par l'éditeur, indépendamment du journal).
+  app.get('/api/clip-projects/:id/audio-decision', async (req) => {
+    const { id } = parse(IdParams, req.params);
+    return clips.audioDecision(id);
+  });
+
   // « Enregistrer une version » : point de contrôle immuable à la version courante.
   app.post('/api/clip-projects/:id/checkpoint', async (req) => {
     const { id } = parse(IdParams, req.params);

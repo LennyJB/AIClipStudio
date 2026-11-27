@@ -561,6 +561,37 @@ describe.skipIf(!enabled)('Moteur multi-segments par l’API (étape 7c)', () =>
     // Seules les sources choisies ET autorisées (micro) : aucune ligne Discord.
     expect(texts.body.items.every((i) => i.speakerRole === 'mic')).toBe(true);
 
+    // Sous-titre coupé du montage puis ramené par un réglage d'horaires : ses textes affichés sont
+    // fournis (horaires effectifs), comme pour l'aperçu et l'export.
+    const d1 = await t.doc();
+    const s1 = d1.document.segments[0]!;
+    if (s1.kind !== 'source') throw new Error('segment source attendu');
+    // Premier sous-titre du segment : seul le tout début du clip est rogné.
+    const cut = d1.document.captions.items
+      .filter((i) => i.speakerRole === 'mic' && i.srcStartMs > s1.srcStartMs)
+      .sort((a, b) => a.srcStartMs - b.srcStartMs)[0]!;
+    const r2 = await t.edit({
+      base: { version: d1.version },
+      kind: 'do',
+      ops: [
+        {
+          type: 'trimSegment',
+          segmentId: s1.id,
+          srcStartMs: cut.srcEndMs + 200,
+          // Durée conservée : la fin est allongée d'autant (fenêtre ±60 s).
+          srcEndMs: s1.srcEndMs + (cut.srcEndMs + 200 - s1.srcStartMs),
+        },
+        { type: 'retimeCaption', itemId: cut.id, srcStartMs: null, srcEndMs: cut.srcEndMs + 1500 },
+      ],
+    });
+    expect(r2.status, JSON.stringify(r2.body)).toBe(200);
+    const texts2 = await t.call<{
+      items: { itemId: string; editRanges: { editStartMs: number; editEndMs: number }[] }[];
+    }>('GET', `/api/clip-projects/${t.project}/texts`);
+    expect(texts2.body.items.find((i) => i.itemId === cut.id)?.editRanges).toEqual([
+      { editStartMs: 0, editEndMs: 1300 },
+    ]);
+
     const render = await t.render('preview');
     expect(render.status, JSON.stringify(render.body)).toBe(202);
     const row = t.renderRow(render.body.render.id);
@@ -574,6 +605,6 @@ describe.skipIf(!enabled)('Moteur multi-segments par l’API (étape 7c)', () =>
       `/api/clip-projects/${t.project}/checkpoint`,
       {},
     );
-    expect(v.body.revision).toBe(r.body.version);
+    expect(v.body.revision).toBe(r2.body.version);
   }, 300_000);
 });

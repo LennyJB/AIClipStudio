@@ -118,6 +118,9 @@ export const editorApi = {
   submit: (projectId: string, body: EditRequest) =>
     getJson<EditResult>(`/api/clip-projects/${projectId}/edits`, json(body)),
   texts: (projectId: string) => getJson<EditorTexts>(`/api/clip-projects/${projectId}/texts`),
+  /** Décision d'audio exporté courante (indépendante de la version du document). */
+  audioDecision: (projectId: string) =>
+    getJson<{ audio: AudioDecision }>(`/api/clip-projects/${projectId}/audio-decision`),
   checkpoint: (projectId: string) =>
     getJson<{ revision: number }>(`/api/clip-projects/${projectId}/checkpoint`, json({})),
   prepareMedia: (projectId: string, sessionId: string) =>

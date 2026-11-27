@@ -8,6 +8,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyBatch,
+  captionLinesV2,
+  displayCaptions,
+  effectiveCaptionItems,
   placeSegments,
   sceneAt,
   segmentsV2,
@@ -40,6 +43,7 @@ import {
   snap,
   snapTargets,
   SNAP_PX,
+  timingRanges,
   trimFields,
 } from './timeline-math';
 
@@ -437,6 +441,73 @@ describe('compositeur : aplats posés sur le tampon source AVANT toute copie', (
         { width: 960, height: 540 },
       ),
     ).toEqual({ x: 0, y: 0, w: 2, h: 2 });
+  });
+});
+
+describe('sous-titres réglés (retimeCaption) : mêmes horaires dans l’aperçu, la timeline et l’export', () => {
+  const textsFor = (d: ClipProjectV2) => ({
+    version: 1,
+    // Textes du serveur : calculés sur les horaires EFFECTIFS (comme la route /texts).
+    items: displayCaptions(segmentsV2(d.segments), effectiveCaptionItems(d), [], {
+      roles: ['mic'],
+      pseudonymize: (t) => ({ text: t, replacements: 0 }),
+    }),
+    manual: {},
+    overlays: {},
+  });
+  const exportLines = (d: ClipProjectV2) =>
+    captionLinesV2(d, textsFor(d).items, {}, { roles: ['mic'], emphasis: false }).map((l) => [
+      l.id,
+      l.startMs,
+      l.endMs,
+    ]);
+  const timelineRanges = (d: ClipProjectV2, id: string) => {
+    const it = effectiveCaptionItems(d).find((i) => i.id === id)!;
+    return timingRanges(d, {
+      anchor: 'source',
+      srcStartMs: it.srcStartMs as never,
+      srcEndMs: it.srcEndMs as never,
+    }).map((r) => [id, r.editStartMs, r.editEndMs]);
+  };
+
+  it('horaires avancés : l’aperçu suit le réglage (non-régression)', () => {
+    const d0 = fixtureV2();
+    const item = d0.captions.items.find((i) => i.speakerRole === 'mic' && i.srcStartMs >= 112_000)!;
+    const d = applyBatch(
+      d0,
+      retimeCaption(d0, item.id, item.srcStartMs - 1500, item.srcEndMs + 800).ops,
+      CTX,
+    ).doc;
+    const preview = previewCaptions(d, textsFor(d), ['mic'])
+      .filter((l) => l.id === item.id)
+      .map((l) => [l.id, l.startMs, l.endMs]);
+    expect(preview).toEqual([
+      [item.id, item.srcStartMs - 1500 - 110_000, item.srcEndMs + 800 - 110_000],
+    ]);
+    expect(preview).toEqual(timelineRanges(d, item.id));
+    expect(preview).toEqual(exportLines(d).filter((l) => l[0] === item.id));
+  });
+
+  it('sous-titre coupé du montage puis ramené par le réglage : affiché dans l’aperçu, la timeline et l’export', () => {
+    const base = fixtureV2();
+    const item = base.captions.items.find(
+      (i) => i.speakerRole === 'mic' && i.srcStartMs >= 120_000,
+    )!;
+    // Le montage commence juste après la fin d'origine de l'item : il n'en montre rien.
+    const start = item.srcEndMs + 200;
+    const d0 = withSegments([src('a', start, start + 10_000)]);
+    expect(previewCaptions(d0, textsFor(d0), ['mic']).some((l) => l.id === item.id)).toBe(false);
+    const d = applyBatch(
+      d0,
+      retimeCaption(d0, item.id, item.srcStartMs, item.srcEndMs + 1500).ops,
+      CTX,
+    ).doc;
+    const preview = previewCaptions(d, textsFor(d), ['mic'])
+      .filter((l) => l.id === item.id)
+      .map((l) => [l.id, l.startMs, l.endMs]);
+    expect(preview).toEqual([[item.id, 0, 1300]]);
+    expect(preview).toEqual(timelineRanges(d, item.id));
+    expect(preview).toEqual(exportLines(d).filter((l) => l[0] === item.id));
   });
 });
 

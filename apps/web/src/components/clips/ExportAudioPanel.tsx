@@ -157,6 +157,12 @@ export function ExportAudioPanel({
         } as ExportAudioBody),
       );
       onChanged?.();
+      // Les éditeurs ouverts (autres onglets) relisent aussitôt la décision d'audio exporté.
+      if (typeof BroadcastChannel !== 'undefined') {
+        const ch = new BroadcastChannel('acs-export-audio');
+        ch.postMessage({ recordingId });
+        ch.close();
+      }
     } catch (err) {
       setError(errorMessage(err));
     } finally {

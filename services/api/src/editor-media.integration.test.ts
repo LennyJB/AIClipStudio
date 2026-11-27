@@ -279,6 +279,73 @@ describe.skipIf(!enabled)('médias de travail de l’éditeur par l’API (étap
     });
   }, 300_000);
 
+  it('révocation pendant une session ouverte et une lecture en cours : décision relue sans nouvelle version, piste plus servie ni préparée', async () => {
+    const { video, inst } = await setup();
+    const { rec, project } = await prepareProject(inst, video);
+    const { sessionId, ready } = await openSession(inst, project);
+    const stem = ready.audio.find((a) => a.audioIndex === 0)!;
+    const wave = ready.waveforms.find((w) => w.audioIndex === 0)!;
+    const decision = async () =>
+      (
+        await inst.app.inject({
+          method: 'GET',
+          url: `/api/clip-projects/${project}/audio-decision`,
+        })
+      ).json<{ audio: { selected: { audioIndex: number }[] } }>().audio.selected;
+    const version = async () =>
+      (
+        await inst.app.inject({ method: 'GET', url: `/api/clip-projects/${project}/document` })
+      ).json<{ version: number }>().version;
+    expect(await decision()).toEqual([{ audioIndex: 0, role: 'mic' }]);
+    const v0 = await version();
+    // Lecture en cours : jeton délivré, requêtes Range servies.
+    const tok = (await tokenRequest(inst, project, { sessionId, derivativeId: stem.id })).json<{
+      token: string;
+    }>().token;
+    expect((await mediaRequest(inst, stem.id, tok)).statusCode).toBe(206);
+
+    // Révocation (déclaration modifiée : d'autres voix sont présentes sur le micro).
+    const r = await inst.app.inject({
+      method: 'POST',
+      url: `/api/recordings/${rec.id}/export-audio`,
+      payload: {
+        requestId: randomUUID(),
+        kind: 'declaration',
+        subject: 'mic_composition',
+        payload: { creatorVoice: 'present', otherVoices: 'present' },
+      },
+    });
+    expect(r.statusCode, r.body).toBe(200);
+
+    // Décision relue immédiatement, sans aucune nouvelle version du document.
+    expect(await decision()).toEqual([]);
+    expect(await version()).toBe(v0);
+    // La lecture en cours s'arrête : la requête Range suivante est refusée, même avec le jeton.
+    expect(
+      (await mediaRequest(inst, stem.id, tok, { headers: { range: 'bytes=100-199' } })).statusCode,
+    ).toBe(403);
+    expect(
+      (await tokenRequest(inst, project, { sessionId, derivativeId: stem.id })).statusCode,
+    ).toBe(403);
+    expect(
+      (await tokenRequest(inst, project, { sessionId, derivativeId: wave.id })).statusCode,
+    ).toBe(403);
+    // Nouvelle préparation : plus aucune piste.
+    const again = (
+      await inst.app.inject({
+        method: 'POST',
+        url: `/api/clip-projects/${project}/editor-media`,
+        payload: { sessionId },
+      })
+    ).json<Prepared>();
+    expect(again.audio).toEqual([]);
+    expect(again.waveforms).toEqual([]);
+    // L'image reste disponible (aucune donnée audio).
+    expect(
+      (await tokenRequest(inst, project, { sessionId, derivativeId: ready.proxy!.id })).statusCode,
+    ).toBe(200);
+  }, 300_000);
+
   it('course : médias encore en préparation lors de la demande ⇒ protégés DÈS leur création (éviction automatique et nettoyage), sans nouvel appel ; puis libération et expiration', async () => {
     // Budget de cache minuscule : l'éviction automatique (après chaque traitement réussi)
     // supprimerait tout dérivé non protégé dès sa création.

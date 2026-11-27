@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClipProjectV2, Operation } from '@acs/timeline';
 import { fixtureV2 } from '../../../../packages/timeline/src/v2/test-fixtures';
 import { memoryDrafts, type DraftStore, type PendingBatch } from './drafts';
-import { createEditorStore, entryLabel, type EditorDeps } from './store';
+import { AUDIO_POLL_MS, createEditorStore, entryLabel, type EditorDeps } from './store';
 import { fakeChannels, FakeEditServer, sha256Hex } from './test/fake-server';
 
 const CTX = { allowedAudioIndexes: [1], allowedCaptionRoles: ['mic'] };
@@ -319,6 +319,70 @@ describe('plusieurs onglets', () => {
     expect(server.entries.map((e) => e.kind)).toEqual(['do', 'do']);
     // L'onglet s'est mis à jour : le prochain « annuler » vise bien l'entrée distante.
     expect(a.getState().server!.history.undo).toBe(3);
+  });
+});
+
+describe('révocation d’un accord audio pendant l’édition', () => {
+  it('détectée sans changement de version du document, même avec un geste en attente ; piste ensuite refusée', async () => {
+    const server = new FakeEditServer(fixtureV2(), { ...CTX, allowedAudioIndexes: [1] });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const submit = server.submit.bind(server);
+    server.submit = async (b, src) => {
+      await gate;
+      return submit(b, src);
+    };
+    const { store } = setup({ server });
+    await store.getState().load();
+    const v = store.getState().server!.version;
+    // Un geste reste en attente d'envoi.
+    await store.getState().dispatch([{ type: 'setMode', mode: 'enrichi' }], 'mode');
+    expect(store.getState().sending).toBe(true);
+    // Révocation enregistrée côté serveur (export_audio_events) : le journal ne change pas.
+    server.ctx = { ...server.ctx, allowedAudioIndexes: [] };
+    expect(await store.getState().refreshAudio()).toEqual([1]);
+    expect(store.getState().server!.version).toBe(v);
+    expect(store.getState().server!.audio.selected).toEqual([]);
+    expect(store.getState().revokedTracks).toEqual([1]);
+    expect(store.getState().notice).toMatch(/plus autorisée/u);
+    // Aucune nouvelle révocation : rien ne change, aucun message.
+    store.getState().dismissNotice();
+    expect(await store.getState().refreshAudio()).toEqual([]);
+    expect(store.getState().notice).toBeNull();
+    release();
+    await until(() => store.getState().pending.length === 0);
+    // Réactiver la piste révoquée : refus immédiat (même réducteur, décision à jour).
+    expect(
+      await store
+        .getState()
+        .dispatch([{ type: 'setTrack', audioIndex: 1, enabled: true, gainDb: 1 }], 'piste'),
+    ).toBe(false);
+  });
+
+  it('relue en continu par la relecture dédiée (indépendante de la relecture du journal)', async () => {
+    const server = new FakeEditServer(fixtureV2(), CTX);
+    const timers: { f: () => void; ms: number }[] = [];
+    // Planificateur observé : la relecture audio est programmée à part.
+    const s2 = createEditorStore('p', {
+      api: server.api(),
+      drafts: memoryDrafts(),
+      channel: () => null,
+      uuid: () => crypto.randomUUID(),
+      sha256: sha256Hex,
+      now: () => new Date(),
+      setInterval: (f, ms) => {
+        timers.push({ f, ms });
+        return timers.length;
+      },
+      clearInterval: () => {},
+    });
+    await s2.getState().load();
+    const audio = timers.find((t) => t.ms === AUDIO_POLL_MS)!;
+    expect(audio).toBeTruthy();
+    server.ctx = { ...server.ctx, allowedAudioIndexes: [] };
+    audio.f();
+    await until(() => s2.getState().server!.audio.selected.length === 0);
+    expect(s2.getState().revokedTracks).toEqual([1]);
   });
 });
 

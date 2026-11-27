@@ -374,3 +374,72 @@ test('proxy lu par une vraie balise <video> à travers Vite ; autre origine loca
   expect(refused).toEqual({ tokenStatus: 403, loaded: false });
   await ctx.close();
 });
+
+/* ---------------- Révocation d'un accord audio (après les autres parcours) ---------------- */
+
+const declareMic = (page: Page, otherVoices: 'present' | 'absent') =>
+  page.request.post(`/api/recordings/${stateIds().recordingId}/export-audio`, {
+    data: {
+      requestId: crypto.randomUUID(),
+      kind: 'declaration',
+      subject: 'mic_composition',
+      payload: { creatorVoice: 'present', otherVoices },
+    },
+  });
+
+const stateIds = () =>
+  JSON.parse(readFileSync(process.env.E2E_STATE ?? E2E.stateFile, 'utf8')) as {
+    projectId: string;
+    recordingId: string;
+  };
+
+test('révocation pendant que l’éditeur est ouvert : détectée sans modification du montage, piste plus jamais lue', async ({
+  page,
+}) => {
+  await open(page);
+  const v = await version(page);
+  await expect(page.getByText('son : pistes autorisées')).toBeVisible();
+  try {
+    expect((await declareMic(page, 'present')).status()).toBe(200);
+    await expect(page.getByTestId('notice')).toContainText('plus autorisée', { timeout: 10_000 });
+    await expect(page.getByText('non autorisée à l’export : jamais lue')).toBeVisible();
+    await expect(page.getByText('aperçu muet')).toBeVisible();
+    // Le montage n'a pas changé : même version.
+    expect(await version(page)).toBe(v);
+    // Lecture : aucune piste jouée.
+    await page.getByTestId('play-toggle').click();
+    await expect(page.getByTestId('play-toggle')).toHaveText('Pause');
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId('audio-playing')).toHaveText('');
+    await page.getByTestId('play-toggle').click();
+  } finally {
+    expect((await declareMic(page, 'absent')).status()).toBe(200);
+  }
+  // Accord rétabli : la piste est de nouveau préparée et audible.
+  await expect(page.getByText('son : pistes autorisées')).toBeVisible({ timeout: 15_000 });
+});
+
+test('révocation pendant une lecture en cours : la lecture s’arrête immédiatement', async ({
+  page,
+}) => {
+  await open(page);
+  await expect(page.getByText('son : pistes autorisées')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('play-toggle').click();
+  await expect(page.getByTestId('audio-playing')).toContainText('pistes jouées : 0');
+  const v = await version(page);
+  try {
+    expect((await declareMic(page, 'present')).status()).toBe(200);
+    // Relecture de la décision toutes les 2 s : arrêt dès la détection.
+    await expect(page.getByTestId('play-toggle')).toHaveText('Lecture', { timeout: 6_000 });
+    await expect(page.getByTestId('audio-playing')).toHaveText('');
+    await expect(page.getByTestId('notice')).toContainText('lecture arrêtée');
+    expect(await version(page)).toBe(v);
+    // Relancer : lecture muette, la piste révoquée n'est plus jouée.
+    await page.getByTestId('play-toggle').click();
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId('audio-playing')).toHaveText('');
+    await page.getByTestId('play-toggle').click();
+  } finally {
+    expect((await declareMic(page, 'absent')).status()).toBe(200);
+  }
+});

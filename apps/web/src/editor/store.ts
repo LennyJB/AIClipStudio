@@ -38,6 +38,13 @@ export type { PendingBatch };
 export const HISTORY_DISPLAY_LIMIT = 200;
 /** Relecture de la tête en secours de la diffusion entre onglets. */
 export const POLL_MS = 5000;
+/**
+ * Relecture de la décision d'audio exporté (accords, déclarations) : INDÉPENDANTE de la version
+ * du document et de la file. Une révocation n'est pas une modification du montage.
+ */
+export const AUDIO_POLL_MS = 2000;
+/** Canal sur lequel l'application annonce un changement d'accord ou de déclaration. */
+export const EXPORT_AUDIO_CHANNEL = 'acs-export-audio';
 
 export interface BroadcastLike {
   postMessage(m: unknown): void;
@@ -46,7 +53,7 @@ export interface BroadcastLike {
 }
 
 export interface EditorDeps {
-  api: Pick<EditorApi, 'document' | 'editsSince' | 'submit' | 'texts'>;
+  api: Pick<EditorApi, 'document' | 'editsSince' | 'submit' | 'texts' | 'audioDecision'>;
   drafts: DraftStore;
   /** Canal de diffusion entre onglets (null : indisponible). */
   channel: (name: string) => BroadcastLike | null;
@@ -91,6 +98,8 @@ export interface EditorState {
   texts: EditorTexts | null;
   textsError: string | null;
   entries: JournalEntry[];
+  /** Pistes dont l'autorisation a été retirée pendant la session (lecture arrêtée). */
+  revokedTracks: number[];
 
   load(): Promise<void>;
   /** Un geste : applique localement, enregistre le brouillon, envoie. Faux si refusé. */
@@ -100,6 +109,8 @@ export interface EditorState {
   confirmMaskPrompt(): Promise<void>;
   cancelMaskPrompt(): void;
   refresh(): Promise<void>;
+  /** Relit la décision d'audio exporté ; retourne les pistes révoquées depuis la dernière. */
+  refreshAudio(): Promise<number[]>;
   reloadAfterConflict(): Promise<void>;
   reapply(requestId: string): Promise<boolean>;
   discard(requestId: string): Promise<void>;
@@ -152,6 +163,8 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
   // Canal et relecture créés à chaque chargement, fermés par `dispose` (montage double de React).
   let channel: BroadcastLike | null = null;
   let poll: unknown = null;
+  let audioPoll: unknown = null;
+  let audioChannel: BroadcastLike | null = null;
   let undoAfterSend = false;
   let disposed = false;
   /** Chargement en cours (réutilisé : montage double de React). */
@@ -390,6 +403,11 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
           if (m?.type === 'head' && typeof m.version === 'number') void get().refresh();
         };
       }
+      // Décision audio : relue en continu, même avec des gestes en attente ou un conflit.
+      audioChannel ??= deps.channel(EXPORT_AUDIO_CHANNEL);
+      if (audioChannel) audioChannel.onmessage = () => void get().refreshAudio();
+      if (audioPoll !== null) deps.clearInterval(audioPoll);
+      audioPoll = deps.setInterval(() => void get().refreshAudio(), AUDIO_POLL_MS);
       if (poll !== null) deps.clearInterval(poll);
       poll = deps.setInterval(() => {
         const s = get();
@@ -421,6 +439,7 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
       texts: null,
       textsError: null,
       entries: [],
+      revokedTracks: [],
 
       load() {
         disposed = false;
@@ -516,6 +535,35 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
         }
       },
 
+      async refreshAudio() {
+        const s = get();
+        if (!s.server) return [];
+        let audio: EditorDocument['audio'];
+        try {
+          ({ audio } = await deps.api.audioDecision(projectId));
+        } catch {
+          return [];
+        }
+        const cur = get().server;
+        if (!cur || canonicalJson(audio) === canonicalJson(cur.audio)) return [];
+        const before = cur.audio.selected.map((t) => t.audioIndex);
+        const after = audio.selected.map((t) => t.audioIndex);
+        const revoked = before.filter((i) => !after.includes(i));
+        const rolesChanged =
+          canonicalJson(cur.audio.captionRoles) !== canonicalJson(audio.captionRoles);
+        set({
+          server: { ...cur, audio },
+          revokedTracks: [...new Set([...get().revokedTracks, ...revoked])],
+          ...(revoked.length || rolesChanged
+            ? {
+                notice: `Autorisation d’export modifiée${revoked.length ? ` : piste(s) ${revoked.join(', ')} plus autorisée(s), lecture arrêtée et piste(s) plus jamais lue(s)` : ''}${rolesChanged ? ' ; sources de sous-titres mises à jour' : ''}.`,
+              }
+            : {}),
+        });
+        if (rolesChanged) void loadTexts();
+        return revoked;
+      },
+
       async reloadAfterConflict() {
         const server = await fetchServer();
         set({ doc: server.document, pending: [] });
@@ -570,8 +618,12 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
         disposed = true;
         if (poll !== null) deps.clearInterval(poll);
         poll = null;
+        if (audioPoll !== null) deps.clearInterval(audioPoll);
+        audioPoll = null;
         channel?.close();
         channel = null;
+        audioChannel?.close();
+        audioChannel = null;
       },
     };
   });

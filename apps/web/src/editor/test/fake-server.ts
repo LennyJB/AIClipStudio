@@ -44,7 +44,7 @@ export class FakeEditServer {
 
   constructor(
     readonly base: ClipProjectV2,
-    readonly ctx: Required<ApplyContext>,
+    public ctx: Required<ApplyContext>,
     startVersion = 1,
   ) {
     this.startVersion = startVersion;
@@ -218,6 +218,7 @@ export class FakeEditServer {
       editsSince: (_p, since) => this.editsSince(since),
       submit: (_p, body) => this.submit(body),
       texts: () => this.texts(),
+      audioDecision: async () => ({ audio: (await this.document()).audio }),
     };
   }
 }

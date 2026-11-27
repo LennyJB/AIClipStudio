@@ -6,7 +6,7 @@
  * Raccourcis (§4) : S couper, F arrêt sur image, Suppr (avec décalage), Maj+Suppr (sans décalage),
  * J / K / L, ← / → image par image, Ctrl+Z / Ctrl+Maj+Z (ou Ctrl+Y), + / − zoom de la timeline.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import { segmentsV2, totalEditDuration } from '@acs/timeline';
 import { clipsApi, type RenderRow } from '../api';
@@ -83,6 +83,22 @@ function Editor({ projectId, onClose, drafts, deps }: EditorPageProps & { drafts
       void ses.stop();
     };
   }, [session, deps?.media]);
+
+  // Décision d'audio exporté changée (accord donné ou révoqué) : médias de travail re-préparés,
+  // pour les seules pistes autorisées aujourd'hui.
+  const audioKey = useStore(store, (x) =>
+    x.server ? x.server.audio.selected.map((t) => t.audioIndex).join(',') : null,
+  );
+  const seenAudioKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (deps?.media === false || audioKey === null) return;
+    const previous = seenAudioKey.current;
+    seenAudioKey.current = audioKey;
+    // Premier chargement : la préparation initiale suffit. Ensuite, toute différence (accord
+    // retiré, y compris la dernière piste, ou accordé) relance la préparation.
+    if (previous === null || previous === audioKey) return;
+    void session.refresh(setMedia).catch(() => {});
+  }, [audioKey, session, deps?.media]);
 
   const editable = isEditable(s);
   const doc = s.doc;

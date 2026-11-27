@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import {
   captionLinesV2,
+  effectiveCaptionItems,
   editToSource,
   placeSegments,
   resolvedEffects,
@@ -45,7 +46,8 @@ export function previewCaptions(
   const segments = segmentsV2(doc.segments);
   const byId = new Map(texts.items.map((i) => [i.itemId, i]));
   const display: DisplayCaptionLike[] = [];
-  for (const item of doc.captions.items) {
+  // Horaires EFFECTIFS (réglage compris), comme la timeline et l'export.
+  for (const item of effectiveCaptionItems(doc)) {
     const t = byId.get(item.id);
     if (!t) continue;
     const editRanges = sourceRangeToEditRanges(
@@ -139,9 +141,15 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
   const [stemsFor, setStemsFor] = useState<EditorMedia | null>(null);
   const playing = useStore(ui, (s) => s.playing);
   const playhead = useStore(ui, (s) => s.playheadMs);
+  const playingTracks = useStore(ui, (s) => s.playingTracks);
 
   const durationMs = totalEditDuration(segmentsV2(doc.segments));
-  const audioState: 'none' | 'loading' | 'ready' = !media?.audio.length
+  // État affiché d'après la décision ACTUELLE du serveur : une piste révoquée n'est jamais
+  // comptée, même avant la nouvelle préparation des médias.
+  const audible = (media?.audio ?? []).filter((a) =>
+    server.audio.selected.some((t) => t.audioIndex === a.audioIndex),
+  );
+  const audioState: 'none' | 'loading' | 'ready' = !audible.length
     ? 'none'
     : stemsFor === media
       ? 'ready'
@@ -331,6 +339,7 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
       // Horloge maître : l'audio.
       const from = c.now();
       const t0 = e.play(doc, allowedAudio, stems.current, from);
+      ui.getState().setPlayingTracks(e.tracks);
       c.setSource({ now: () => e.ctx.currentTime });
       c.seek(from);
       c.startAt(t0);
@@ -356,6 +365,22 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
   }, [doc, ui, clock]);
 
   useEffect(() => () => engine.current?.stop(), []);
+
+  // Révocation d'un accord (relue par le store, indépendamment du document) : toute piste qui
+  // n'est plus autorisée est retirée de la mémoire, et une lecture qui l'utilise s'arrête
+  // IMMÉDIATEMENT, même si le montage n'a pas changé.
+  useEffect(() => {
+    const revoked = stems.current.filter((x) => !allowedAudio.includes(x.audioIndex));
+    if (revoked.length) {
+      stems.current = stems.current.filter((x) => allowedAudio.includes(x.audioIndex));
+    }
+    const playingRevoked = ui.getState().playingTracks.some((i) => !allowedAudio.includes(i));
+    if (ui.getState().playing && (playingRevoked || revoked.length)) {
+      clock.pause();
+      engine.current?.stop();
+      ui.getState().setPlaying(false);
+    }
+  }, [allowedAudio, ui, clock]);
 
   const loadExact = async () => {
     setExactError(null);
@@ -433,6 +458,9 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
             : audioState === 'loading'
               ? 'chargement du son…'
               : 'aperçu muet'}
+        </span>
+        <span className="small muted" data-testid="audio-playing">
+          {playingTracks.length ? `pistes jouées : ${playingTracks.join(', ')}` : ''}
         </span>
         <button type="button" onClick={() => void loadExact()}>
           Image exacte

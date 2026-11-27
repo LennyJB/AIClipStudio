@@ -14,6 +14,8 @@ export interface LoadedStem extends StemInfo {
 
 export class AudioEngine {
   private nodes: AudioScheduledSourceNode[] = [];
+  /** Pistes de l'enregistrement programmées par la dernière lecture (vide à l'arrêt). */
+  tracks: number[] = [];
   private master: GainNode | null = null;
 
   constructor(readonly ctx: AudioContext) {}
@@ -32,6 +34,7 @@ export class AudioEngine {
       n.disconnect();
     }
     this.nodes = [];
+    this.tracks = [];
     this.master?.disconnect();
     this.master = null;
   }
@@ -47,6 +50,7 @@ export class AudioEngine {
     const ctx = this.ctx;
     const t0 = ctx.currentTime + 0.05;
     const plan = planAudio(d, allowed, stems, fromMs);
+    this.tracks = [...new Set(plan.clips.map((c) => c.audioIndex))];
     const remaining = Math.max(0.01, (plan.totalMs - fromMs) / 1000);
     const curves = effectCurves(plan.effects, fromMs, plan.totalMs);
     const master = ctx.createGain();

@@ -16,6 +16,8 @@ export type Selection =
 export interface UiState {
   playheadMs: number;
   playing: boolean;
+  /** Pistes de l'enregistrement réellement jouées par Web Audio (vide à l'arrêt). */
+  playingTracks: number[];
   /** Vitesse J/K/L : négative (retour), 0 (arrêt), positive. Seule la lecture ×1 est sonorisée. */
   shuttle: number;
   selection: Selection | null;
@@ -25,6 +27,7 @@ export interface UiState {
   snapping: boolean;
   setPlayhead(ms: number): void;
   setPlaying(p: boolean): void;
+  setPlayingTracks(t: number[]): void;
   select(s: Selection | null): void;
   setZoom(pxPerSec: number): void;
   setScroll(px: number): void;
@@ -39,13 +42,16 @@ export function createUiStore() {
   return createStore<UiState>()((set) => ({
     playheadMs: 0,
     playing: false,
+    playingTracks: [],
     shuttle: 0,
     selection: null,
     pxPerSec: 60,
     scrollPx: 0,
     snapping: true,
     setPlayhead: (ms) => set({ playheadMs: Math.max(0, Math.round(ms)) }),
-    setPlaying: (playing) => set({ playing }),
+    // À l'arrêt, plus aucune piste n'est jouée.
+    setPlaying: (playing) => set(playing ? { playing } : { playing, playingTracks: [] }),
+    setPlayingTracks: (playingTracks) => set({ playingTracks }),
     select: (selection) => set({ selection }),
     setZoom: (px) => set({ pxPerSec: Math.min(MAX_PX_PER_SEC, Math.max(MIN_PX_PER_SEC, px)) }),
     setScroll: (scrollPx) => set({ scrollPx: Math.max(0, scrollPx) }),
