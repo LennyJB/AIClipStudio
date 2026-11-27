@@ -117,6 +117,20 @@ export function referencedAssets(d: ClipProjectV2): { image: string[]; audio: st
   return { image: [...image].sort(), audio: [...audio].sort() };
 }
 
+/**
+ * Médias RÉELLEMENT utilisés par un rendu (même règle que le plan, `@acs/render`) : images et
+ * mèmes toujours ; effets sonores seulement si l'export a du son. Un export sans son ne charge ni
+ * n'exige aucun fichier d'effet sonore. La protection contre la suppression, elle, porte sur
+ * TOUS les médias référencés (`referencedAssets`, `usage`).
+ */
+export function renderAssets(
+  d: ClipProjectV2,
+  o: { audio?: boolean } = {},
+): { image: string[]; audio: string[] } {
+  const r = referencedAssets(d);
+  return { image: r.image, audio: d.audio.silent || o.audio === false ? [] : r.audio };
+}
+
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 
 export class AssetService {
@@ -510,10 +524,16 @@ export class AssetService {
   /**
    * Prépare les médias d'un rendu : chacun doit exister, être intact (empreinte) et est COPIÉ
    * dans `workDir` (nom = identifiant). Retourne les noms de fichiers relatifs à `workDir`.
-   * Aucun repli : un média manquant ou altéré fait échouer le rendu explicitement.
+   * Aucun repli : un média UTILISÉ manquant ou altéré fait échouer le rendu explicitement. Seuls
+   * les médias utilisés sont copiés (`renderAssets`) ; l'image exacte (`audio: false`) ne copie
+   * que les images.
    */
-  async stageForRender(d: ClipProjectV2, workDir: string): Promise<Record<string, string>> {
-    const refs = referencedAssets(d);
+  async stageForRender(
+    d: ClipProjectV2,
+    workDir: string,
+    o: { audio?: boolean } = {},
+  ): Promise<Record<string, string>> {
+    const refs = renderAssets(d, o);
     const ids = [...refs.image, ...refs.audio];
     const out: Record<string, string> = {};
     const missing: string[] = [];
@@ -550,8 +570,8 @@ export class AssetService {
   }
 
   /**
-   * Entrées du plan de rendu : médias référencés, présents en base ET sur le disque (taille
-   * vérifiée ; l'empreinte l'est à la copie). Un média absent n'y figure pas : le plan le refuse
+   * Entrées du plan de rendu : médias UTILISÉS (`renderAssets`), présents en base ET sur le
+   * disque, empreinte conforme (revérifiée à la copie). Un média absent n'y figure pas : le plan le refuse
    * explicitement (`ASSET_MISSING`).
    */
   async planInputs(
@@ -562,7 +582,7 @@ export class AssetService {
       { kind: 'image' | 'audio'; file: string; sha256: string; durationMs: number | null }
     >
   > {
-    const refs = referencedAssets(d);
+    const refs = renderAssets(d);
     const out: Record<
       string,
       { kind: 'image' | 'audio'; file: string; sha256: string; durationMs: number | null }

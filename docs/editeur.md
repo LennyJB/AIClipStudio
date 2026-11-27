@@ -85,7 +85,9 @@ laisse voir l'aplat, jamais l'image d'origine.
 Si un fichier de la bibliothèque (ou son aperçu) disparaît ou est altéré sur le disque, même sans
 changer de taille, il est signalé et n'est plus servi
 (« Fichier manquant ») dans la bibliothèque, sur la timeline et dans l'aperçu (cadre hachuré).
-Le rendu est alors **refusé** avec un message explicite : rien n'est ignoré en silence.
+Le rendu qui l'utilise est alors **refusé** avec un message explicite : rien n'est ignoré en
+silence. Un export **sans son** n'utilise pas les effets sonores : il n'exige donc pas leurs
+fichiers (les images, elles, restent exigées).
 **Réimporter le même fichier le répare.**
 
 ### Supprimer

@@ -1391,4 +1391,10 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
     toujours affiché sous l'aperçu et jamais compté comme chargé ; aucune piste autorisée ⇒
     avertissement explicite.
   - **Doublon** : signature et extension déclarée vérifiées AVANT la déduplication.
+  - **Médias réellement utilisés** (`renderAssets`, même règle que le plan) : un rendu ne copie
+    et n'exige que les images et mèmes référencés, et les effets sonores SEULEMENT si l'export a
+    du son. Un export sans son fonctionne même si un son référencé est manquant ou altéré ; avec
+    son, ce son est refusé (`ASSET_MISSING`). L'image exacte ne copie que les images ; elle suit
+    les mêmes exigences que l'export (un son manquant d'un export avec son la refuse aussi). La
+    protection contre la suppression porte toujours sur TOUS les médias référencés.
 - **Guide** : [`editeur.md`](editeur.md).

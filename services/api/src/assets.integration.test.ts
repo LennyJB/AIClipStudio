@@ -570,4 +570,86 @@ describe.skipIf(!enabled)('bibliothèque de médias par l’API (étape 7f)', ()
     // L'enregistrement original n'a jamais été modifié.
     expect(readFileSync(t.video).equals(readFileSync(master))).toBe(true);
   }, 400_000);
+
+  it('export sans son : seuls les médias réellement utilisés sont copiés et exigés (images oui, sons non) ; avec son, un son manquant est refusé ; image exacte', async () => {
+    const inst = await setup();
+    const t = await prepare(inst);
+    const imgFile = halfTransparentPng(fixtures, 'silence.png', '0x00FF00', 200, 100);
+    const sndFile = tone(fixtures, 'silence.wav', 1300, 0.5);
+    const img = (await upload(inst, imgFile)).json<AssetBody>().asset;
+    const snd = (await upload(inst, sndFile)).json<AssetBody>().asset;
+    expect((await t.edit([overlayOp(img.id), sfxOp(snd.id)])).status).toBe(200);
+    const stored = (id: string) =>
+      files(inst.config.paths.assets).find((f) => f.includes(`${id}.`) && !f.includes('preview'))!;
+    const imgPath = stored(img.id);
+    const sndPath = stored(snd.id);
+    const sndBytes = readFileSync(sndPath);
+    const imgBytes = readFileSync(imgPath);
+    // Médias réellement copiés dans le dossier de travail de chaque rendu ou image exacte.
+    const staged: string[][] = [];
+    const svc = inst.services.assets;
+    const original = svc.stageForRender.bind(svc);
+    svc.stageForRender = async (...a: Parameters<typeof original>) => {
+      const r = await original(...a);
+      staged.push(Object.keys(r).sort());
+      return r;
+    };
+    const frame = (at = 1000) =>
+      inst.app.inject({
+        method: 'GET',
+        url: `/api/clip-projects/${t.project}/frame?atEditMs=${at}`,
+      });
+    const setSilent = (silent: boolean) => t.edit([{ type: 'setAudioConfig', silent }]);
+
+    // 1. Son présent, export avec son : copié (avec l'image) et rendu.
+    const ok = await t.render();
+    expect(t.renderRow(ok.body.render!.id)).toMatchObject({ status: 'succeeded' });
+    expect(staged.at(-1)).toEqual([img.id, snd.id].sort());
+
+    // 2. Son manquant puis altéré, export SANS son : le rendu fonctionne, le son n'est ni copié ni exigé.
+    expect((await setSilent(true)).status).toBe(200);
+    rmSync(sndPath);
+    const silentMissing = await t.render();
+    expect(silentMissing.status, JSON.stringify(silentMissing.body)).toBe(202);
+    expect(t.renderRow(silentMissing.body.render!.id)).toMatchObject({ status: 'succeeded' });
+    expect(staged.at(-1)).toEqual([img.id]);
+    const altered = Buffer.from(sndBytes);
+    altered[altered.length - 10] = altered[altered.length - 10]! ^ 0xff;
+    writeFileSync(sndPath, altered);
+    // Un autre réglage pour un nouveau plan (sinon le rendu identique serait réutilisé).
+    expect((await t.edit([{ type: 'setAudioConfig', loudnorm: false }])).status).toBe(200);
+    const silentAltered = await t.render();
+    expect(t.renderRow(silentAltered.body.render!.id)).toMatchObject({ status: 'succeeded' });
+    expect(staged.at(-1)).toEqual([img.id]);
+    // 5a. Image exacte d'un export sans son : aucun son exigé.
+    const f1 = await frame();
+    expect(f1.statusCode, f1.body).toBe(200);
+    expect(staged.at(-1)).toEqual([img.id]);
+
+    // 3. Même son altéré, export AVEC son : refus explicite (demande de rendu et image exacte).
+    expect((await setSilent(false)).status).toBe(200);
+    const withSound = await t.render();
+    expect(withSound.body.error?.code).toBe('ASSET_MISSING');
+    const f2 = await frame();
+    expect(f2.statusCode).toBe(409);
+    expect(f2.json<AssetBody>().error?.code).toBe('ASSET_MISSING');
+    writeFileSync(sndPath, sndBytes);
+
+    // 4. Image manquante, export sans son : refus explicite (rendu et image exacte).
+    expect((await setSilent(true)).status).toBe(200);
+    rmSync(imgPath);
+    expect((await t.render()).body.error?.code).toBe('ASSET_MISSING');
+    const f3 = await frame();
+    expect(f3.statusCode).toBe(409);
+    expect(f3.json<AssetBody>().error?.code).toBe('ASSET_MISSING');
+    writeFileSync(imgPath, imgBytes);
+    // Image retrouvée : l'image exacte refonctionne ; image exacte avec son : sons non copiés.
+    expect((await frame()).statusCode).toBe(200);
+    expect((await setSilent(false)).status).toBe(200);
+    expect((await frame()).statusCode).toBe(200);
+    expect(staged.at(-1)).toEqual([img.id]);
+
+    // Protection inchangée : le son, référencé par le projet, ne peut pas être supprimé.
+    expect((await req(inst, 'DELETE', `/api/media-assets/${snd.id}`)).statusCode).toBe(409);
+  }, 600_000);
 });

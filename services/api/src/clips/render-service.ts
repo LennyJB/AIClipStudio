@@ -1041,7 +1041,8 @@ export class RenderService {
       const built = await this.build(projectId, 'preview');
       if (ctrl.signal.aborted) throw new AppError('CANCELLED', 'Image remplacée ou abandonnée');
       await mkdir(work, { recursive: true });
-      await this.assets.stageForRender(built.doc, work);
+      // Image exacte : seules les images sont lues (aucun son n'est copié ni exigé à ce stade).
+      await this.assets.stageForRender(built.doc, work, { audio: false });
       const out = path.join(work, 'image.jpg');
       await this.hooks.beforeFrameProcess?.(projectId, ctrl.signal);
       await runFrame({
