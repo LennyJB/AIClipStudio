@@ -25,6 +25,7 @@ commencée. Voir la [feuille de route](#feuille-de-route).
 - [Importer un enregistrement](#importer-un-enregistrement)
 - [Transcription](#transcription)
 - [Types de contenu](#types-de-contenu-étape-9)
+- [Style de montage](#style-de-montage-étape-10)
 - [Éditeur vidéo et bibliothèque de médias](#éditeur-vidéo-et-bibliothèque-de-médias-étape-7)
 - [Architecture](#architecture)
 - [Sécurité](#sécurité)
@@ -360,6 +361,34 @@ confiance, et résume un stream varié comme **Mixte**.
 - **Un enregistrement entièrement gaming est analysé exactement comme avant.**
 
 Guide : [`docs/types-de-contenu.md`](docs/types-de-contenu.md).
+
+## Style de montage (étape 10)
+
+Le panneau **Style de montage** de la page d'accueil apprend comment vous voulez monter vos clips.
+L'apprentissage est entièrement **local** : aucune vidéo n'est envoyée et aucun appel payant n'est
+fait.
+
+**Trois sources :**
+
+- **Vidéos montées de référence**, même d'autres créateurs : rythme, durée des plans, fondus au
+  noir, arrêts sur image, sonie, silences.
+- **Paires brut + montage** : en plus, alignement sonore des plans sur le brut, pour retrouver les
+  coupes éditoriales et la part conservée.
+- **Vos décisions dans l'éditeur** : sous-titres, facecam, zooms, effets, sonie.
+
+Ce qu'une vidéo ne permet pas de mesurer (sous-titres, facecam, zooms, effets, musique) est
+indiqué comme tel. Ces caractéristiques s'apprennent de vos montages ou se règlent à la main.
+
+**Profils :**
+
+- six profils sont fournis (Gaming, Just Chatting, Réaction, Podcast, IRL, Mixte), et vous pouvez
+  en créer d'autres ;
+- apprendre crée un **brouillon**, utilisé seulement après votre **validation** ;
+- une version validée n'est jamais modifiée.
+
+Chaque nouveau clip reçoit le profil validé du **format de son passage**, grâce à la segmentation
+de l'étape 9. Sans profil validé, rien ne change. Guide :
+[`docs/style-de-montage.md`](docs/style-de-montage.md).
 
 ## Analyse éditoriale (étape 4)
 

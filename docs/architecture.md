@@ -432,3 +432,19 @@ Guide : [`types-de-contenu.md`](types-de-contenu.md). Migration 11 : `content_de
 | Correction complète, prioritaire, journalisée en ajout seul et idempotente                                                                        | Le créateur reste la référence ; historique conservé                                    |
 | Pondération par case (`weightsAt`) et contexte de format dans le message utilisateur                                                              | Critères adaptés au passage ; prompts système inchangés et cache intact                 |
 | Segmentation hors de la clé d'entrée si tout est gaming ou indéterminé                                                                            | Fonctionnement gaming strictement identique, préparations existantes réutilisées        |
+
+## 18. Style de montage, étape 10
+
+Guide : [`style-de-montage.md`](style-de-montage.md). Nouveau paquet pur `@acs/style` (catalogue,
+observations, apprentissage, application). Migration 12 : profils, versions et validations en
+ajout seul, références (fichiers seulement référencés), applications.
+
+| Décision                                                                                                                                                                        | Raison                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Capacités vérifiées avant l'architecture : FFmpeg (`scdet`, `blackdetect`, `freezedetect`, `loudnorm`, `silencedetect`, `astats`) ; ni OCR, ni OpenCV, ni détection de visage   | Ne jamais prétendre mesurer ce que les outils ne mesurent pas                        |
+| Catalogue des caractéristiques avec, pour chacune, les sources capables de la mesurer ; valeur d'une source incapable ignorée et refusée par le schéma                          | Honnêteté sur les limites, vérifiable par les tests                                  |
+| Décisions de l'éditeur lues dans le document exact (`edits.head` et révision initiale)                                                                                          | Seule source fiable pour sous-titres, facecam, zooms et effets                       |
+| Paires : enveloppe sonore à 20 Hz et corrélation normalisée par plan ; structure déduite seulement si au moins la moitié des plans est alignée                                  | Distinguer coupes éditoriales et changements de scène, sans fausse conclusion        |
+| Apprendre = nouveau brouillon ; versions et validations immuables ; empreinte des valeurs affichées vérifiée à la validation ; valeurs manuelles jamais remplacées              | Les préférences validées ne changent jamais automatiquement                          |
+| Application à la création du projet (`projectFromProposal`, option `style`) selon le format de l'extrait (étape 9) ; repères de rythme et d'effets sans modification du montage | Adaptation par passage ; aucun effet inventé ; création identique sans profil validé |
+| Aucune analyse externe ; aucune image, aucun son, aucun texte des références conservé                                                                                           | Vidéos privées jamais envoyées ; on apprend un style, pas un contenu                 |

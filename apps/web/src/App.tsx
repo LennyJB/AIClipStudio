@@ -3,6 +3,7 @@ import { fetchHealth, type HealthResponse } from './api';
 import { Recordings } from './components/Recordings';
 import { EditorPage } from './editor/EditorPage';
 import { LibraryPanel } from './library/LibraryPanel';
+import { StylePanel } from './style/StylePanel';
 
 /** Route de l'éditeur : `#/editeur/<projet>` (aucun routeur : un seul écran supplémentaire). */
 export function editorRoute(hash: string): string | null {
@@ -75,6 +76,7 @@ function Home() {
       </section>
       <Recordings />
       <LibraryPanel />
+      <StylePanel />
     </main>
   );
 }

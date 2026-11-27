@@ -697,3 +697,23 @@ ul.proposals > li {
 .content-segments li {
   margin: 0.25rem 0;
 }
+
+/* Étape 10 : style de montage */
+.style-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.style-table th,
+.style-table td {
+  padding: 0.2rem 0.4rem;
+  text-align: left;
+  vertical-align: top;
+}
+.style-table tbody th {
+  padding-top: 0.6rem;
+  border-bottom: 1px solid var(--neutral-bg);
+}
+.style-changed {
+  background: var(--mic-bg);
+}
