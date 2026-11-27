@@ -28,6 +28,15 @@ export function buildTriageSystem(input: { creator: CreatorProfile; game: GamePr
   ].join('\n');
 }
 
-export function buildTriageUser(chunkText: string): string {
-  return ['Voici la tranche de transcription à examiner.', '', chunkText].join('\n');
+/**
+ * `contentContext` (étape 9) : types de contenu du passage, ajoutés seulement quand
+ * l'enregistrement n'est pas entièrement gaming ; absent, le message est inchangé.
+ */
+export function buildTriageUser(chunkText: string, contentContext?: string | null): string {
+  return [
+    ...(contentContext ? [contentContext, ''] : []),
+    'Voici la tranche de transcription à examiner.',
+    '',
+    chunkText,
+  ].join('\n');
 }

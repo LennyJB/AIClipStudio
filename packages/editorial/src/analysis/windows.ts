@@ -26,6 +26,15 @@ export const LOCAL_SCORE_WEIGHTS = {
   gameTerm: 0.05, //         termes du jeu
 } as const;
 
+export type LocalScoreWeights = Record<keyof typeof LOCAL_SCORE_WEIGHTS, number>;
+
+/**
+ * Pondération par case (étape 9) : le type de contenu du passage choisit ses critères (un rire
+ * pèse plus en Just Chatting, une question suivie d'une réponse en podcast). Absente : la
+ * pondération historique s'applique partout (gaming, comportement identique à l'étape 4a).
+ */
+export type WeightsAt = (binStartMs: number) => LocalScoreWeights;
+
 export interface BinScore {
   startMs: number;
   score: number;
@@ -55,6 +64,8 @@ export interface WindowOptions {
   farContextMs: number;
   /** Longueur maximale d'une zone d'intérêt (durée maximale d'un clip). */
   maxCoreMs: number;
+  /** Pondération selon le type de contenu du passage (voir `WeightsAt`). */
+  weightsAt?: WeightsAt;
 }
 
 const overlapMs = (a: TimeRange, b: TimeRange) =>
@@ -65,6 +76,7 @@ export function scoreBins(
   durationMs: number,
   segments: readonly AnalysisSegment[],
   signals: readonly Signal[],
+  weightsAt?: WeightsAt,
 ): BinScore[] {
   const n = Math.max(1, Math.ceil(durationMs / BIN_MS));
   const zeros = () => new Float64Array(n);
@@ -161,10 +173,14 @@ export function scoreBins(
       loudness: Math.min(1, loud / 15),
       gameTerm: Math.min(1, spanSum(acc.gameTerm)),
     };
-    const score = (Object.keys(LOCAL_SCORE_WEIGHTS) as (keyof typeof LOCAL_SCORE_WEIGHTS)[]).reduce(
-      (a, k) => a + LOCAL_SCORE_WEIGHTS[k] * components[k],
+    const weights = weightsAt ? weightsAt(i * BIN_MS) : LOCAL_SCORE_WEIGHTS;
+    let score = (Object.keys(LOCAL_SCORE_WEIGHTS) as (keyof typeof LOCAL_SCORE_WEIGHTS)[]).reduce(
+      (a, k) => a + weights[k] * components[k],
       0,
     );
+    // Pondérations par format : le volume peut peser davantage (réaction, IRL), mais un pic
+    // sonore SEUL ne crée toujours pas de fenêtre, quel que soit le seuil configuré.
+    if (weightsAt && score - weights.loudness * components.loudness <= 0) score = 0;
     bins.push({ startMs: i * BIN_MS, score: Math.round(score * 1000) / 1000, components });
   }
   return bins;
@@ -201,7 +217,7 @@ export function buildCandidateWindows(
 ): CandidateWindow[] {
   let durationMs = Math.max(1, opts.durationMs);
   for (const seg of segments) durationMs = Math.max(durationMs, seg.endMs);
-  const bins = scoreBins(durationMs, segments, signals);
+  const bins = scoreBins(durationMs, segments, signals, opts.weightsAt);
   const speech = mergeIntervals(
     segments.map((s) => ({ startMs: s.startMs, endMs: s.endMs })),
     0,

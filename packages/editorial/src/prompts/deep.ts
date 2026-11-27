@@ -52,6 +52,8 @@ export function buildDeepSystem(input: {
 export function buildDeepUser(input: {
   streamSummary: string | null;
   payloadText: string;
+  /** Types de contenu du passage (étape 9) ; absent : message inchangé. */
+  contentContext?: string | null;
 }): string {
   const summary =
     input.streamSummary === null
@@ -66,5 +68,6 @@ export function buildDeepUser(input: {
           SUMMARY_CLOSE,
           '',
         ];
-  return [...summary, 'Fenêtre à juger :', '', input.payloadText].join('\n');
+  const content = input.contentContext ? [input.contentContext, ''] : [];
+  return [...summary, ...content, 'Fenêtre à juger :', '', input.payloadText].join('\n');
 }

@@ -16,6 +16,8 @@ export function triageRequest(p: {
   creator: CreatorProfile;
   game: GameProfile;
   chunkText: string;
+  /** Types de contenu du passage (étape 9), ou absent. */
+  contentContext?: string | null;
 }): ModelRequest {
   return {
     stage: 'triage',
@@ -24,7 +26,7 @@ export function triageRequest(p: {
     maxTokens: p.maxTokens,
     promptVersion: TRIAGE_PROMPT_VERSION,
     system: buildTriageSystem({ creator: p.creator, game: p.game }),
-    userText: buildTriageUser(p.chunkText),
+    userText: buildTriageUser(p.chunkText, p.contentContext),
     images: [],
     schemaName: 'TriageResult',
     schema: TRIAGE_SCHEMA,
@@ -41,6 +43,8 @@ export function deepRequest(p: {
   payloadText: string;
   images: readonly RequestImage[];
   streamSummary: string | null;
+  /** Types de contenu du passage (étape 9), ou absent. */
+  contentContext?: string | null;
 }): ModelRequest {
   return {
     stage: 'deep',
@@ -49,7 +53,11 @@ export function deepRequest(p: {
     maxTokens: p.maxTokens,
     promptVersion: DEEP_PROMPT_VERSION,
     system: buildDeepSystem({ creator: p.creator, game: p.game, clip: p.clip }),
-    userText: buildDeepUser({ streamSummary: p.streamSummary, payloadText: p.payloadText }),
+    userText: buildDeepUser({
+      streamSummary: p.streamSummary,
+      payloadText: p.payloadText,
+      contentContext: p.contentContext ?? null,
+    }),
     images: p.images,
     schemaName: 'DeepResult',
     schema: DEEP_SCHEMA,
