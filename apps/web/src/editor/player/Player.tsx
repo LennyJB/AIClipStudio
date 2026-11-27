@@ -9,6 +9,7 @@ import {
   captionLinesV2,
   effectiveCaptionItems,
   editToSource,
+  imageOverlayPlacements,
   placeSegments,
   resolvedEffects,
   sceneAt,
@@ -23,6 +24,8 @@ import {
   type EditMs,
   type SourceMs,
 } from '@acs/timeline';
+import { libraryApi } from '../../library/api';
+import type { LibraryState } from '../../library/useLibrary';
 import { editorApi, type EditorDocument, type EditorMedia, type EditorTexts } from '../api';
 import type { UiStore } from '../ui-store';
 import { AudioEngine, type LoadedStem } from './audio-engine';
@@ -128,11 +131,16 @@ interface Props {
   media: EditorMedia | null;
   session: EditorMediaSession | null;
   ui: UiStore;
+  /** Bibliothèque de médias (état des fichiers vu par le serveur) ; absente : aucun média. */
+  library?: Pick<LibraryState, 'assets'> | undefined;
   /** Contenu superposé au canvas (poignées de cadrage). */
   children?: React.ReactNode;
 }
 
-export function Player({ doc, server, texts, media, session, ui, children }: Props) {
+/** Image d'un calque : chargée, en cours de chargement, ou manquante (signalée). */
+type ImageSlot = HTMLImageElement | 'loading' | 'missing';
+
+export function Player({ doc, server, texts, media, session, ui, library, children }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoA = useRef<HTMLVideoElement | null>(null);
   const videoB = useRef<HTMLVideoElement | null>(null);
@@ -179,6 +187,100 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
     [doc, texts, allowedRoles],
   );
   const overlays = useMemo(() => previewOverlays(doc, texts), [doc, texts]);
+  const imagePlacements = useMemo(() => imageOverlayPlacements(doc), [doc]);
+  const assetStatus = useMemo(
+    () => new Map((library?.assets ?? []).map((a) => [a.id, a.status])),
+    [library?.assets],
+  );
+
+  // Images des calques (bibliothèque) : chargées une fois par média, libérées dès qu'aucun calque
+  // ne les utilise. Un média signalé manquant par le serveur, ou dont le chargement échoue, est
+  // dessiné comme MANQUANT (jamais omis en silence ; l'export, lui, est refusé).
+  const images = useRef(new Map<string, ImageSlot>());
+  const [imagesVersion, setImagesVersion] = useState(0);
+  const imageIds = useMemo(
+    () => [...new Set(imagePlacements.map((p) => p.assetId))].sort().join(','),
+    [imagePlacements],
+  );
+  useEffect(() => {
+    let alive = true;
+    const wanted = new Set(imageIds ? imageIds.split(',') : []);
+    const map = images.current;
+    for (const [id, slot] of map) {
+      if (!wanted.has(id)) {
+        if (slot instanceof HTMLImageElement) slot.src = '';
+        map.delete(id);
+      }
+    }
+    for (const id of wanted) {
+      if (assetStatus.get(id) === 'missing') {
+        map.set(id, 'missing');
+        continue;
+      }
+      const cur = map.get(id);
+      if (cur instanceof HTMLImageElement || cur === 'loading') continue;
+      map.set(id, 'loading');
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = libraryApi.fileUrl(id);
+      void img
+        .decode()
+        .then(() => {
+          if (alive && map.get(id) === 'loading') map.set(id, img);
+        })
+        .catch(() => {
+          if (alive) map.set(id, 'missing');
+        })
+        .finally(() => alive && setImagesVersion((v) => v + 1));
+    }
+    // Redessin (médias retirés ou signalés manquants) après la mise à jour de la table.
+    void Promise.resolve().then(() => alive && setImagesVersion((v) => v + 1));
+    return () => {
+      alive = false;
+      // Chargements interrompus : relancés au prochain passage (jamais bloqués en « loading »).
+      for (const [id, slot] of map) if (slot === 'loading') map.delete(id);
+    };
+  }, [imageIds, assetStatus]);
+
+  // Effets sonores (bibliothèque) : décodés seulement si le clip a du son ET si au moins une piste
+  // de l'enregistrement est autorisée par la DERNIÈRE décision vérifiée du serveur (export sans
+  // son, aucune piste autorisée ou vérification indisponible ⇒ aucun effet sonore chargé, comme
+  // l'export qui n'aurait aucun son). Libérés dès qu'ils ne sont plus utilisés.
+  const sfxBuffers = useRef(new Map<string, AudioBuffer>());
+  const [sfxLoaded, setSfxLoaded] = useState<string[]>([]);
+  const sfxIds = useMemo(
+    () =>
+      doc.audio.silent ? '' : [...new Set(doc.audio.sfx.map((x) => x.assetId))].sort().join(','),
+    [doc.audio.silent, doc.audio.sfx],
+  );
+  const sfxAllowed = allowedAudio.length > 0;
+  useEffect(() => {
+    let alive = true;
+    const map = sfxBuffers.current;
+    const wanted = new Set(sfxAllowed && sfxIds ? sfxIds.split(',') : []);
+    for (const id of [...map.keys()]) if (!wanted.has(id)) map.delete(id);
+    setSfxLoaded([...map.keys()].sort());
+    const todo = [...wanted].filter((id) => !map.has(id) && assetStatus.get(id) === 'ok');
+    if (!todo.length) return;
+    void (async () => {
+      const ctx = engine.current?.ctx ?? new AudioContext();
+      engine.current ??= new AudioEngine(ctx);
+      for (const id of todo) {
+        try {
+          const res = await fetch(libraryApi.fileUrl(id));
+          if (!res.ok) continue;
+          const buffer = await ctx.decodeAudioData(await res.arrayBuffer());
+          if (alive) map.set(id, buffer);
+        } catch {
+          // Son illisible : non joué ; signalé par la bibliothèque (fichier manquant).
+        }
+      }
+      if (alive) setSfxLoaded([...map.keys()].sort());
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [sfxIds, sfxAllowed, assetStatus]);
 
   const [clock] = useState(() => new PlaybackClock(browserTime, durationMs));
   useEffect(() => clock.setDuration(durationMs), [clock, durationMs]);
@@ -288,9 +390,27 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
         overlays,
         globalStyle: doc.captions.style,
         facecamZoom: zoomFactorAt(camZooms, t / 1000),
+        images: imagePlacements.flatMap((placement) => {
+          const slot = images.current.get(placement.assetId);
+          if (slot === 'loading' || slot === undefined) return [];
+          return [{ placement, image: slot === 'missing' ? null : slot }];
+        }),
       });
     },
-    [doc, src, allowedAudio, allowedRoles, media, captions, overlays, clock],
+    // `imagesVersion` : redessin quand une image finit de se charger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      doc,
+      src,
+      allowedAudio,
+      allowedRoles,
+      media,
+      captions,
+      overlays,
+      clock,
+      imagePlacements,
+      imagesVersion,
+    ],
   );
 
   const [fontsReady, setFontsReady] = useState(false);
@@ -352,7 +472,7 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
       await e.ctx.resume();
       // Horloge maître : l'audio.
       const from = c.now();
-      const t0 = e.play(doc, allowedAudio, stems.current, from);
+      const t0 = e.play(doc, allowedAudio, stems.current, from, sfxBuffers.current);
       ui.getState().setPlayingTracks(e.tracks);
       c.setSource({ now: () => e.ctx.currentTime });
       c.seek(from);
@@ -477,6 +597,9 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
         </span>
         <span hidden data-testid="audio-loaded">
           {loadedTracks.join(',')}
+        </span>
+        <span hidden data-testid="sfx-loaded">
+          {sfxLoaded.length}
         </span>
         <span className="small muted" data-testid="audio-playing">
           {playingTracks.length ? `pistes jouées : ${playingTracks.join(', ')}` : ''}

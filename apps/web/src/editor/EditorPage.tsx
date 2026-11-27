@@ -19,6 +19,8 @@ import { LayerHandles } from './player/LayerHandles';
 import { Player } from './player/Player';
 import { browserDeps, createEditorStore, entryLabel, isEditable, type EditorDeps } from './store';
 import { Timeline } from './timeline/Timeline';
+import { libraryApi, type LibraryApi } from '../library/api';
+import { useLibrary } from '../library/useLibrary';
 import { createUiStore } from './ui-store';
 
 const uuid = () => crypto.randomUUID();
@@ -27,7 +29,7 @@ export interface EditorPageProps {
   projectId: string;
   onClose: () => void;
   /** Injection pour les tests (API simulée, brouillon en mémoire). */
-  deps?: (Partial<EditorDeps> & { media?: boolean }) | undefined;
+  deps?: (Partial<EditorDeps> & { media?: boolean; library?: LibraryApi }) | undefined;
 }
 
 export function EditorPage({ projectId, onClose, deps }: EditorPageProps) {
@@ -59,6 +61,8 @@ function Editor({ projectId, onClose, drafts, deps }: EditorPageProps & { drafts
   const snapping = useStore(ui, (x) => x.snapping);
   const [media, setMedia] = useState<EditorMedia | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  // Bibliothèque de médias : état des fichiers (présents ou manquants) vu par le serveur.
+  const library = useLibrary(deps?.library ?? libraryApi);
   // Session de médias (bail, jetons) : identifiant propre à cet onglet.
   const [session] = useState(() => new EditorMediaSession(projectId, uuid(), editorApi));
 
@@ -336,7 +340,15 @@ function Editor({ projectId, onClose, drafts, deps }: EditorPageProps & { drafts
       )}
 
       <div className="editor-main">
-        <Player doc={doc} server={server} texts={s.texts} media={media} session={session} ui={ui}>
+        <Player
+          doc={doc}
+          server={server}
+          texts={s.texts}
+          media={media}
+          session={session}
+          ui={ui}
+          library={library}
+        >
           <LayerHandles
             doc={doc}
             playheadMs={playhead}
@@ -356,6 +368,8 @@ function Editor({ projectId, onClose, drafts, deps }: EditorPageProps & { drafts
           uuid={uuid}
           onGesture={gesture}
           onSelect={(x) => ui.getState().select(x)}
+          library={library}
+          libraryApi={deps?.library ?? libraryApi}
         />
       </div>
 
@@ -408,6 +422,7 @@ function Editor({ projectId, onClose, drafts, deps }: EditorPageProps & { drafts
         session={session}
         texts={s.texts}
         onGesture={gesture}
+        library={library}
       />
 
       <details className="editor-journal">

@@ -6,7 +6,10 @@
  * Ordre (identique à l'export) :
  *   image source (proxy NON masqué, jamais affiché tel quel) → aplats OPAQUES sur l'image
  *   source → flou créatif → calques de la disposition → zooms → secousse → éclair →
- *   sous-titres → calques texte.
+ *   calques image et mèmes (bibliothèque) → sous-titres → calques texte.
+ * Les calques image sont posés sur l'image COMPOSÉE : ils ne touchent jamais le tampon source, où
+ * les aplats sont posés ; une partie transparente d'un calque laisse voir l'aplat, jamais la source.
+ * Un média manquant est dessiné comme tel (hachures et libellé), jamais omis en silence.
  * Le proxy n'est dessiné que dans un tampon hors écran ; les aplats y sont posés AVANT que la
  * moindre partie n'en soit copiée vers le canvas visible : aucune zone sensible ne peut s'afficher.
  *
@@ -17,6 +20,7 @@ import {
   CAPTION_MARGIN_H,
   CAPTION_POSITIONS,
   flashAlphaAt,
+  overlayPixelRect,
   regionCenterOnOutput,
   shakeOffsetAt,
   TEXT_CANVAS,
@@ -27,6 +31,7 @@ import {
   zoomFactorAt,
   type CaptionLine,
   type CaptionStyle,
+  type ImageOverlayPlacement,
   type PixelRect,
   type Scene,
   type TextOverlayLine,
@@ -50,6 +55,11 @@ export interface FrameInput {
   globalStyle: CaptionStyle;
   /** Zooms de la facecam (`reaction_hold`) actifs : facteur à l'instant. */
   facecamZoom: number;
+  /**
+   * Calques image (bibliothèque) : placement partagé avec l'export et image décodée (null : média
+   * manquant ou pas encore chargé, dessiné comme manquant).
+   */
+  images?: readonly { placement: ImageOverlayPlacement; image: CanvasImageSource | null }[];
 }
 
 const FONT_FAMILY: Record<CaptionStyle['font'], { family: string; weight: number }> = {
@@ -115,6 +125,10 @@ export class Compositor {
     ctx.save();
     ctx.drawImage(this.work as unknown as CanvasImageSource, 0, 0);
     ctx.restore();
+    for (const im of f.images ?? []) {
+      const p = im.placement;
+      if (s.editMs >= p.startMs && s.editMs < p.endMs) this.drawImageOverlay(ctx, im.image, p);
+    }
     for (const line of f.captions) this.drawCaption(ctx, line, f.globalStyle, s.editMs);
     for (const o of f.overlays) {
       if (s.editMs >= o.startMs && s.editMs < o.endMs) this.drawOverlay(ctx, o);
@@ -321,6 +335,42 @@ export class Compositor {
         ctx.fillText(text, cx, y, maxW);
       }
     });
+    ctx.restore();
+  }
+
+  /** Calque image : étiré à son cadre (même arrondi que FFmpeg), opacité en alpha global. */
+  private drawImageOverlay(
+    ctx: CanvasRenderingContext2D,
+    image: CanvasImageSource | null,
+    p: ImageOverlayPlacement,
+  ) {
+    const r = overlayPixelRect(p.frame, this.out.width, this.out.height);
+    ctx.save();
+    if (image) {
+      ctx.globalAlpha = p.opacity;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(image, r.x, r.y, r.w, r.h);
+    } else {
+      // Média manquant : signalé dans l'aperçu (l'export, lui, est refusé).
+      ctx.fillStyle = 'rgba(180, 0, 0, 0.55)';
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.rect(r.x, r.y, r.w, r.h);
+      ctx.clip();
+      ctx.beginPath();
+      for (let x = r.x - r.h; x < r.x + r.w; x += 12) {
+        ctx.moveTo(x, r.y + r.h);
+        ctx.lineTo(x + r.h, r.y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Média manquant', r.x + r.w / 2, r.y + r.h / 2);
+    }
     ctx.restore();
   }
 

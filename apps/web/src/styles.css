@@ -582,3 +582,83 @@ ul.proposals > li {
 .mono {
   font-family: ui-monospace, monospace;
 }
+
+/* Bibliothèque de médias (étape 7f) */
+.lib-import {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.5rem 0;
+}
+.lib-grid {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+.lib-item {
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background: #fff;
+}
+.lib-item img {
+  max-width: 100%;
+  height: auto;
+  background: repeating-conic-gradient(#eee 0% 25%, #fff 0% 50%) 50% / 12px 12px;
+}
+.lib-item.missing {
+  border-color: #b00020;
+}
+.lib-missing {
+  height: 64px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: repeating-linear-gradient(45deg, #b00020 0 8px, #7a0016 8px 16px);
+  font-weight: bold;
+}
+.lib-meta {
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: anywhere;
+}
+.lib-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+.lib-actions audio {
+  width: 100%;
+  height: 28px;
+}
+.lib-peaks {
+  width: 100%;
+  height: 32px;
+  fill: #3b5bdb;
+}
+.insp-library > summary {
+  cursor: pointer;
+  margin: 0.25rem 0;
+}
+.insp-library .library {
+  padding: 0.5rem;
+}
+.tl-item.tl-sfx {
+  background: #e7f5ff;
+  border-color: #1c7ed6;
+}
+.tl-item.tl-sfx.muted {
+  opacity: 0.5;
+}
+.tl-item.missing {
+  background: repeating-linear-gradient(45deg, #ffe3e3 0 6px, #ffc9c9 6px 12px);
+  border-color: #b00020;
+}

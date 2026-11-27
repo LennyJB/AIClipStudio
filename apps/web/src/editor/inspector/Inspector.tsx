@@ -23,8 +23,13 @@ import {
   type Mask,
 } from '@acs/timeline';
 import type { EditorDocument, EditorTexts } from '../api';
+import { LibraryPanel } from '../../library/LibraryPanel';
+import { libraryApi as defaultLibraryApi, type LibraryApi } from '../../library/api';
+import type { LibraryState } from '../../library/useLibrary';
 import {
   addEffect,
+  addImageOverlay,
+  addSfx,
   addManualCaption,
   addTextOverlay,
   addTimedMask,
@@ -49,6 +54,9 @@ interface Props {
   uuid: () => string;
   onGesture: (g: Gesture) => void;
   onSelect: (s: Selection | null) => void;
+  /** Bibliothèque de médias (état des fichiers vu par le serveur). */
+  library?: Pick<LibraryState, 'assets'> | undefined;
+  libraryApi?: LibraryApi | undefined;
 }
 
 const ROLE_LABELS: Record<string, string> = { mic: 'Micro', discord: 'Discord', mix: 'Tout' };
@@ -140,6 +148,7 @@ export function Inspector(p: Props) {
       {s?.kind === 'caption' && <CaptionPanel {...p} id={s.id} />}
       {s?.kind === 'effect' && <EffectPanel {...p} id={s.id} />}
       {s?.kind === 'overlay' && <OverlayPanel {...p} id={s.id} />}
+      {s?.kind === 'sfx' && <SfxPanel {...p} id={s.id} />}
       {s?.kind === 'mask' && <MaskPanel {...p} id={s.id} />}
       {s?.kind === 'layer' && <LayerPanel {...p} id={s.id} />}
       {s?.kind === 'track' && <TrackPanel {...p} audioIndex={s.audioIndex} />}
@@ -659,7 +668,8 @@ function OverlayPanel(p: Props & { id: string }) {
     });
   return (
     <section className="insp-section" aria-label="Calque">
-      <h3>Calque texte</h3>
+      <h3>{o.kind === 'text' ? 'Calque texte' : o.kind === 'meme' ? 'Mème' : 'Calque image'}</h3>
+      {o.assetId && <AssetLine {...p} assetId={o.assetId} />}
       {o.kind === 'text' && (
         <>
           <TextCommit
@@ -720,6 +730,83 @@ function OverlayPanel(p: Props & { id: string }) {
         }}
       >
         Retirer le calque
+      </button>
+    </section>
+  );
+}
+
+/* -------------------- Médias de la bibliothèque (7f) -------------------- */
+
+/** Nom du média utilisé et état de son fichier (manquant : signalé, export refusé). */
+function AssetLine(p: Props & { assetId: string }) {
+  const a = p.library?.assets?.find((x) => x.id === p.assetId);
+  if (!p.library?.assets) return <p className="small muted">Bibliothèque en cours de lecture…</p>;
+  if (!a) {
+    return (
+      <p className="error small" data-testid="asset-missing">
+        Média absent de la bibliothèque : retirez-le ou réimportez-le. L’export sera refusé.
+      </p>
+    );
+  }
+  return (
+    <p className={a.status === 'ok' ? 'small' : 'error small'} data-testid="asset-line">
+      Média : {a.displayName}
+      {a.status === 'missing' && ' — fichier manquant : réimportez-le (export refusé)'}
+    </p>
+  );
+}
+
+function SfxPanel(p: Props & { id: string }) {
+  const x = p.doc.audio.sfx.find((s) => s.id === p.id);
+  if (!x) return null;
+  const set = (patch: Partial<typeof x>, summary: string) =>
+    p.onGesture({
+      ops: [{ type: 'setEntity', collection: 'sfx', entity: { ...x, ...patch } }],
+      summary,
+    });
+  const t = x.timing;
+  return (
+    <section className="insp-section" aria-label="Effet sonore">
+      <h3>Effet sonore</h3>
+      <AssetLine {...p} assetId={x.assetId} />
+      {p.doc.audio.silent && (
+        <p className="warning small">Export sans son : cet effet sonore ne sera pas entendu.</p>
+      )}
+      <Num
+        label="Gain (dB)"
+        value={x.gainDb}
+        min={-60}
+        max={12}
+        step={1}
+        disabled={!p.editable}
+        testId="sfx-gain"
+        onCommit={(v) => set({ gainDb: v }, 'gain d’un effet sonore')}
+      />
+      {t.anchor === 'edit' && (
+        <Num
+          label="Début (s)"
+          value={t.offsetMs / 1000}
+          min={0}
+          max={600}
+          step={0.1}
+          disabled={!p.editable}
+          onCommit={(v) =>
+            set({ timing: { ...t, offsetMs: Math.round(v * 1000) } }, 'effet sonore déplacé')
+          }
+        />
+      )}
+      <button
+        type="button"
+        disabled={!p.editable}
+        onClick={() => {
+          p.onGesture({
+            ops: [{ type: 'removeEntity', collection: 'sfx', id: x.id }],
+            summary: 'effet sonore retiré',
+          });
+          p.onSelect(null);
+        }}
+      >
+        Retirer l’effet sonore
       </button>
     </section>
   );
@@ -1031,6 +1118,7 @@ function ProjectPanel(p: Props) {
   const [effectType, setEffectType] = useState<EffectTypeV2>('zoom');
   const [manualText, setManualText] = useState('');
   const [overlayText, setOverlayText] = useState('');
+  const [asMeme, setAsMeme] = useState(false);
   const run = (f: () => Gesture) => {
     try {
       p.onGesture(f());
@@ -1262,7 +1350,45 @@ function ProjectPanel(p: Props) {
           Ajouter un calque texte
         </button>
       </p>
-      <p className="small muted">Images et mèmes : bibliothèque de médias (étape suivante).</p>
+      <details className="insp-library" data-testid="pick-image">
+        <summary>Image ou mème de la bibliothèque…</summary>
+        <label className="insp-field">
+          <input type="checkbox" checked={asMeme} onChange={(e) => setAsMeme(e.target.checked)} />{' '}
+          Ajouter comme mème
+        </label>
+        <LibraryPanel
+          api={p.libraryApi ?? defaultLibraryApi}
+          kind="image"
+          title="Images"
+          onPick={(a) =>
+            p.editable &&
+            run(() => addImageOverlay(d, p.playheadMs, a, asMeme ? 'meme' : 'image', p.uuid))
+          }
+        />
+      </details>
+
+      <h4>Effets sonores</h4>
+      <details className="insp-library" data-testid="pick-sound">
+        <summary>Son de la bibliothèque…</summary>
+        <LibraryPanel
+          api={p.libraryApi ?? defaultLibraryApi}
+          kind="audio"
+          title="Sons"
+          onPick={(a) => p.editable && run(() => addSfx(d, p.playheadMs, a, p.uuid))}
+        />
+      </details>
+      {d.audio.sfx.length > 0 && (
+        <ul className="small">
+          {d.audio.sfx.map((x) => (
+            <li key={x.id}>
+              <button type="button" onClick={() => p.onSelect({ kind: 'sfx', id: x.id })}>
+                {p.library?.assets?.find((a) => a.id === x.assetId)?.displayName ?? 'Son'} (
+                {x.gainDb} dB)
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <h4>Son</h4>
       <label className="insp-field">

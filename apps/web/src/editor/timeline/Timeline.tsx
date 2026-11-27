@@ -31,6 +31,7 @@ import {
   trimFields,
 } from '../timeline-math';
 import type { Selection, UiStore } from '../ui-store';
+import type { LibraryState } from '../../library/useLibrary';
 import {
   parseWaveform,
   waveformPeak,
@@ -63,11 +64,26 @@ interface Props {
   /** Textes affichés (pseudonymisés) du serveur : seuls textes montrés dans la timeline. */
   texts: EditorTexts | null;
   onGesture: (g: Gesture) => void;
+  library?: Pick<LibraryState, 'assets'> | undefined;
 }
 
 const asTiming = (t: unknown) => t as Timing;
 
-export function Timeline({ doc, server, ui, editable, media, session, texts, onGesture }: Props) {
+export function Timeline({
+  doc,
+  server,
+  ui,
+  editable,
+  media,
+  session,
+  texts,
+  onGesture,
+  library,
+}: Props) {
+  const assetName = (id: string | null) =>
+    (id && library?.assets?.find((a) => a.id === id)?.displayName) || null;
+  const assetMissing = (id: string | null) =>
+    !!id && !!library?.assets && library.assets.find((a) => a.id === id)?.status !== 'ok';
   const pxPerSec = useStore(ui, (s) => s.pxPerSec);
   const playhead = useStore(ui, (s) => s.playheadMs);
   const selection = useStore(ui, (s) => s.selection);
@@ -335,7 +351,7 @@ export function Timeline({ doc, server, ui, editable, media, session, texts, onG
                   key={`${o.id}-${k}`}
                   role="button"
                   tabIndex={0}
-                  className={`tl-item tl-overlay${isSel('overlay', o.id) ? ' selected' : ''}`}
+                  className={`tl-item tl-overlay${isSel('overlay', o.id) ? ' selected' : ''}${assetMissing(o.assetId) ? ' missing' : ''}`}
                   style={{
                     left: msToPx(r.editStartMs, pxPerSec),
                     width: Math.max(4, msToPx(r.editEndMs - r.editStartMs, pxPerSec)),
@@ -343,7 +359,9 @@ export function Timeline({ doc, server, ui, editable, media, session, texts, onG
                   onPointerDown={() => select({ kind: 'overlay', id: o.id })}
                 >
                   <span className="tl-text">
-                    {o.kind === 'text' ? `T ${o.text ?? ''}` : o.kind}
+                    {o.kind === 'text'
+                      ? `T ${o.text ?? ''}`
+                      : `${o.kind === 'meme' ? 'Mème' : 'Image'} ${assetName(o.assetId) ?? ''}${assetMissing(o.assetId) ? ' (manquant)' : ''}`}
                   </span>
                 </div>
               )),
@@ -535,9 +553,27 @@ export function Timeline({ doc, server, ui, editable, media, session, texts, onG
             );
           })}
           <div className="tl-row" aria-label="Piste des effets sonores">
-            <span className="tl-text small muted">
-              Effets sonores : bibliothèque de médias (étape suivante)
-            </span>
+            {doc.audio.sfx.flatMap((x) =>
+              timingRanges(doc, asTiming(x.timing)).map((r, k) => (
+                <div
+                  key={`${x.id}-${k}`}
+                  role="button"
+                  tabIndex={0}
+                  data-testid="tl-sfx"
+                  className={`tl-item tl-sfx${isSel('sfx', x.id) ? ' selected' : ''}${assetMissing(x.assetId) ? ' missing' : ''}${doc.audio.silent ? ' muted' : ''}`}
+                  style={{
+                    left: msToPx(r.editStartMs, pxPerSec),
+                    width: Math.max(4, msToPx(r.editEndMs - r.editStartMs, pxPerSec)),
+                  }}
+                  onPointerDown={() => select({ kind: 'sfx', id: x.id })}
+                >
+                  <span className="tl-text">
+                    ♪ {assetName(x.assetId) ?? 'son'}
+                    {assetMissing(x.assetId) ? ' (manquant)' : ''}
+                  </span>
+                </div>
+              )),
+            )}
           </div>
 
           <div

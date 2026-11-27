@@ -1,11 +1,12 @@
 /**
  * Exécution Web Audio du plan audio (`audio-plan.ts`). L'`AudioContext` est l'horloge maître de
  * la lecture. Graphe : extrait (fondus de raccord) → gain de la piste (gain + automatisation) →
- * effets des pistes (atténuation, bips) → mixage (+ tons des bips) → fondus d'entrée et de
- * sortie → sortie. Seules les pistes reçues (autorisées et activées, décidées par le serveur)
- * sont décodées et jouées.
+ * effets des pistes (atténuation, bips) → mixage (+ tons des bips, + effets sonores) → fondus
+ * d'entrée et de sortie → sortie. Seules les pistes reçues (autorisées et activées, décidées par
+ * le serveur) sont décodées et jouées. Effets sonores (bibliothèque) : mêmes placements que
+ * l'export (`sfxPlacements`), ni atténués ni bipés (comme l'export), fondus du mixage compris.
  */
-import { BLEEP_LEVEL, dbToGain, type ClipProjectV2 } from '@acs/timeline';
+import { BLEEP_LEVEL, dbToGain, sfxPlacements, type ClipProjectV2 } from '@acs/timeline';
 import { automationCurve, effectCurves, planAudio, type StemInfo } from './audio-plan';
 
 export interface LoadedStem extends StemInfo {
@@ -45,6 +46,7 @@ export class AudioEngine {
     allowed: readonly number[],
     stems: readonly LoadedStem[],
     fromMs: number,
+    sfx: ReadonlyMap<string, AudioBuffer> = new Map(),
   ): number {
     this.stop();
     const ctx = this.ctx;
@@ -101,6 +103,25 @@ export class AudioEngine {
       osc.start(t0);
       osc.stop(t0 + remaining);
       this.nodes.push(osc);
+    }
+    // Effets sonores : extrait exact du son, placé à son instant, gain, joint au mixage.
+    const durations = Object.fromEntries([...sfx].map(([id, b]) => [id, b.duration * 1000]));
+    for (const p of sfxPlacements(d, durations)) {
+      if (p.editEndMs <= fromMs) continue;
+      const buffer = sfx.get(p.assetId);
+      if (!buffer) continue;
+      const skip = Math.max(0, fromMs - p.editStartMs);
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      const g = ctx.createGain();
+      g.gain.value = dbToGain(p.gainDb);
+      src.connect(g).connect(master);
+      src.start(
+        t0 + (p.editStartMs + skip - fromMs) / 1000,
+        (p.offsetMs + skip) / 1000,
+        (p.editEndMs - p.editStartMs - skip) / 1000,
+      );
+      this.nodes.push(src);
     }
     return t0;
   }
