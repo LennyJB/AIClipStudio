@@ -6,14 +6,16 @@
  *    (seulement si le profil de jeu est spécifique), interjections et rires transcrits ;
  *  - structure audio : part de parole du créateur et des coéquipiers, équilibre entre voix
  *    (seulement si les voix sont sur des pistes séparées) ;
- *  - visuel : activité de l'image (changements de scène entre images clés, mesurés par FFmpeg)
- *    quand elle a été mesurée. Ce n'est PAS une reconnaissance d'image : une image qui change
- *    beaucoup (jeu, vidéo regardée, caméra en mouvement) se distingue d'une webcam fixe, rien
- *    de plus.
+ *  - visuel : activité de l'image (différence entre images clés, mesurée par FFmpeg) quand elle
+ *    a été mesurée. Ce n'est PAS une reconnaissance d'image : une image qui change beaucoup (jeu,
+ *    vidéo regardée, caméra en mouvement) se distingue d'une webcam fixe, rien de plus.
  *
  * Principes :
- *  - jamais de fausse certitude : sans corroboration visuelle ou structurelle, la confiance est
- *    plafonnée (`TRANSCRIPT_ONLY_CAP`) ; un score faible ou trop proche du second ⇒ « indéterminé » ;
+ *  - seuls des indices SPÉCIFIQUES (mots du format, termes du jeu) peuvent désigner un format ;
+ *    l'image et la répartition des voix ne font que corroborer ou contredire (`scoreBlock`) ;
+ *  - jamais de fausse certitude : confiance plafonnée à 0,6 sur la transcription seule, 0,75 avec
+ *    une mesure qui corrobore, 0,9 avec deux ; un score faible ou trop proche du second, ou
+ *    l'absence d'indice spécifique ⇒ « indéterminé » ;
  *  - jamais un type unique imposé : l'enregistrement est découpé en blocs, lissés puis fusionnés
  *    en segments ; un stream varié est résumé « mixte ».
  */
@@ -24,16 +26,23 @@ import { normalizeForQuote } from '../analysis/text';
 import type { AnalysisSegment } from '../analysis/types';
 
 /** Version du détecteur : toute modification des règles change l'empreinte des détections. */
-export const CONTENT_DETECTOR_VERSION = 'content-v1';
+export const CONTENT_DETECTOR_VERSION = 'content-v2'; // v2 : l'image ne fait que corroborer
 /** Taille d'un bloc d'observation. Les changements de format sont situés à ce pas près. */
 export const CONTENT_BLOCK_MS = 60_000;
 /** Score minimal du meilleur type pour conclure. */
 export const CONTENT_MIN_SCORE = 0.35;
 /** Écart minimal avec le second type pour conclure. */
 export const CONTENT_MIN_MARGIN = 0.1;
+/**
+ * Indice spécifique minimal (expressions du format, termes du jeu) pour qu'un format puisse être
+ * retenu : environ une expression caractéristique toutes les deux minutes.
+ */
+export const CONTENT_MIN_SPECIFIC = 0.25;
 /** Confiance maximale quand seule la transcription soutient la décision. */
 export const TRANSCRIPT_ONLY_CAP = 0.6;
-/** Confiance maximale d'une détection automatique corroborée. */
+/** Confiance maximale avec UNE mesure qui corrobore (image OU répartition des voix). */
+export const SINGLE_CORROBORATION_CAP = 0.75;
+/** Confiance maximale avec deux mesures qui corroborent (image ET répartition des voix). */
 export const CORROBORATED_CAP = 0.9;
 /** Segment plus court : absorbé par ses voisins s'ils sont du même type, sinon douteux. */
 export const SHORT_SEGMENT_MS = 3 * 60_000;
@@ -220,46 +229,72 @@ export function blockFeatures(input: ContentDetectionInput): BlockFeatures[] {
 
 type Contribution = Record<ContentBasis, number>;
 
-/** Score de chaque type pour un bloc, avec la part de chaque source d'indices. */
-export function scoreBlock(f: BlockFeatures): Record<ContentType, Contribution> {
-  const gt = f.gameTerms ?? 0;
-  // « Pas de termes du jeu » n'est un indice que si le profil de jeu est spécifique.
-  const notGame = f.gameTerms === null ? 0 : 1 - gt;
-  const vHigh = f.visual ?? 0;
-  const vLow = f.visual === null ? 0 : 1 - f.visual;
-  const solo = f.creatorShare ?? 0;
-  const balance = f.balance ?? 0;
+/**
+ * Indices SPÉCIFIQUES d'un format (0..1) : ce qui désigne sémantiquement le format. Seuls les
+ * mots prononcés le peuvent ici : expressions caractéristiques du profil de contenu et, pour le
+ * gaming, termes d'un profil de jeu spécifique. L'activité de l'image et la répartition des voix
+ * ne désignent AUCUN format : elles ne font que corroborer (ou contredire) ces indices.
+ */
+export function specificEvidence(f: BlockFeatures): Record<ContentType, number> {
   const lx = f.lexicon;
   return {
-    gaming: {
-      transcription: 0.45 * gt + 0.2 * lx.gaming,
-      structure_audio: 0,
-      visuel: 0.35 * vHigh,
-    },
-    just_chatting: {
-      transcription: 0.3 * lx.just_chatting + 0.1 * notGame,
-      structure_audio: 0.15 * solo * (1 - balance),
-      visuel: 0.3 * vLow,
-    },
-    reaction: {
-      transcription: 0.4 * lx.reaction + 0.1 * f.expressive + 0.1 * notGame,
-      structure_audio: 0,
-      visuel: 0.3 * vHigh,
-    },
-    podcast: {
-      transcription: 0.3 * lx.podcast + 0.1 * notGame,
-      structure_audio: 0.35 * balance,
-      visuel: 0.25 * vLow,
-    },
-    irl: {
-      transcription: 0.45 * lx.irl + 0.1 * f.expressive,
-      structure_audio: 0,
-      visuel: 0.4 * vHigh * (f.gameTerms === null ? 0.75 : notGame),
-    },
+    gaming: Math.min(1, 0.6 * (f.gameTerms ?? 0) + 0.4 * lx.gaming),
+    just_chatting: lx.just_chatting,
+    reaction: lx.reaction,
+    podcast: lx.podcast,
+    irl: lx.irl,
   };
 }
 
-const total = (c: Contribution) => c.transcription + c.structure_audio + c.visuel;
+/**
+ * Score de chaque type pour un bloc, avec la part de chaque source d'indices.
+ *
+ *  - `transcription` : indices spécifiques (60 %), plus les interjections pour la réaction ;
+ *  - `structure_audio`, `visuel` : corroboration (≤ 0,2 chacune) quand la mesure va dans le sens
+ *    du format, contradiction (jusqu'à −0,15) quand elle va contre (image très animée pour un
+ *    format « plateau », image fixe pour un format « en mouvement »).
+ *
+ * Un format sans indice spécifique suffisant (`CONTENT_MIN_SPECIFIC`) ne reçoit AUCUNE
+ * corroboration et ne peut pas être retenu : une image animée ou deux voix équilibrées ne
+ * suffisent jamais à conclure.
+ */
+export function scoreBlock(f: BlockFeatures): Record<ContentType, Contribution> {
+  const spec = specificEvidence(f);
+  const measured = f.visual !== null;
+  const vHigh = f.visual ?? 0;
+  const vLow = measured ? 1 - vHigh : 0;
+  const solo = f.creatorShare ?? 0;
+  const balance = f.balance ?? 0;
+  const moving = 0.2 * vHigh - 0.15 * vLow; // jeu, vidéo regardée, extérieur
+  const still = 0.2 * vLow - 0.15 * vHigh; //  webcam, plateau
+  const raw: Record<ContentType, Contribution> = {
+    gaming: { transcription: 0.6 * spec.gaming, structure_audio: 0, visuel: moving },
+    just_chatting: {
+      transcription: 0.6 * spec.just_chatting,
+      structure_audio: 0.2 * solo * (1 - balance),
+      visuel: still,
+    },
+    reaction: {
+      transcription: 0.6 * spec.reaction + 0.1 * f.expressive,
+      structure_audio: 0,
+      visuel: moving,
+    },
+    podcast: { transcription: 0.6 * spec.podcast, structure_audio: 0.2 * balance, visuel: still },
+    irl: { transcription: 0.6 * spec.irl, structure_audio: 0, visuel: moving },
+  };
+  for (const t of CONTENT_TYPES) {
+    if (spec[t] < CONTENT_MIN_SPECIFIC) {
+      raw[t] = { transcription: 0.6 * spec[t], structure_audio: 0, visuel: 0 };
+    }
+  }
+  return raw;
+}
+
+const total = (c: Contribution) => Math.max(0, c.transcription + c.structure_audio + c.visuel);
+
+/** Mesures hors transcription qui vont dans le sens du format retenu. */
+const corroborations = (c: Contribution) =>
+  (c.structure_audio >= 0.05 ? 1 : 0) + (c.visuel >= 0.05 ? 1 : 0);
 
 interface BlockDecision {
   startMs: number;
@@ -273,6 +308,7 @@ interface BlockDecision {
 
 function decideBlock(f: BlockFeatures): BlockDecision {
   const scores = scoreBlock(f);
+  const spec = specificEvidence(f);
   const candidates = CONTENT_TYPES.map((type) => ({ type, score: round(total(scores[type])) }))
     .filter((c) => c.score > 0)
     .sort((a, b) => b.score - a.score || a.type.localeCompare(b.type));
@@ -287,16 +323,18 @@ function decideBlock(f: BlockFeatures): BlockDecision {
   // Ni parole ni image mesurée : rien sur quoi s'appuyer.
   if (f.speechRatio < 0.1 && f.visual === null) return unknown('peu de parole, image non mesurée');
   const best = candidates[0];
-  if (!best || best.score < CONTENT_MIN_SCORE) return unknown('indices insuffisants');
+  if (!best || spec[best.type] < CONTENT_MIN_SPECIFIC) {
+    return unknown('aucun indice propre à un format (image et voix ne suffisent pas)');
+  }
+  if (best.score < CONTENT_MIN_SCORE) return unknown('indices insuffisants');
   const margin = round(best.score - (candidates[1]?.score ?? 0));
   if (margin < CONTENT_MIN_MARGIN) {
     return unknown(`indices trop proches (${candidates[0]!.type} / ${candidates[1]!.type})`);
   }
   const c = scores[best.type];
   const basis = (['transcription', 'structure_audio', 'visuel'] as const).filter((k) => c[k] > 0);
-  // Corroboration : au moins un tiers du score vient d'une mesure hors transcription.
-  const corroborated = c.structure_audio + c.visuel >= total(c) / 3;
-  const cap = corroborated ? CORROBORATED_CAP : TRANSCRIPT_ONLY_CAP;
+  // Plafond selon la corroboration : jamais une certitude tirée d'une simple activité d'image.
+  const cap = [TRANSCRIPT_ONLY_CAP, SINGLE_CORROBORATION_CAP, CORROBORATED_CAP][corroborations(c)]!;
   const confidence = round(Math.min(cap, 0.4 + margin + (best.score - CONTENT_MIN_SCORE)), 2);
   return { ...base, type: best.type, confidence, basis };
 }

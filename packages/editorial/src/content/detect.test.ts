@@ -9,6 +9,7 @@ import { loadContentProfiles } from '../profiles';
 import {
   CONTENT_BLOCK_MS,
   CORROBORATED_CAP,
+  SINGLE_CORROBORATION_CAP,
   TRANSCRIPT_ONLY_CAP,
   detectContentTypes,
   summarizeContent,
@@ -273,14 +274,104 @@ describe('classifications incertaines : ne pas conclure plutôt que se tromper',
     const visual = input.visual!.map((v) => ({ ...v, score: 15 }));
     const d = detectContentTypes({ ...input, visual, gameTermsMeaningful: false });
     expect(d.segments.map((s) => s.type)).toEqual(['unknown']);
-    expect(d.segments[0]!.candidates.length).toBeGreaterThan(1);
+    expect(d.segments[0]!.reason).toMatch(/aucun indice propre/u);
   });
 
-  it('transcription seule : confiance plafonnée, limite annoncée', () => {
+  describe('contre-épreuves : l’activité de l’image ne suffit JAMAIS à conclure', () => {
+    /** Image saturée d'activité (au-delà de l'échelle), aucun mot de format. */
+    const animated = (
+      input: ReturnType<typeof build>,
+      opts: { gameTermsMeaningful?: boolean } = {},
+    ) => ({
+      ...input,
+      visual: input.visual!.map((v) => ({ ...v, score: 60 })),
+      gameTermsMeaningful: opts.gameTermsMeaningful ?? true,
+    });
+
+    it('monologue avec exclamations et rires transcrits : ni Réaction, ni IRL, ni Gaming', () => {
+      const segments: AnalysisSegment[] = [];
+      for (let m = 0; m < 8; m++)
+        segments.push(
+          ...minute(
+            m * MIN,
+            ['creator'],
+            ['oh la la !', 'mdr non mais attends', 'sérieux ?!', 'ptdr'],
+          ),
+        );
+      const input = {
+        ...build([{ type: 'monologue', minutes: 8 }]),
+        segments,
+        signals: computeSignals({
+          durationMs: 8 * MIN,
+          segments,
+          energy: [],
+          gameTerms: GAME_TERMS,
+        }),
+      };
+      for (const meaningful of [true, false]) {
+        const d = detectContentTypes(animated(input, { gameTermsMeaningful: meaningful }));
+        expect(d.segments.map((s) => s.type)).toEqual(['unknown']);
+        expect(d.summary.kind).toBe('unknown');
+      }
+    });
+
+    it('échange équilibré à deux voix, image animée, aucun mot de format : ni Gaming ni Podcast', () => {
+      const segments: AnalysisSegment[] = [];
+      for (let m = 0; m < 8; m++)
+        segments.push(
+          ...minute(
+            m * MIN,
+            ['creator', 'teammates'],
+            ['bon alors on fait quoi', 'je sais pas trop', 'vas-y toi', 'd’accord'],
+          ),
+        );
+      const input = {
+        ...build([{ type: 'monologue', minutes: 8 }]),
+        segments,
+        signals: computeSignals({
+          durationMs: 8 * MIN,
+          segments,
+          energy: [],
+          gameTerms: GAME_TERMS,
+        }),
+      };
+      const d = detectContentTypes(animated(input));
+      expect(d.segments.map((s) => s.type)).toEqual(['unknown']);
+    });
+
+    it('image animée et voix seule (caméra qui bouge) : jamais IRL sans mots d’extérieur', () => {
+      const d = detectContentTypes(animated(build([{ type: 'monologue', minutes: 8 }])));
+      expect(d.segments.every((s) => s.type === 'unknown')).toBe(true);
+    });
+
+    it('l’image ne fait que corroborer : même transcription, confiance bornée, contradiction pénalisée', () => {
+      const words = build([{ type: 'reaction', minutes: 10 }]);
+      const none = detectContentTypes({ ...words, visual: null });
+      const moving = detectContentTypes(animated(words));
+      const still = detectContentTypes({
+        ...words,
+        visual: words.visual!.map((v) => ({ ...v, score: 0 })),
+      });
+      const conf = (d: ReturnType<typeof detectContentTypes>) =>
+        Math.max(...d.segments.filter((s) => s.type === 'reaction').map((s) => s.confidence), 0);
+      expect(conf(none)).toBeLessThanOrEqual(TRANSCRIPT_ONLY_CAP);
+      // Une seule mesure corrobore (l'image) : jamais au-delà du plafond correspondant.
+      expect(conf(moving)).toBeLessThanOrEqual(SINGLE_CORROBORATION_CAP);
+      expect(conf(moving)).toBeGreaterThanOrEqual(conf(none));
+      // Image fixe : contredit une réaction ⇒ moins sûre qu'avec l'image animée.
+      expect(conf(still)).toBeLessThan(conf(moving));
+    });
+  });
+
+  it('transcription seule : confiance plafonnée selon ce qui corrobore, limite annoncée', () => {
     for (const type of ['just_chatting', 'reaction', 'gaming'] as const) {
       const d = detectContentTypes(build([{ type, minutes: 10 }], { visual: false }));
       for (const s of d.segments) {
-        expect(s.confidence).toBeLessThanOrEqual(TRANSCRIPT_ONLY_CAP);
+        expect(s.basis).not.toContain('visuel');
+        const cap = s.basis.includes('structure_audio')
+          ? SINGLE_CORROBORATION_CAP
+          : TRANSCRIPT_ONLY_CAP;
+        expect(s.confidence).toBeLessThanOrEqual(cap);
         if (s.type !== 'unknown') expect(s.type).toBe(type);
       }
       expect(d.limits.join(' ')).toMatch(/non mesurée/u);
