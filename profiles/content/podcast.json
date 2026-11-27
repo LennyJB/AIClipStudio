@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "podcast",
+  "displayName": "Podcast / Discussion",
+  "context": "Discussion à plusieurs (invités, co-animateurs) : échanges longs, questions et réponses, débats. L'image change peu.",
+  "analysisHints": [
+    "Les bons moments sont des échanges complets : une question, une réponse marquante, une repartie, un désaccord amusant",
+    "Une mise en place plus longue est souvent nécessaire : vérifier que le clip reste compréhensible seul"
+  ],
+  "detectionCues": [
+    "le podcast",
+    "ce podcast",
+    "l'épisode",
+    "cet épisode",
+    "notre invité",
+    "notre invitée",
+    "mon invité",
+    "bienvenue à",
+    "merci d'être là",
+    "question suivante",
+    "ton parcours",
+    "tu peux te présenter",
+    "on en débat",
+    "pour vous auditeurs"
+  ],
+  "localWeights": {
+    "exchange": 0.2,
+    "answeredQuestion": 0.25,
+    "simultaneous": 0.15,
+    "laughter": 0.2,
+    "interjection": 0.1,
+    "density": 0.05,
+    "loudness": 0.05,
+    "gameTerm": 0
+  }
+}

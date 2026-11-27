@@ -17,3 +17,4 @@ export * from './proxy';
 export * from './thumbnails';
 export * from './assets';
 export * from './scan';
+export * from './visual';

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "id": "just_chatting",
+  "displayName": "Just Chatting",
+  "context": "Le créateur discute face caméra avec son chat : il lit et répond aux messages, raconte des anecdotes, donne son avis. Souvent une seule voix, image peu changeante.",
+  "analysisHints": [
+    "Les bons moments sont des anecdotes complètes, des réponses drôles ou inattendues au chat, des avis tranchés bien formulés",
+    "La lecture d'un message du chat fait partie de la mise en place : il faut l'inclure pour que la réponse soit compréhensible",
+    "Un monologue calme peut être très drôle : ne pas exiger d'exclamations"
+  ],
+  "detectionCues": [
+    "le chat",
+    "dans le chat",
+    "dites-moi",
+    "dites moi",
+    "dans les commentaires",
+    "merci pour le sub",
+    "merci pour le follow",
+    "merci pour les subs",
+    "merci pour le prime",
+    "merci pour le raid",
+    "les abonnés",
+    "abonnez-vous",
+    "vous en pensez quoi",
+    "je lis vos messages",
+    "quelqu'un demande",
+    "question du chat",
+    "bonne question"
+  ],
+  "localWeights": {
+    "exchange": 0.1,
+    "answeredQuestion": 0.05,
+    "simultaneous": 0.05,
+    "laughter": 0.25,
+    "interjection": 0.2,
+    "density": 0.2,
+    "loudness": 0.15,
+    "gameTerm": 0
+  }
+}

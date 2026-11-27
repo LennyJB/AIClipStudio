@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "irl",
+  "displayName": "IRL",
+  "context": "Le créateur filme en extérieur ou en déplacement (rue, transports, événements, restaurant) et interagit avec son environnement et des passants.",
+  "analysisHints": [
+    "Les bons moments sont des situations inattendues, des interactions spontanées, des réactions à ce qui arrive",
+    "Attention aux personnes filmées : la confidentialité des tiers prime (masques, pseudonymes)"
+  ],
+  "detectionCues": [
+    "dehors",
+    "dans la rue",
+    "on marche",
+    "on arrive",
+    "on est arrivés",
+    "le métro",
+    "le train",
+    "à la gare",
+    "le restaurant",
+    "le resto",
+    "on est à",
+    "regardez où on est",
+    "il fait froid",
+    "il fait chaud",
+    "il pleut",
+    "les gens",
+    "le quartier"
+  ],
+  "localWeights": {
+    "exchange": 0.15,
+    "answeredQuestion": 0.1,
+    "simultaneous": 0.1,
+    "laughter": 0.2,
+    "interjection": 0.2,
+    "density": 0.05,
+    "loudness": 0.2,
+    "gameTerm": 0
+  }
+}

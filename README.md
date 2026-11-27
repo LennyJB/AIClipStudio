@@ -24,6 +24,7 @@ commencée. Voir la [feuille de route](#feuille-de-route).
 - [Configuration](#configuration)
 - [Importer un enregistrement](#importer-un-enregistrement)
 - [Transcription](#transcription)
+- [Types de contenu](#types-de-contenu-étape-9)
 - [Éditeur vidéo et bibliothèque de médias](#éditeur-vidéo-et-bibliothèque-de-médias-étape-7)
 - [Architecture](#architecture)
 - [Sécurité](#sécurité)
@@ -342,6 +343,23 @@ npm run transcribe -- "D:\Enregistrements\stream.mkv" --game valorant
 Interface : `npm run dev`, puis « Enregistrements », choisir le fichier, « Transcrire ».
 
 ---
+
+## Types de contenu (étape 9)
+
+Le panneau **Types de contenu** détecte localement les formats Gaming, Just Chatting, Réaction,
+Podcast / Discussion et IRL. Il découpe l'enregistrement en segments horodatés, chacun avec une
+confiance, et résume un stream varié comme **Mixte**.
+
+- **Aucun service externe.** La détection s'appuie sur la transcription, la répartition des voix
+  et une mesure FFmpeg de l'activité de l'image. Il n'y a pas de reconnaissance d'image.
+- **Elle peut ne pas conclure** (« indéterminé »). Une décision fondée sur la seule
+  transcription garde une confiance plafonnée.
+- **Le créateur corrige** : type, coupe, fusion. Sa correction l'emporte toujours.
+- **L'analyse éditoriale s'adapte** au format de chaque passage. Le repérage local utilise la
+  pondération du format, et Claude reçoit le format comme contexte, jamais comme preuve.
+- **Un enregistrement entièrement gaming est analysé exactement comme avant.**
+
+Guide : [`docs/types-de-contenu.md`](docs/types-de-contenu.md).
 
 ## Analyse éditoriale (étape 4)
 

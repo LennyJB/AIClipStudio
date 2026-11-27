@@ -2,9 +2,13 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import {
   AppError,
+  CONTENT_TYPES,
+  ContentProfileSchema,
   CreatorProfileSchema,
   FramingProfileSchema,
   GameProfileSchema,
+  type ContentProfile,
+  type ContentType,
   type CreatorProfile,
   type FramingProfile,
   type GameProfile,
@@ -98,6 +102,31 @@ export async function listFramingProfiles(profilesDir: string): Promise<FramingP
     .map((f) => f.slice(0, -'.json'.length))
     .sort();
   return Promise.all(ids.map((id) => loadFramingProfile(profilesDir, id)));
+}
+
+/** Nom de fichier d'un type de contenu (kebab-case) : `just_chatting` → `just-chatting.json`. */
+export const contentProfileFile = (type: ContentType) => `${type.replace(/_/gu, '-')}.json`;
+
+/**
+ * Profils des types de contenu (profiles/content/). Tous les types sont obligatoires : un
+ * fichier manquant ou invalide est une erreur explicite (jamais un format silencieusement ignoré).
+ */
+export async function loadContentProfiles(
+  profilesDir: string,
+): Promise<Record<ContentType, ContentProfile>> {
+  const out = {} as Record<ContentType, ContentProfile>;
+  for (const type of CONTENT_TYPES) {
+    const filePath = path.join(profilesDir, 'content', contentProfileFile(type));
+    const profile = parseWith(ContentProfileSchema, await readJson(filePath), filePath);
+    if (profile.id !== type) {
+      throw new AppError(
+        'PROFILE_INVALID',
+        `L'id "${profile.id}" ne correspond pas au fichier ${contentProfileFile(type)}`,
+      );
+    }
+    out[type] = profile;
+  }
+  return out;
 }
 
 /** Empreinte d'un profil validé : une modification du fichier invalide sa validation. */

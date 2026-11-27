@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "gaming",
+  "displayName": "Gaming",
+  "context": "Le créateur joue à un jeu vidéo et le commente, souvent avec des coéquipiers en vocal. Le profil de jeu de l'enregistrement s'applique à ces passages.",
+  "analysisHints": [
+    "Le gameplay ne compte que s'il crée une situation humaine intéressante (malentendu, réaction, échange)"
+  ],
+  "detectionCues": [
+    "la partie",
+    "une partie",
+    "la game",
+    "la manche",
+    "le boss",
+    "le niveau",
+    "je respawn",
+    "je suis mort",
+    "il m'a tué",
+    "gg",
+    "on push",
+    "mon perso",
+    "la map",
+    "l'inventaire",
+    "ma vie",
+    "je loot"
+  ]
+}

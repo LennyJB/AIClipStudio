@@ -13,6 +13,7 @@ import { ReviewService } from './review/service';
 import { ExportAudioService } from './clips/export-audio';
 import { ClipProjectService } from './clips/service';
 import { RenderService } from './clips/render-service';
+import { ContentTypeService } from './content/service';
 
 export interface Services {
   runner: JobRunner;
@@ -28,6 +29,8 @@ export interface Services {
   editorMedia: EditorMediaService;
   /** Bibliothèque de médias (étape 7f) : images fixes et effets sonores importés. */
   assets: AssetService;
+  /** Types de contenu et segmentation temporelle (étape 9). */
+  contentTypes: ContentTypeService;
 }
 
 export interface ServiceOptions {
@@ -54,6 +57,7 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
   const derivatives = new DerivativeService(ctx, () => runner);
   const transcriptions = new TranscriptionService(ctx, () => runner, derivatives);
   const analysis = new AnalysisService(ctx, () => runner, derivatives, modelProvider);
+  const contentTypes = new ContentTypeService(ctx, () => runner, analysis, derivatives);
   const review = new ReviewService(ctx, transcriptions, derivatives);
   const exportAudio = new ExportAudioService(ctx);
   const clips = new ClipProjectService(ctx, review, analysis, exportAudio);
@@ -75,6 +79,7 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
       ...transcriptions.handlers(),
       ...analysis.handlers(),
       ...renders.handlers(),
+      ...contentTypes.handlers(),
     },
     {
       onSucceeded: async () => {
@@ -97,6 +102,7 @@ export function createServices(ctx: AppContext, opts: ServiceOptions = {}): Serv
     renders,
     editorMedia,
     assets,
+    contentTypes,
   };
 }
 

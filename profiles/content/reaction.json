@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "id": "reaction",
+  "displayName": "Réaction",
+  "context": "Le créateur regarde une vidéo, un extrait ou un autre stream et réagit en direct : il commente, met en pause, reprend. L'image montre le contenu regardé.",
+  "analysisHints": [
+    "Le moment intéressant est la RÉACTION du créateur (surprise, rire, commentaire drôle), pas le contenu regardé lui-même",
+    "Le contenu regardé peut être protégé par le droit d'auteur : privilégier les passages où la réaction prime",
+    "Inclure juste assez de ce qui est regardé pour comprendre la réaction"
+  ],
+  "detectionCues": [
+    "la vidéo",
+    "cette vidéo",
+    "on regarde",
+    "on va regarder",
+    "je regarde",
+    "regardez ça",
+    "je mets pause",
+    "je mets en pause",
+    "je relance",
+    "je remets",
+    "on reprend",
+    "il a dit quoi",
+    "elle a dit quoi",
+    "le youtubeur",
+    "le clip",
+    "réaction",
+    "je réagis"
+  ],
+  "localWeights": {
+    "exchange": 0.1,
+    "answeredQuestion": 0.05,
+    "simultaneous": 0.05,
+    "laughter": 0.25,
+    "interjection": 0.3,
+    "density": 0.05,
+    "loudness": 0.2,
+    "gameTerm": 0
+  }
+}

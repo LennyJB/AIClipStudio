@@ -947,6 +947,39 @@ export const MIGRATIONS: readonly Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'media_assets : fichier d’un média immuable'); END;
     `,
   },
+  {
+    // Étape 9 : types de contenu et segmentation temporelle (docs/types-de-contenu.md).
+    // Détections automatiques et corrections du créateur : deux journaux en AJOUT SEUL (jamais
+    // modifiés). Segmentation effective = dernière correction (`segments_json` NULL : retour à la
+    // détection automatique), sinon dernière détection. La correction l'emporte toujours.
+    version: 11,
+    name: 'content_types',
+    sql: `
+      CREATE TABLE content_detections (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        recording_id      TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        detector_version  TEXT NOT NULL CHECK (length(detector_version) BETWEEN 1 AND 40),
+        input_key         TEXT NOT NULL CHECK (length(input_key) = 64),
+        detection_json    TEXT NOT NULL CHECK (json_valid(detection_json)),
+        created_at        TEXT NOT NULL DEFAULT (${NOW})
+      );
+      CREATE INDEX content_detections_recording ON content_detections(recording_id, id);
+      CREATE TRIGGER content_detections_append_only BEFORE UPDATE ON content_detections
+      BEGIN SELECT RAISE(ABORT, 'content_detections : journal en ajout seul'); END;
+
+      CREATE TABLE content_corrections (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        recording_id          TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+        based_on_detection_id INTEGER REFERENCES content_detections(id),
+        segments_json         TEXT CHECK (segments_json IS NULL OR json_valid(segments_json)),
+        request_id            TEXT NOT NULL UNIQUE CHECK (length(request_id) BETWEEN 8 AND 100),
+        created_at            TEXT NOT NULL DEFAULT (${NOW})
+      );
+      CREATE INDEX content_corrections_recording ON content_corrections(recording_id, id);
+      CREATE TRIGGER content_corrections_append_only BEFORE UPDATE ON content_corrections
+      BEGIN SELECT RAISE(ABORT, 'content_corrections : journal en ajout seul'); END;
+    `,
+  },
 ];
 
 export function openDatabase(

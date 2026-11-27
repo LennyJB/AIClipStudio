@@ -844,3 +844,75 @@ export async function fetchFrame(url: string, signal: AbortSignal): Promise<Blob
   }
   return await res.blob();
 }
+
+/* ------------------------------------------------------------------ */
+/* Étape 9 : types de contenu et segmentation temporelle               */
+/* ------------------------------------------------------------------ */
+
+export type SegmentContentType =
+  'gaming' | 'just_chatting' | 'reaction' | 'podcast' | 'irl' | 'unknown';
+
+export interface ContentSegment {
+  startMs: number;
+  endMs: number;
+  type: SegmentContentType;
+  confidence: number;
+  source: 'auto' | 'manual';
+}
+
+export interface DetectedContentSegment extends ContentSegment {
+  basis: ('transcription' | 'structure_audio' | 'visuel')[];
+  candidates: { type: Exclude<SegmentContentType, 'unknown'>; score: number }[];
+  reason?: string;
+}
+
+export interface ContentSummary {
+  kind: Exclude<SegmentContentType, 'unknown'> | 'mixed' | 'unknown';
+  types: { type: Exclude<SegmentContentType, 'unknown'>; durationMs: number; share: number }[];
+  unknownShare: number;
+}
+
+export interface ContentTypesView {
+  recordingId: string;
+  durationMs: number | null;
+  detection: {
+    id: number;
+    createdAt: string;
+    stale: boolean | null;
+    detection: {
+      durationMs: number;
+      segments: DetectedContentSegment[];
+      summary: ContentSummary;
+      limits: string[];
+    };
+  } | null;
+  correction: { id: number; createdAt: string; segments: ContentSegment[] | null } | null;
+  effective: {
+    source: 'manual' | 'auto';
+    segments: ContentSegment[];
+    summary: ContentSummary;
+  } | null;
+  /** Ce que l'analyse éditoriale fera de la segmentation (même règle que le serveur). */
+  analysis: 'none' | 'stale_detection' | 'not_relevant' | 'used' | null;
+  job: Job | null;
+}
+
+export const contentApi = {
+  view: (recordingId: string) =>
+    getJson<ContentTypesView>(`/api/recordings/${recordingId}/content-types`),
+  detect: (recordingId: string, force = false) =>
+    getJson<{ status: 'ready' | 'pending'; job: Job | null; view: ContentTypesView }>(
+      `/api/recordings/${recordingId}/content-types/detect`,
+      send('POST', { force }),
+    ),
+  /** `segments: null` : revenir à la détection automatique. */
+  correct: (
+    recordingId: string,
+    requestId: string,
+    segments: { startMs: number; endMs: number; type: SegmentContentType }[] | null,
+  ) =>
+    getJson<ContentTypesView>(
+      `/api/recordings/${recordingId}/content-types`,
+      send('PUT', { requestId, segments }),
+    ),
+};
