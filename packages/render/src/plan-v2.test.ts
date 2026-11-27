@@ -20,6 +20,7 @@ import {
   buildRenderPlanV2,
   RenderPlanError,
   unsupportedRenderFeatures,
+  type PlanAssetInput,
   type RenderPlanV2Input,
 } from './plan';
 
@@ -171,83 +172,141 @@ describe('graphe multi-segments', () => {
   });
 });
 
-describe('fonctions qui dépendent de la bibliothèque de médias (PR 7f) : refus explicite', () => {
-  const d = doc();
-  const cases: [string, ClipProjectV2, RegExp][] = [
-    [
-      'calque image (bibliothèque de médias, PR 7f)',
+describe('bibliothèque de médias (PR 7f) : calques image et effets sonores', () => {
+  const d = doc(EDIT);
+  const IMG = 'b'.repeat(64);
+  const SND = 'a'.repeat(64);
+  const withMedia: ClipProjectV2 = {
+    ...d,
+    overlays: [
       {
-        ...d,
-        overlays: [
-          {
-            id: 'o',
-            kind: 'image',
-            assetId: 'b'.repeat(64),
-            text: null,
-            timing: { anchor: 'edit', from: 'start', offsetMs: 0, durMs: 1000 },
-            frame: { x: 0, y: 0, w: 0.5, h: 0.1 },
-            opacity: 1,
-            z: 0,
-          },
-        ],
+        id: 'o',
+        kind: 'meme',
+        assetId: IMG,
+        text: null,
+        timing: { anchor: 'edit', from: 'start', offsetMs: 1000, durMs: 2000 },
+        frame: { x: 0.25, y: 0.5, w: 0.5, h: 0.1 },
+        opacity: 0.5,
+        z: 0,
       },
-      /calques image/u,
     ],
-    [
-      'effet sonore',
-      {
-        ...d,
-        audio: {
-          ...d.audio,
-          sfx: [
-            {
-              id: 's',
-              assetId: 'a'.repeat(64),
-              timing: { anchor: 'edit', from: 'start', offsetMs: 0, durMs: 500 },
-              gainDb: 0,
-            },
-          ],
-        },
-      },
-      /effets sonores/u,
-    ],
-  ];
-  for (const [name, bad, re] of cases) {
-    it(name, () => {
-      expect(unsupportedRenderFeatures(bad).join(' ')).toMatch(re);
-      expect(() => buildRenderPlanV2(input(bad))).toThrow(
-        expect.objectContaining({ code: 'RENDER_FEATURE_UNSUPPORTED' }),
-      );
-      expect(() => buildFramePlan(input(bad), 1000)).toThrow(RenderPlanError);
-    });
-  }
-
-  it('effet inactif (désactivé, ou effet de mouvement en mode fidèle) : aucun refus', () => {
-    const off: ClipProjectV2 = {
-      ...d,
-      effects: [
+    audio: {
+      ...d.audio,
+      sfx: [
         {
-          id: 'z',
-          type: 'zoom',
-          params: { factor: 1.5 },
-          region: { x: 0, y: 0, w: 0.5, h: 0.5 },
-          timing: { anchor: 'source', srcStartMs: 115_000, srcEndMs: 116_000 },
-          enabled: true,
-          origin: 'creator',
-          reason: '',
-          signals: {},
+          id: 's',
+          assetId: SND,
+          timing: { anchor: 'edit', from: 'start', offsetMs: 500, durMs: 5000 },
+          gainDb: -3,
         },
       ],
-    };
-    expect(off.mode).toBe('fidele');
-    expect(unsupportedRenderFeatures(off)).toEqual([]);
-    expect(
-      unsupportedRenderFeatures({
-        ...off,
-        effects: [{ ...off.effects[0]!, enabled: false }],
-        mode: 'enrichi',
+    },
+  };
+  const assets: Record<string, PlanAssetInput> = {
+    [IMG]: {
+      kind: 'image' as const,
+      file: `asset-${IMG}.png`,
+      sha256: 'c'.repeat(64),
+      durationMs: null,
+    },
+    [SND]: {
+      kind: 'audio' as const,
+      file: `asset-${SND}.wav`,
+      sha256: 'd'.repeat(64),
+      durationMs: 800,
+    },
+  };
+
+  it('média non fourni (absent de la bibliothèque ou manquant sur le disque) : refus explicite ASSET_MISSING', () => {
+    for (const a of [{}, { [IMG]: assets[IMG]! }, { [SND]: assets[SND]! }]) {
+      expect(() => buildRenderPlanV2({ ...input(withMedia), assets: a })).toThrow(
+        expect.objectContaining({ code: 'ASSET_MISSING' }),
+      );
+      expect(() => buildFramePlan({ ...input(withMedia), assets: a }, 1500)).toThrow(
+        RenderPlanError,
+      );
+    }
+    // Mauvais type (un son à la place d'une image) : refusé aussi.
+    expect(() =>
+      buildRenderPlanV2({
+        ...input(withMedia),
+        assets: { ...assets, [IMG]: { ...assets[SND]!, file: `asset-${IMG}.wav` } },
       }),
-    ).toEqual([]);
+    ).toThrow(expect.objectContaining({ code: 'ASSET_MISSING' }));
+    expect(unsupportedRenderFeatures(withMedia)).toEqual([]);
+  });
+
+  it('nom de fichier d’un média : forme fixe uniquement (aucun chemin dans le graphe ni les arguments)', () => {
+    for (const file of ['../x.png', '/etc/passwd', `asset-${IMG}.png;rm`, 'a b.png']) {
+      expect(() =>
+        buildRenderPlanV2({
+          ...input(withMedia),
+          assets: { ...assets, [IMG]: { ...assets[IMG]!, file } },
+        }),
+      ).toThrow(RangeError);
+    }
+  });
+
+  it('plan : entrées des médias après la source, calque posé sur l’image composée (cadre arrondi, opacité, plage), son placé et mixé avant la normalisation', () => {
+    const pl = buildRenderPlanV2({ ...input(withMedia), assets });
+    const n = pl.inputs!.length;
+    expect(pl.assets!.map((a) => [a.id, a.kind, a.file])).toEqual(
+      [
+        [SND, 'audio', `asset-${SND}.wav`],
+        [IMG, 'image', `asset-${IMG}.png`],
+      ].sort((x, y) => (x[0]! < y[0]! ? -1 : 1)),
+    );
+    const imgInput = n + pl.assets!.findIndex((a) => a.id === IMG);
+    const sndInput = n + pl.assets!.findIndex((a) => a.id === SND);
+    const g = pl.filterComplex;
+    expect(g).toContain(`[${imgInput}:v]format=rgba[im${imgInput}_0]`);
+    expect(g).toContain(`scale=540:192:flags=lanczos,colorchannelmixer=aa=0.5[ovi0]`);
+    expect(g).toContain(
+      `overlay=x=270:y=960:format=auto:eof_action=repeat:enable='gte(t,1)*lt(t,3)'[ov0]`,
+    );
+    // Calques après la composition, textes après les calques.
+    expect(g.indexOf('[ovbase]')).toBeLessThan(g.indexOf('[ov0]'));
+    // Son : 800 ms au plus (durée du son), placé à 0,5 s, gain −3 dB, silence jusqu'à la fin.
+    expect(g).toContain(
+      `[sx${sndInput}_0]atrim=start_sample=0:end_sample=38400,asetpts=PTS-STARTPTS,volume=-3dB,adelay=delays=24000S:all=1,apad,atrim=end_sample=${22_500 * 48}[fx0]`,
+    );
+    expect(g).toMatch(/\[fx0\]amix=inputs=\d+/u);
+    expect(g.indexOf('[fx0]amix')).toBeLessThan(g.indexOf('loudnorm'));
+    expect(pl.media!.sfx).toEqual([
+      { id: 's', assetId: SND, editStartMs: 500, editEndMs: 1300, offsetMs: 0, gainDb: -3 },
+    ]);
+  });
+
+  it('export sans son : aucun effet sonore ; calques inchangés', () => {
+    const silent = { ...withMedia, audio: { ...withMedia.audio, silent: true } };
+    const pl = buildRenderPlanV2({ ...input(silent), assets: { [IMG]: assets[IMG]! } });
+    expect(pl.assets!.map((a) => a.kind)).toEqual(['image']);
+    expect(pl.filterComplex).not.toContain('adelay');
+  });
+
+  it('image exacte : seules les images visibles à l’instant sont des entrées', () => {
+    expect(buildFramePlan({ ...input(withMedia), assets }, 500).assets).toEqual([]);
+    const f = buildFramePlan({ ...input(withMedia), assets }, 1500);
+    expect(f.assets.map((a) => a.id)).toEqual([IMG]);
+    expect(f.graph).toContain(`[1:v]format=rgba,setpts=`);
+    // Pendant un vide : aucune entrée source, l'image est l'entrée 0.
+    const gap = buildFramePlan(
+      {
+        ...input({
+          ...withMedia,
+          overlays: [
+            {
+              ...withMedia.overlays[0]!,
+              timing: { anchor: 'edit', from: 'start', offsetMs: 11_600, durMs: 500 },
+            },
+          ],
+        }),
+        assets,
+      },
+      11_700,
+    );
+    expect(gap.input).toBeNull();
+    expect(gap.graph).toContain('[0:v]format=rgba');
   });
 });
 

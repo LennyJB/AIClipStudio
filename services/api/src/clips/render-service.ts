@@ -54,6 +54,7 @@ import {
   type ClipProject,
   type ClipProjectV2,
 } from '@acs/timeline';
+import type { AssetService } from '../assets/service';
 import type { AppContext } from '../context';
 import type { JobHandler, JobHandlerContext, JobRunner } from '../jobs/runner';
 import { ProposalRepository } from '../analysis/proposals';
@@ -162,7 +163,7 @@ interface Built {
 
 /** Points d'arrêt injectables (tests de concurrence et de récupération uniquement). */
 export interface RenderTestHooks {
-  beforePublishLock?: (renderId: string) => void | Promise<void>;
+  beforePublishLock?: ((renderId: string) => void | Promise<void>) | undefined;
   /** Récupération : après le recalcul du plan, juste avant la transaction de publication. */
   beforeRecoveryLock?: (renderId: string) => void | Promise<void>;
   afterRename?: (renderId: string) => void;
@@ -184,6 +185,7 @@ export class RenderService {
     private readonly clips: ClipProjectService,
     private readonly exportAudio: ExportAudioService,
     private readonly runnerRef: () => JobRunner,
+    private readonly assets: AssetService,
   ) {
     this.recordings = new RecordingRepository(ctx.db);
     this.proposals = new ProposalRepository(ctx.db);
@@ -276,6 +278,8 @@ export class RenderService {
       overlayTexts: Object.fromEntries(
         doc.overlays.filter((o) => o.text !== null).map((o) => [o.id, pseudonymize(o.text!).text]),
       ),
+      // Bibliothèque : médias présents (copiés et revérifiés juste avant FFmpeg).
+      assets: await this.assets.planInputs(doc),
       probeBytes: manifest.probeBytes,
     };
     let plan: RenderPlan;
@@ -498,6 +502,9 @@ export class RenderService {
       }
       await mkdir(work, { recursive: true });
       await mkdir(staging, { recursive: true });
+      // Médias de la bibliothèque : COPIÉS dans le dossier de travail et revérifiés (empreinte).
+      // Leur suppression ou altération pendant le rendu est sans effet sur celui-ci.
+      await this.assets.stageForRender(built.doc, work);
       const part = path.join(staging, 'clip.mp4.part');
       await runRender({
         ffmpegPath: this.ctx.config.tools.ffmpeg,
@@ -1034,6 +1041,7 @@ export class RenderService {
       const built = await this.build(projectId, 'preview');
       if (ctrl.signal.aborted) throw new AppError('CANCELLED', 'Image remplacée ou abandonnée');
       await mkdir(work, { recursive: true });
+      await this.assets.stageForRender(built.doc, work);
       const out = path.join(work, 'image.jpg');
       await this.hooks.beforeFrameProcess?.(projectId, ctrl.signal);
       await runFrame({

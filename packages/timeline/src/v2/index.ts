@@ -13,3 +13,4 @@ export * from './effects';
 export * from './text';
 export * from './v1-compat';
 export * from './warnings';
+export * from './media';

@@ -17,6 +17,7 @@ const LOCKED: Record<number, string> = {
   7: 'e615ac299ce60f203db15ab54b4526a09e9ce66d9329846e72f75b3f4b58469a',
   8: '6431b44629b6a619e4a56d6f5ca309675384964cc7840d23182e501c36dac6e9',
   9: 'e52c479056bd3ff436dca6b21d70c63c48610d7f5a20199d50f8c3aafbfb8c09',
+  10: 'b839767d2eacb97262e00532e8313599ef5b8de434bdf74a86a01bc161bac557',
 };
 
 const fingerprint = (m: (typeof MIGRATIONS)[number]) =>

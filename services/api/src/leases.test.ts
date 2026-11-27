@@ -63,7 +63,7 @@ const expireAll = (db: Db) =>
 describe('baux sur les dérivés', () => {
   it('migration 9 : appliquée sur une base v8 ; contraintes ; bail possible sur un média pas encore produit', () => {
     const db = openDatabase(':memory:', MIGRATIONS.slice(0, 8));
-    expect(migrate(db, MIGRATIONS)).toEqual([9]);
+    expect(migrate(db, MIGRATIONS.slice(0, 9))).toEqual([9]);
     const ins = db.prepare(
       'INSERT INTO derivative_leases (cache_key, holder, expires_at) VALUES (?, ?, ?)',
     );

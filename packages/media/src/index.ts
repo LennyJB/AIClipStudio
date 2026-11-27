@@ -15,3 +15,4 @@ export * from './waveform';
 export * from './integrity';
 export * from './proxy';
 export * from './thumbnails';
+export * from './assets';

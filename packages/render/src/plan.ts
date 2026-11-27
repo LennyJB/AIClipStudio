@@ -47,6 +47,9 @@ import { buildAss, buildSrt, type SubtitleLine } from './subtitles';
 import {
   captionLinesV2,
   durationAccepted,
+  imageOverlayPlacements,
+  overlayPixelRect,
+  sfxPlacements,
   durationAcceptedV2,
   EFFECT_CATALOG,
   migrateV1ToV2,
@@ -64,7 +67,9 @@ import {
   type CaptionRole,
   type ClipProject,
   type ClipProjectV2,
+  type ImageOverlayPlacement,
   type PlacedLayer,
+  type SfxPlacement,
   type ResolvedEffect,
   type Segment,
   type TextOverlayLine,
@@ -85,7 +90,8 @@ export type RenderPlanErrorCode =
   | 'EXPORT_CONSENT_REQUIRED'
   | 'DURATION_OUT_OF_RANGE'
   | 'MEDIA_UNSUPPORTED'
-  | 'RENDER_FEATURE_UNSUPPORTED';
+  | 'RENDER_FEATURE_UNSUPPORTED'
+  | 'ASSET_MISSING';
 
 export class RenderPlanError extends Error {
   constructor(
@@ -111,7 +117,29 @@ interface CommonInput {
   manualCaptions?: Readonly<Record<string, string>>;
   /** Texte affiché (pseudonymisé) de chaque calque texte (obligatoire s'il y en a). */
   overlayTexts?: Readonly<Record<string, string>>;
+  /**
+   * Médias de la bibliothèque utilisés (étape 7f), copiés et VÉRIFIÉS par l'appelant dans le
+   * dossier de travail : nom de fichier relatif, empreinte, durée d'un son. Obligatoires pour
+   * chaque média référencé : un média absent est un refus (`ASSET_MISSING`), jamais ignoré.
+   */
+  assets?: Readonly<Record<string, PlanAssetInput>>;
   probeBytes: number;
+}
+
+export interface PlanAssetInput {
+  kind: 'image' | 'audio';
+  /** Nom relatif au dossier de travail (`asset-<id>.png|wav`). */
+  file: string;
+  sha256: string;
+  durationMs: number | null;
+}
+
+/** Entrée FFmpeg d'un média de la bibliothèque (après les entrées de la source). */
+export interface PlanAsset {
+  id: string;
+  kind: 'image' | 'audio';
+  file: string;
+  sha256: string;
 }
 
 /** Entrée de l'étape 6 (document v1, un segment). */
@@ -171,6 +199,10 @@ export interface RenderPlan {
   inputs?: PlanInput[];
   /** Clip de plusieurs segments : segments placés. Absent sinon. */
   segments?: PlanSegment[];
+  /** Médias de la bibliothèque (entrées FFmpeg après celles de la source). Absent sinon. */
+  assets?: PlanAsset[];
+  /** Calques image et effets sonores placés (temps montage). Absent sinon. */
+  media?: { overlays: ImageOverlayPlacement[]; sfx: SfxPlacement[] };
 }
 
 const MIX_LIKE = new Set(['mix', 'unknown']);
@@ -181,16 +213,12 @@ const SAMPLE_RATE = 48_000;
 /* ------------------------------------------------------------------ */
 
 /**
- * Fonctions qui dépendent de la bibliothèque de médias (PR 7f) : refus EXPLICITE, jamais ignorées.
- * Tout le reste du document v2 est rendu (PR 7e).
+ * Fonctions du document v2 que le moteur ne rend pas : AUCUNE depuis la PR 7f (calques image et
+ * mèmes, effets sonores rendus). Conservé pour un refus EXPLICITE si le modèle s'enrichit avant
+ * le moteur : une fonction ignorée serait un défaut silencieux.
  */
-export function unsupportedRenderFeatures(d: ClipProjectV2): string[] {
-  const out: string[] = [];
-  if (d.overlays.some((o) => o.kind !== 'text')) {
-    out.push('calques image et mèmes (bibliothèque de médias, PR 7f)');
-  }
-  if (d.audio.sfx.length) out.push('effets sonores (bibliothèque de médias, PR 7f)');
-  return out;
+export function unsupportedRenderFeatures(_d: ClipProjectV2): string[] {
+  return [];
 }
 
 /** Effets du catalogue de l'étape 6 : rendus par le graphe de l'étape 6 (un segment). */
@@ -208,7 +236,9 @@ export function needsEditorGraph(d: ClipProjectV2, effects: readonly ResolvedEff
     d.layout.overrides.length > 0 ||
     d.masks.some((m) => m.srcRange !== null && m.mode === 'opaque') ||
     effects.some((e) => !STEP6_EFFECTS.has(e.type)) ||
-    d.audio.tracks.some((t) => t.enabled && t.automation.length > 0)
+    d.audio.tracks.some((t) => t.enabled && t.automation.length > 0) ||
+    d.overlays.some((o) => o.kind !== 'text') ||
+    d.audio.sfx.length > 0
   );
 }
 
@@ -248,6 +278,10 @@ interface Compiled {
   single: boolean;
   /** Zooms de la facecam (`reaction_hold`), pour les calques facecam d'une disposition libre. */
   camZooms: ZoomWindow[];
+  /** Médias de la bibliothèque : entrées, calques image placés, effets sonores placés. */
+  assets: PlanAsset[];
+  imageOverlays: ImageOverlayPlacement[];
+  sfx: SfxPlacement[];
 }
 
 function compile(i: RenderPlanV2Input): Compiled {
@@ -349,6 +383,35 @@ function compile(i: RenderPlanV2Input): Compiled {
     throw err;
   }
 
+  // Médias de la bibliothèque : chacun fourni (copié et vérifié) avec le bon type, sinon refus.
+  const media = i.assets ?? {};
+  const wanted = new Map<string, 'image' | 'audio'>();
+  for (const o of d.overlays) if (o.kind !== 'text' && o.assetId) wanted.set(o.assetId, 'image');
+  if (!d.audio.silent) for (const s of d.audio.sfx) wanted.set(s.assetId, 'audio');
+  const absent = [...wanted].filter(([id, kind]) => media[id]?.kind !== kind).map(([id]) => id);
+  if (absent.length) {
+    throw new RenderPlanError(
+      'ASSET_MISSING',
+      `Média(s) de la bibliothèque manquant(s) : ${absent.length}. Réimportez-les ou retirez-les du clip.`,
+      { assetIds: absent.sort() },
+    );
+  }
+  const imageOverlays = imageOverlayPlacements(d);
+  const durations: Record<string, number> = {};
+  for (const [id, a] of Object.entries(media)) {
+    if (a.kind === 'audio' && a.durationMs) durations[id] = a.durationMs;
+  }
+  const sfx = tracks.length ? sfxPlacements(d, durations) : [];
+  const usedIds = [
+    ...new Set([...imageOverlays.map((o) => o.assetId), ...sfx.map((s) => s.assetId)]),
+  ].sort();
+  const assets: PlanAsset[] = usedIds.map((id) => ({
+    id,
+    kind: media[id]!.kind,
+    file: safeAssetName(media[id]!.file),
+    sha256: media[id]!.sha256,
+  }));
+
   const fps = outputFps(i.source.fps);
   const toWindows = (type: string): ZoomWindow[] =>
     effects
@@ -419,7 +482,18 @@ function compile(i: RenderPlanV2Input): Compiled {
     graph,
     single: segments.length === 1 && segments[0]!.kind === 'source' && !editor,
     camZooms: toWindows('reaction_hold'),
+    assets,
+    imageOverlays,
+    sfx,
   };
+}
+
+/** Nom d'un média dans le dossier de travail : forme fixe, aucun caractère interprétable. */
+function safeAssetName(name: string): string {
+  if (!/^asset-[0-9a-f]{64}\.(png|wav)$/u.test(name)) {
+    throw new RangeError(`nom de média refusé : ${name}`);
+  }
+  return name;
 }
 
 /* ------------------------------------------------------------------ */
@@ -528,23 +602,91 @@ function compositeFx(c: Compiled): CompositeEffects {
 }
 
 /**
- * Fin du graphe vidéo : effets de l'image composée puis textes et format final. Sans zoom
- * localisé, secousse ni éclair : chaîne de l'étape 7c inchangée.
+ * Calques image (bibliothèque) posés sur l'image COMPOSÉE, dans l'ordre d'empilement : chacun est
+ * étiré à son cadre (pixels arrondis comme le canvas), opacité appliquée au canal alpha, visible
+ * sur [début, fin[ du temps montage. Ils ne touchent jamais l'image source : les aplats de
+ * confidentialité, posés avant, ne peuvent pas être découverts. `retime` : image exacte.
  */
-function videoTail(c: Compiled, input: string, at: string | null): string[] {
+function overlayParts(
+  c: Compiled,
+  input: string,
+  placements: readonly ImageOverlayPlacement[],
+  inputOf: (assetId: string) => number,
+  retime: string | null,
+): { parts: string[]; output: string } {
+  const g = c.graph;
+  const parts: string[] = [];
+  const uses = new Map<string, number>();
+  for (const p of placements) uses.set(p.assetId, (uses.get(p.assetId) ?? 0) + 1);
+  const labels = new Map<string, string[]>();
+  for (const [id, n] of uses) {
+    const idx = inputOf(id);
+    const outs = Array.from({ length: n }, (_, j) => `[im${idx}_${j}]`);
+    parts.push(
+      `[${idx}:v]format=rgba${retime ? `,${retime}` : ''}${n > 1 ? `,split=${n}` : ''}${outs.join('')}`,
+    );
+    labels.set(id, outs);
+  }
+  let cur = input;
+  placements.forEach((p, k) => {
+    const r = overlayPixelRect(p.frame, g.outWidth, g.outHeight);
+    const src = labels.get(p.assetId)!.shift()!;
+    const alpha = p.opacity < 1 ? `,colorchannelmixer=aa=${num(p.opacity)}` : '';
+    parts.push(`${src}scale=${r.w}:${r.h}:flags=lanczos${alpha}[ovi${k}]`);
+    parts.push(
+      `${cur}[ovi${k}]overlay=x=${r.x}:y=${r.y}:format=auto:eof_action=repeat:enable='gte(t,${num(p.startMs / 1000)})*lt(t,${num(p.endMs / 1000)})'[ov${k}]`,
+    );
+    cur = `[ov${k}]`;
+  });
+  return { parts, output: cur };
+}
+
+/**
+ * Fin du graphe vidéo : effets de l'image composée, calques image, puis textes et format final.
+ * Sans zoom localisé, secousse, éclair ni calque image : chaîne de l'étape 7c inchangée.
+ */
+function videoTail(
+  c: Compiled,
+  input: string,
+  at: string | null,
+  overlays: readonly ImageOverlayPlacement[] = [],
+  inputOf: (assetId: string) => number = () => -1,
+): string[] {
   const g = c.graph;
   const fx = compositeFx(c);
   const extra = at ? { beforeSubtitles: at } : {};
-  if (!fx.zoomPieces.length && !fx.shakes.length && !fx.flashes.length) {
-    return [`${input}${compositionTail(g, extra).join(',')}[v]`];
+  const hasFx = fx.zoomPieces.length > 0 || fx.shakes.length > 0 || fx.flashes.length > 0;
+  if (!overlays.length) {
+    if (!hasFx) return [`${input}${compositionTail(g, extra).join(',')}[v]`];
+    const { parts, output } = compositeEffectParts(input, fx, {
+      width: g.outWidth,
+      height: g.outHeight,
+      fps: g.fps,
+      ...(at ? { retime: at } : {}),
+    });
+    return [...parts, `${output}${compositionTail({ ...g, zooms: [] }, extra).join(',')}[v]`];
   }
-  const { parts, output } = compositeEffectParts(input, fx, {
-    width: g.outWidth,
-    height: g.outHeight,
-    fps: g.fps,
-    ...(at ? { retime: at } : {}),
-  });
-  return [...parts, `${output}${compositionTail({ ...g, zooms: [] }, extra).join(',')}[v]`];
+  const parts: string[] = [];
+  let cur = input;
+  let zooms = g.zooms;
+  if (hasFx) {
+    const r = compositeEffectParts(input, fx, {
+      width: g.outWidth,
+      height: g.outHeight,
+      fps: g.fps,
+      ...(at ? { retime: at } : {}),
+    });
+    parts.push(...r.parts);
+    cur = r.output;
+    zooms = [];
+  }
+  parts.push(
+    `${cur}${compositionTail({ ...g, zooms, subtitlesFile: null }, extra).join(',')}[ovbase]`,
+  );
+  const ov = overlayParts(c, '[ovbase]', overlays, inputOf, at);
+  parts.push(...ov.parts);
+  parts.push(`${ov.output}${compositionTail({ ...g, zooms: [] }).join(',')}[v]`);
+  return parts;
 }
 
 /** Disposition d'une branche : préréglage de l'étape 6 ou calques libres. */
@@ -578,6 +720,40 @@ function localZooms(windows: readonly ZoomWindow[], t0: number, t1: number): Zoo
   return windows
     .filter((w) => w.endS > t0 && w.startS < t1)
     .map((w) => ({ ...w, startS: w.startS - t0, endS: w.endS - t0 }));
+}
+
+/**
+ * Effets sonores (bibliothèque) : extrait exact du son (échantillons), gain, placement à l'instant
+ * montage, puis complété par du silence jusqu'à la fin du clip. Mixés avec les pistes de
+ * l'enregistrement AVANT la normalisation ; non concernés par l'atténuation et les bips (qui ne
+ * visent que l'enregistrement) ; concernés par les fondus d'entrée et de sortie du mixage.
+ */
+function sfxParts(c: Compiled, inputOf: (assetId: string) => number) {
+  const parts: string[] = [];
+  const labels: string[] = [];
+  if (!c.sfx.length) return { parts, labels };
+  const samples = (ms: number) => Math.round((ms * SAMPLE_RATE) / 1000);
+  const total = samples(c.durationMs);
+  const uses = new Map<string, number>();
+  for (const p of c.sfx) uses.set(p.assetId, (uses.get(p.assetId) ?? 0) + 1);
+  const pool = new Map<string, string[]>();
+  for (const [id, n] of uses) {
+    const idx = inputOf(id);
+    const outs = Array.from({ length: n }, (_, j) => `[sx${idx}_${j}]`);
+    parts.push(`[${idx}:a]${audioFormat}${n > 1 ? `,asplit=${n}` : ''}${outs.join('')}`);
+    pool.set(id, outs);
+  }
+  c.sfx.forEach((p, k) => {
+    const src = pool.get(p.assetId)!.shift()!;
+    const start = samples(p.offsetMs);
+    const len = samples(p.editEndMs) - samples(p.editStartMs);
+    const label = `[fx${k}]`;
+    parts.push(
+      `${src}atrim=start_sample=${start}:end_sample=${start + len},asetpts=PTS-STARTPTS,${gainFilter(p.gainDb)},adelay=delays=${samples(p.editStartMs)}S:all=1,apad,atrim=end_sample=${total}${label}`,
+    );
+    labels.push(label);
+  });
+  return { parts, labels };
 }
 
 /**
@@ -641,7 +817,8 @@ function multiGraph(c: Compiled, loudnorm: boolean): string {
     }
   });
   parts.push(`${videoLabels.join('')}concat=n=${videoLabels.length}:v=1:a=0[cat]`);
-  parts.push(...videoTail(c, '[cat]', null));
+  const assetInput = (id: string) => c.inputs.length + c.assets.findIndex((a) => a.id === id);
+  parts.push(...videoTail(c, '[cat]', null, c.imageOverlays, assetInput));
 
   if (c.tracks.length) {
     const audioFx = c.resolved.filter((e) => EFFECT_CATALOG[e.type].category === 'audio');
@@ -677,7 +854,9 @@ function multiGraph(c: Compiled, loudnorm: boolean): string {
     });
     const tones = bleepToneParts(audioFx, c.durationMs / 1000, audioFormat);
     parts.push(...tones.parts);
-    const inputs = [...c.tracks.map((_, k) => `[t${k}]`), ...tones.labels];
+    const sfx = sfxParts(c, assetInput);
+    parts.push(...sfx.parts);
+    const inputs = [...c.tracks.map((_, k) => `[t${k}]`), ...tones.labels, ...sfx.labels];
     const mixed = inputs.length > 1;
     if (mixed) {
       parts.push(
@@ -731,6 +910,9 @@ export function buildRenderPlanV2(i: RenderPlanV2Input): RenderPlan {
     effects: c.effects.map((e) => ({ id: e.id, type: e.type, startS: e.startS, endS: e.endS })),
     captionLines: c.lines.length,
     ...(c.single ? {} : { inputs: c.inputs, segments: c.placed }),
+    ...(c.assets.length
+      ? { assets: c.assets, media: { overlays: c.imageOverlays, sfx: c.sfx } }
+      : {}),
   };
 }
 
@@ -777,6 +959,8 @@ export interface FramePlan {
   graph: string;
   ass: string | null;
   preset: RenderPreset;
+  /** Images de la bibliothèque visibles à cet instant (entrées après la source). */
+  assets: PlanAsset[];
 }
 
 const exactSec = (s: number) => Number(s.toFixed(6)).toString();
@@ -840,8 +1024,17 @@ export function buildFramePlan(i: RenderPlanV2Input, atEditMs: number): FramePla
       );
     }
   }
-  parts.push(...videoTail(c, '[comp]', at));
+  // Calques image visibles à l'instant de l'image de sortie (même règle [début, fin[ que l'export).
+  const ms = T * 1000;
+  const visible = c.imageOverlays.filter((o) => o.startMs <= ms + 1e-6 && ms + 1e-6 < o.endMs);
+  const frameAssets = c.assets.filter(
+    (a) => a.kind === 'image' && visible.some((o) => o.assetId === a.id),
+  );
+  const first = input ? 1 : 0;
+  const inputOf = (id: string) => first + frameAssets.findIndex((a) => a.id === id);
+  parts.push(...videoTail(c, '[comp]', at, visible, inputOf));
   return {
+    assets: frameAssets,
     atEditMs: t,
     frameTimeMs: T * 1000,
     input,

@@ -5,6 +5,7 @@ import type { AppConfig } from './config';
 import type { Db } from './db';
 import { loggerOptions } from './logger';
 import { registerAnalysisRoutes } from './routes/analysis';
+import { registerAssetRoutes } from './routes/assets';
 import { registerClipRoutes } from './routes/clips';
 import { registerEditorMediaRoutes } from './routes/editor-media';
 import { registerReviewRoutes } from './routes/review';
@@ -37,6 +38,9 @@ const DETAILED_CODES = new Set<AppErrorCode>([
   'EXPORT_CONSENT_REQUIRED',
   'DURATION_OUT_OF_RANGE',
   'DISK_SPACE_LOW',
+  'ASSET_REJECTED',
+  'ASSET_IN_USE',
+  'ASSET_MISSING',
 ]);
 
 const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
@@ -60,6 +64,9 @@ const STATUS_BY_CODE: Partial<Record<AppErrorCode, number>> = {
   DOCUMENT_DIVERGED: 409,
   RENDER_FEATURE_UNSUPPORTED: 409,
   FORBIDDEN: 403,
+  ASSET_REJECTED: 422,
+  ASSET_IN_USE: 409,
+  ASSET_MISSING: 409,
   PROPOSAL_NOT_REVIEWABLE: 409,
   AUDIO_TRACK_MISSING: 409,
   NOT_READY: 409,
@@ -124,6 +131,7 @@ export function buildApp({ config, db, model }: AppDeps): {
   registerReviewRoutes(app, services);
   registerClipRoutes(app, services);
   registerEditorMediaRoutes(app, services);
+  registerAssetRoutes(app, services);
   app.addHook('onClose', async () => {
     await services.runner.stop();
   });
