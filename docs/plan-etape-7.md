@@ -1307,6 +1307,14 @@ Précisions apportées pendant la PR 7a, sans changer les décisions du § 1 :
     les médias de travail sont re-préparés (pistes autorisées seulement) et un message l'indique.
     Côté serveur, rien ne change : jeton, requêtes `Range` et préparation refusaient déjà une piste
     révoquée.
+  - **Vérification des autorisations indisponible (fail-closed)** : si la décision d'audio
+    exporté ne peut pas être relue (API injoignable, réponse invalide), les autorisations sont
+    considérées comme INCONNUES : aucune piste n'est autorisée (pistes retirées de la mémoire,
+    lecture arrêtée, gestes qui activeraient une piste refusés), un avertissement permanent
+    l'indique, et les anciennes autorisations ne sont jamais réutilisées. Seule une nouvelle
+    réponse valide du serveur (décision audio, ou document relu) réautorise une piste. Pendant la
+    panne, aucune préparation de médias n'est relancée ; au rétablissement, elle ne l'est que si
+    la décision a changé. Les règles de consentement du serveur sont inchangées.
 - **Limites connues** (à traiter en 7f, mesure de cohérence) : rendu du texte canvas contre libass
   (quelques pixels) ; normalisation `loudnorm` absente de l'aperçu ; bords du flou (canvas contre
   `gblur`) ; J recule d'une seconde (aucune lecture arrière) ; zones masquées réglées par valeurs

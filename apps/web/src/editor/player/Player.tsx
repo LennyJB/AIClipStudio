@@ -82,6 +82,10 @@ export function previewOverlays(doc: ClipProjectV2, texts: EditorTexts | null) {
   return textOverlayLines(shown, texts.overlays);
 }
 
+/** Clé de chargement des pistes : médias préparés ET pistes autorisées au moment du chargement. */
+const stemsKey = (media: EditorMedia | null, allowed: readonly number[]) =>
+  media ? `${media.audio.map((a) => a.id).join(',')}|${[...allowed].sort().join(',')}` : null;
+
 const browserTime = { now: () => performance.now() / 1000 };
 
 /** Polices OFL servies par l'API (mêmes fichiers que libass) pour les textes du canvas. */
@@ -138,7 +142,8 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
   const [proxyUrl, setProxyUrl] = useState<string | null>(null);
   const [exact, setExact] = useState<{ url: string; atMs: number } | null>(null);
   const [exactError, setExactError] = useState<string | null>(null);
-  const [stemsFor, setStemsFor] = useState<EditorMedia | null>(null);
+  /** Pistes chargées pour quel couple (médias préparés, pistes autorisées) ? */
+  const [stemsFor, setStemsFor] = useState<string | null>(null);
   const playing = useStore(ui, (s) => s.playing);
   const playhead = useStore(ui, (s) => s.playheadMs);
   const playingTracks = useStore(ui, (s) => s.playingTracks);
@@ -151,7 +156,11 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
   );
   const audioState: 'none' | 'loading' | 'ready' = !audible.length
     ? 'none'
-    : stemsFor === media
+    : stemsFor ===
+        stemsKey(
+          media,
+          server.audio.selected.map((t) => t.audioIndex),
+        )
       ? 'ready'
       : 'loading';
   const fps = server.recording.fps ?? 30;
@@ -209,7 +218,7 @@ export function Player({ doc, server, texts, media, session, ui, children }: Pro
       }
       if (alive) {
         stems.current = out;
-        setStemsFor(media);
+        setStemsFor(stemsKey(media, allowedAudio));
       }
     })().catch(() => {});
     return () => {

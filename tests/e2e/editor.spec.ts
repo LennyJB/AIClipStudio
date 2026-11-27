@@ -443,3 +443,34 @@ test('révocation pendant une lecture en cours : la lecture s’arrête immédia
     expect((await declareMic(page, 'absent')).status()).toBe(200);
   }
 });
+
+test('panne de la vérification des autorisations pendant une lecture : son bloqué, lecture arrêtée ; réautorisé seulement après une réponse valide', async ({
+  page,
+}) => {
+  await open(page);
+  await expect(page.getByText('son : pistes autorisées')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('ruler').click({ position: { x: 5, y: 5 } });
+  await page.getByTestId('play-toggle').click();
+  await expect(page.getByTestId('audio-playing')).toContainText('pistes jouées : 0');
+  // L'API de décision audio devient injoignable.
+  await page.route('**/api/clip-projects/*/audio-decision', (route) => route.abort('failed'));
+  await expect(page.getByTestId('play-toggle')).toHaveText('Lecture', { timeout: 6_000 });
+  await expect(page.getByTestId('audio-playing')).toHaveText('');
+  await expect(page.getByTestId('audio-unverified')).toBeVisible();
+  await expect(page.getByText('aperçu muet')).toBeVisible();
+  // Pendant la panne : relancer la lecture ne joue aucune piste (anciennes autorisations ignorées).
+  await page.getByTestId('play-toggle').click();
+  await page.waitForTimeout(2_500);
+  await expect(page.getByTestId('audio-playing')).toHaveText('');
+  await page.getByTestId('play-toggle').click();
+  // Connexion rétablie : la piste n'est réautorisée qu'après la réponse valide du serveur.
+  await page.unroute('**/api/clip-projects/*/audio-decision');
+  await expect(page.getByTestId('audio-unverified')).toBeHidden({ timeout: 6_000 });
+  await expect(page.getByTestId('notice')).toContainText('rétablie');
+  await expect(page.getByText('son : pistes autorisées')).toBeVisible({ timeout: 15_000 });
+  // Tête de lecture au début (la lecture pendant la panne l'a avancée).
+  await page.getByTestId('ruler').click({ position: { x: 5, y: 5 } });
+  await page.getByTestId('play-toggle').click();
+  await expect(page.getByTestId('audio-playing')).toContainText('pistes jouées : 0');
+  await page.getByTestId('play-toggle').click();
+});

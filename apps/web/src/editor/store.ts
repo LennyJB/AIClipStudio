@@ -100,6 +100,12 @@ export interface EditorState {
   entries: JournalEntry[];
   /** Pistes dont l'autorisation a été retirée pendant la session (lecture arrêtée). */
   revokedTracks: number[];
+  /**
+   * Vrai : la décision d'audio exporté n'a pas pu être vérifiée (API injoignable, réponse
+   * invalide). Les autorisations sont alors INCONNUES : aucune piste n'est autorisée (lecture
+   * arrêtée, aucune piste chargée) jusqu'à la prochaine réponse valide du serveur.
+   */
+  audioUnverified: boolean;
 
   load(): Promise<void>;
   /** Un geste : applique localement, enregistre le brouillon, envoie. Faux si refusé. */
@@ -158,6 +164,34 @@ export function entryLabel(
   return `${what}${origin}`;
 }
 
+/**
+ * Décision d'audio « inconnue » (fail-closed) : aucune piste autorisée ni exportable. Les
+ * anciennes autorisations ne sont JAMAIS réutilisées pendant la panne de vérification.
+ */
+export function blockedAudio(a: EditorDocument['audio']): EditorDocument['audio'] {
+  return {
+    ...a,
+    selected: [],
+    tracks: a.tracks.map((t) => ({
+      ...t,
+      exportable: false,
+      reason: 'Vérification des autorisations audio indisponible',
+    })),
+  };
+}
+
+/** Réponse de décision audio exploitable (sinon : vérification considérée comme échouée). */
+const validAudio = (a: unknown): a is EditorDocument['audio'] => {
+  const x = a as EditorDocument['audio'] | null;
+  return (
+    !!x &&
+    Array.isArray(x.selected) &&
+    x.selected.every((t) => Number.isInteger(t?.audioIndex)) &&
+    Array.isArray(x.captionRoles) &&
+    Array.isArray(x.tracks)
+  );
+};
+
 export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi<EditorState> {
   const clientId = deps.uuid();
   // Canal et relecture créés à chaque chargement, fermés par `dispose` (montage double de React).
@@ -205,7 +239,8 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
     const fetchServer = async () => {
       const server = await deps.api.document(projectId);
       if (disposed) return server;
-      set({ server, offline: false });
+      // Le document porte une décision audio valide du serveur : vérification rétablie.
+      set({ server, offline: false, audioUnverified: false });
       void loadEntries(server.version);
       void loadTexts();
       return server;
@@ -440,6 +475,7 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
       textsError: null,
       entries: [],
       revokedTracks: [],
+      audioUnverified: false,
 
       load() {
         disposed = false;
@@ -538,27 +574,50 @@ export function createEditorStore(projectId: string, deps: EditorDeps): StoreApi
       async refreshAudio() {
         const s = get();
         if (!s.server) return [];
-        let audio: EditorDocument['audio'];
+        let audio: EditorDocument['audio'] | null = null;
         try {
-          ({ audio } = await deps.api.audioDecision(projectId));
+          const r = await deps.api.audioDecision(projectId);
+          if (validAudio(r?.audio)) audio = r.audio;
         } catch {
-          return [];
+          audio = null;
         }
         const cur = get().server;
-        if (!cur || canonicalJson(audio) === canonicalJson(cur.audio)) return [];
+        if (!cur) return [];
+        if (!audio) {
+          // FAIL-CLOSED : autorisations inconnues ⇒ toutes les pistes bloquées immédiatement
+          // (le lecteur arrête toute lecture qui en utilise une) ; rien de l'ancienne décision
+          // n'est réutilisé tant qu'une réponse valide n'est pas revenue.
+          const blocked = cur.audio.selected.map((t) => t.audioIndex);
+          if (get().audioUnverified && !blocked.length) return [];
+          set({
+            server: { ...cur, audio: blockedAudio(cur.audio) },
+            audioUnverified: true,
+            notice:
+              'Vérification des autorisations audio indisponible : son coupé et lecture arrêtée jusqu’à la reprise de la connexion avec le serveur.',
+          });
+          return blocked;
+        }
+        const wasUnverified = get().audioUnverified;
+        if (!wasUnverified && canonicalJson(audio) === canonicalJson(cur.audio)) return [];
         const before = cur.audio.selected.map((t) => t.audioIndex);
         const after = audio.selected.map((t) => t.audioIndex);
         const revoked = before.filter((i) => !after.includes(i));
         const rolesChanged =
           canonicalJson(cur.audio.captionRoles) !== canonicalJson(audio.captionRoles);
         set({
+          // Seule une réponse VALIDE du serveur réautorise une piste.
           server: { ...cur, audio },
+          audioUnverified: false,
           revokedTracks: [...new Set([...get().revokedTracks, ...revoked])],
-          ...(revoked.length || rolesChanged
+          ...(wasUnverified
             ? {
-                notice: `Autorisation d’export modifiée${revoked.length ? ` : piste(s) ${revoked.join(', ')} plus autorisée(s), lecture arrêtée et piste(s) plus jamais lue(s)` : ''}${rolesChanged ? ' ; sources de sous-titres mises à jour' : ''}.`,
+                notice: `Vérification des autorisations audio rétablie${after.length ? ` : piste(s) ${after.join(', ')} autorisée(s) par le serveur` : ' : aucune piste autorisée'}.`,
               }
-            : {}),
+            : revoked.length || rolesChanged
+              ? {
+                  notice: `Autorisation d’export modifiée${revoked.length ? ` : piste(s) ${revoked.join(', ')} plus autorisée(s), lecture arrêtée et piste(s) plus jamais lue(s)` : ''}${rolesChanged ? ' ; sources de sous-titres mises à jour' : ''}.`,
+                }
+              : {}),
         });
         if (rolesChanged) void loadTexts();
         return revoked;

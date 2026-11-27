@@ -86,8 +86,12 @@ function Editor({ projectId, onClose, drafts, deps }: EditorPageProps & { drafts
 
   // Décision d'audio exporté changée (accord donné ou révoqué) : médias de travail re-préparés,
   // pour les seules pistes autorisées aujourd'hui.
+  // Clé de la DERNIÈRE décision vérifiée : pendant une panne de vérification (pistes bloquées),
+  // aucune préparation n'est relancée ; au rétablissement, seulement si la décision a changé.
   const audioKey = useStore(store, (x) =>
-    x.server ? x.server.audio.selected.map((t) => t.audioIndex).join(',') : null,
+    x.server && !x.audioUnverified
+      ? x.server.audio.selected.map((t) => t.audioIndex).join(',')
+      : null,
   );
   const seenAudioKey = useRef<string | null>(null);
   useEffect(() => {
@@ -261,6 +265,12 @@ function Editor({ projectId, onClose, drafts, deps }: EditorPageProps & { drafts
       {!server.editable && (
         <p className="warning" role="status" data-testid="read-only">
           Lecture seule : la proposition n’est plus acceptée. Aucune modification n’est possible.
+        </p>
+      )}
+      {s.audioUnverified && (
+        <p className="warning" role="alert" data-testid="audio-unverified">
+          ⚠ Vérification des autorisations audio indisponible : toutes les pistes sont bloquées
+          (aucune lecture du son) jusqu’à une nouvelle réponse du serveur.
         </p>
       )}
       {!s.draftsPersistent && (

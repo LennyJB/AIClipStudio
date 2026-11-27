@@ -386,6 +386,83 @@ describe('révocation d’un accord audio pendant l’édition', () => {
   });
 });
 
+describe('vérification des autorisations audio indisponible (fail-closed)', () => {
+  function flaky() {
+    const server = new FakeEditServer(fixtureV2(), CTX);
+    const api = server.api();
+    const net = { down: false, invalid: false };
+    const audioDecision: EditorDeps['api']['audioDecision'] = async (p) => {
+      if (net.down) throw new TypeError('Failed to fetch');
+      if (net.invalid) return { audio: { selected: 'oui' } } as never;
+      return api.audioDecision(p);
+    };
+    const { store } = setup({ server, api: { ...api, audioDecision } });
+    return { server, store, net };
+  }
+
+  it('panne : toutes les pistes bloquées immédiatement, anciennes autorisations jamais réutilisées ; rétablissement par une réponse valide', async () => {
+    const { store, net } = flaky();
+    await store.getState().load();
+    expect(store.getState().server!.audio.selected.map((t) => t.audioIndex)).toEqual([1]);
+    net.down = true;
+    expect(await store.getState().refreshAudio()).toEqual([1]);
+    const s = store.getState();
+    expect(s.audioUnverified).toBe(true);
+    expect(s.server!.audio.selected).toEqual([]);
+    expect(s.server!.audio.tracks.every((t) => !t.exportable)).toBe(true);
+    expect(s.notice).toMatch(/indisponible/u);
+    // Pendant la panne : aucune piste réactivable (même réducteur, décision bloquée).
+    expect(
+      await store
+        .getState()
+        .dispatch([{ type: 'setTrack', audioIndex: 1, enabled: true, gainDb: 2 }], 'piste'),
+    ).toBe(false);
+    // Nouvel échec : toujours bloqué, aucune réutilisation, pas de nouveau message.
+    store.getState().dismissNotice();
+    expect(await store.getState().refreshAudio()).toEqual([]);
+    expect(store.getState().server!.audio.selected).toEqual([]);
+    expect(store.getState().notice).toBeNull();
+    // Réponse VALIDE : la piste est réautorisée.
+    net.down = false;
+    await store.getState().refreshAudio();
+    expect(store.getState().audioUnverified).toBe(false);
+    expect(store.getState().server!.audio.selected.map((t) => t.audioIndex)).toEqual([1]);
+    expect(store.getState().notice).toMatch(/rétablie/u);
+  });
+
+  it('réponse invalide du serveur : traitée comme une panne (pistes bloquées)', async () => {
+    const { store, net } = flaky();
+    await store.getState().load();
+    net.invalid = true;
+    await store.getState().refreshAudio();
+    expect(store.getState().audioUnverified).toBe(true);
+    expect(store.getState().server!.audio.selected).toEqual([]);
+  });
+
+  it('révocation pendant la panne : au rétablissement, seule la décision du serveur compte (piste toujours bloquée)', async () => {
+    const { server, store, net } = flaky();
+    await store.getState().load();
+    net.down = true;
+    await store.getState().refreshAudio();
+    server.ctx = { ...server.ctx, allowedAudioIndexes: [] };
+    net.down = false;
+    await store.getState().refreshAudio();
+    expect(store.getState().audioUnverified).toBe(false);
+    expect(store.getState().server!.audio.selected).toEqual([]);
+  });
+
+  it('un document relu avec succès porte une décision valide : la vérification est rétablie', async () => {
+    const { store, net } = flaky();
+    await store.getState().load();
+    net.down = true;
+    await store.getState().refreshAudio();
+    expect(store.getState().audioUnverified).toBe(true);
+    await store.getState().refresh();
+    expect(store.getState().audioUnverified).toBe(false);
+    expect(store.getState().server!.audio.selected.map((t) => t.audioIndex)).toEqual([1]);
+  });
+});
+
 describe('garde-fous', () => {
   it('document divergent (même version, résultat différent sur le serveur) : refusé, conflit sans perte', async () => {
     const { server, store, drafts } = setup();
